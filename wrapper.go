@@ -1,4 +1,3 @@
-// Package gonnect provides utility functions for connection handling.
 package gonnect
 
 // Wrapper is an interface for types that wrap underlying values.

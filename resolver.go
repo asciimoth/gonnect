@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"os"
 	"strings"
 )
 
@@ -135,4 +136,29 @@ func LookupPortOffline(network, service string) (port int, err error) {
 		}
 	}
 	return
+}
+
+// UnfuckGoDns sets GODEBUG=netedns0=0 to disable EDNS0 extension unsupported
+// by a lot of consumer routers but still used by go resolver by default for
+// some fucking reason.
+// And there is no ways to disable it with Resolver methods/fields or something.
+//
+// Some related links:
+//   - https://pkg.go.dev/net#hdr-Name_Resolution
+//   - https://github.com/golang/go/issues/67925
+//   - https://github.com/moby/moby/issues/47923
+//
+// It is safe to use UnfuckGoDns with already set GODEBUG var.
+// UnfuckGoDns only appends netedns0=0 if netedns0 is not set.
+// It doesn't alter other fields and do nothing if netedns0 is already set.
+func UnfuckGoDns() {
+	godebug := os.Getenv("GODEBUG")
+	if strings.Contains(godebug, "netedns0=") {
+		return
+	}
+	if godebug == "" {
+		os.Setenv("GODEBUG", "netedns0=0")
+	} else {
+		os.Setenv("GODEBUG", godebug+",netedns0=0")
+	}
 }

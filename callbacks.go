@@ -22,7 +22,7 @@ type Callbacks struct {
 	OnAccept func(net.Conn) (net.Conn, error)
 	// OnAcceptTCP is called when a TCP listener accepts a new TCP connection.
 	// The callback can return a different TCP connection or an error to reject it.
-	OnAcceptTCP func(*net.TCPConn) (*net.TCPConn, error)
+	OnAcceptTCP func(TCPConn) (TCPConn, error)
 
 	// TODO: More callbacks for more events and more types
 }
@@ -93,7 +93,7 @@ func PacketConnWithCallbacks(c PacketConn, cb *Callbacks) PacketConn {
 // ListenerWithCallbacks wraps a net.Listener with callbacks, using the most
 // specific wrapper type based on the underlying listener type.
 func ListenerWithCallbacks(l net.Listener, cb *Callbacks) net.Listener {
-	if tl, ok := l.(*net.TCPListener); ok {
+	if tl, ok := l.(TCPListener); ok {
 		return &CallbackTCPListener{
 			TCPListener: tl,
 			CB:          cb,
@@ -187,7 +187,7 @@ func (c *CallbackListener) GetWrapped() any {
 
 // CallbackTCPConn wraps a net.TCPConn and invokes callbacks on events.
 type CallbackTCPConn struct {
-	*net.TCPConn
+	TCPConn
 	CB *Callbacks
 }
 
@@ -204,7 +204,7 @@ func (c *CallbackTCPConn) GetWrapped() any {
 
 // CallbackTCPListener wraps a net.TCPListener and invokes callbacks on events.
 type CallbackTCPListener struct {
-	*net.TCPListener
+	TCPListener
 	CB *Callbacks
 }
 
@@ -221,7 +221,7 @@ func (c *CallbackTCPListener) Accept() (net.Conn, error) {
 }
 
 // AcceptTCP accepts a TCP connection and invokes OnAcceptTCP if the callback is set.
-func (c *CallbackTCPListener) AcceptTCP() (*net.TCPConn, error) {
+func (c *CallbackTCPListener) AcceptTCP() (TCPConn, error) {
 	conn, err := c.TCPListener.AcceptTCP()
 	if err == nil && conn != nil {
 		conn, err = c.CB.OnAcceptTCP(conn)

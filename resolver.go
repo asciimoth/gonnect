@@ -97,6 +97,7 @@ var wellKnownPorts = map[string]map[string]int{
 		"pop":      110,
 		"imap":     143,
 		"telnet":   23,
+		"socks":    1080,
 		"mysql":    3306,
 		"postgres": 5432,
 		"redis":    6379,

@@ -1,6 +1,10 @@
 package gonnect
 
-import "net"
+import (
+	"net"
+	"os"
+	"syscall"
+)
 
 // Type assertions to ensure all callback types implement Wrapper.
 var (
@@ -30,13 +34,19 @@ type Callbacks struct {
 // ConnWithCallbacks wraps a net.Conn with callbacks, using the most specific
 // wrapper type based on the underlying connection type.
 func ConnWithCallbacks(c net.Conn, cb *Callbacks) net.Conn {
-	if tc, ok := c.(*net.TCPConn); ok {
+	if tc, ok := c.(TCPConn); ok {
 		return &CallbackTCPConn{
 			TCPConn: tc,
 			CB:      cb,
 		}
 	}
-	if uc, ok := c.(*net.UDPConn); ok {
+	if uc, ok := c.(fullUDPConn); ok {
+		return &callbackFullUDPConn{
+			fullUDPConn: uc,
+			CB:          cb,
+		}
+	}
+	if uc, ok := c.(UDPConn); ok {
 		return &CallbackUDPConn{
 			UDPConn: uc,
 			CB:      cb,
@@ -57,7 +67,13 @@ func ConnWithCallbacks(c net.Conn, cb *Callbacks) net.Conn {
 // NetPacketConnWithCallbacks wraps a net.PacketConn with callbacks, using the
 // most specific wrapper type based on the underlying connection type.
 func NetPacketConnWithCallbacks(c net.PacketConn, cb *Callbacks) net.PacketConn {
-	if uc, ok := c.(*net.UDPConn); ok {
+	if uc, ok := c.(fullUDPConn); ok {
+		return &callbackFullUDPConn{
+			fullUDPConn: uc,
+			CB:          cb,
+		}
+	}
+	if uc, ok := c.(UDPConn); ok {
 		return &CallbackUDPConn{
 			UDPConn: uc,
 			CB:      cb,
@@ -78,7 +94,13 @@ func NetPacketConnWithCallbacks(c net.PacketConn, cb *Callbacks) net.PacketConn 
 // PacketConnWithCallbacks wraps a PacketConn with callbacks, using the most
 // specific wrapper type based on the underlying connection type.
 func PacketConnWithCallbacks(c PacketConn, cb *Callbacks) PacketConn {
-	if uc, ok := c.(*net.UDPConn); ok {
+	if uc, ok := c.(fullUDPConn); ok {
+		return &callbackFullUDPConn{
+			fullUDPConn: uc,
+			CB:          cb,
+		}
+	}
+	if uc, ok := c.(UDPConn); ok {
 		return &CallbackUDPConn{
 			UDPConn: uc,
 			CB:      cb,
@@ -87,6 +109,21 @@ func PacketConnWithCallbacks(c PacketConn, cb *Callbacks) PacketConn {
 	return &CallbackPacketConn{
 		PacketConn: c,
 		CB:         cb,
+	}
+}
+
+// UDPConnWithCallbacks wraps a UDPConn with callbacks, using the most
+// specific wrapper type based on the underlying connection type.
+func UDPConnWithCallbacks(c UDPConn, cb *Callbacks) UDPConn {
+	if uc, ok := c.(fullUDPConn); ok {
+		return &callbackFullUDPConn{
+			fullUDPConn: uc,
+			CB:          cb,
+		}
+	}
+	return &CallbackUDPConn{
+		UDPConn: c,
+		CB:      cb,
 	}
 }
 
@@ -245,7 +282,7 @@ func (c *CallbackTCPListener) GetWrapped() any {
 
 // CallbackUDPConn wraps a net.UDPConn and invokes callbacks on events.
 type CallbackUDPConn struct {
-	*net.UDPConn
+	UDPConn
 	CB *Callbacks
 }
 
@@ -258,4 +295,32 @@ func (c *CallbackUDPConn) Close() error {
 // GetWrapped returns the underlying wrapped connection.
 func (c *CallbackUDPConn) GetWrapped() any {
 	return c.UDPConn
+}
+
+type fullUDPConn interface {
+	UDPConn
+
+	SetReadBuffer(bytes int) error
+	SetWriteBuffer(bytes int) error
+
+	// May return nil, nil
+	SyscallConn() (syscall.RawConn, error)
+	// May return nil, nil
+	File() (f *os.File, err error)
+}
+
+type callbackFullUDPConn struct {
+	fullUDPConn
+	CB *Callbacks
+}
+
+// Close calls the BeforeClose callback, then closes the underlying connection.
+func (c *callbackFullUDPConn) Close() error {
+	c.CB.BeforeClose()
+	return c.fullUDPConn.Close()
+}
+
+// GetWrapped returns the underlying wrapped connection.
+func (c *callbackFullUDPConn) GetWrapped() any {
+	return c.fullUDPConn
 }

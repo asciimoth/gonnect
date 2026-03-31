@@ -23,6 +23,9 @@ var (
 	_ LookupMX     = (&net.Resolver{}).LookupMX
 	_ LookupNS     = (&net.Resolver{}).LookupNS
 	_ LookupSRV    = (&net.Resolver{}).LookupSRV
+
+	_ TCPConn = &net.TCPConn{}
+	_ UDPConn = &net.UDPConn{}
 )
 
 // PacketConn is an interface for UDP-like packet connections.

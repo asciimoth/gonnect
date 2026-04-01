@@ -31,6 +31,27 @@ type Callbacks struct {
 	// TODO: More callbacks for more events and more types
 }
 
+func (c *Callbacks) RunBeforeClose() {
+	if c == nil || c.BeforeClose == nil {
+		return
+	}
+	c.BeforeClose()
+}
+
+func (c *Callbacks) RunOnAccept(conn net.Conn) (net.Conn, error) {
+	if c == nil || c.OnAccept == nil {
+		return conn, nil
+	}
+	return c.OnAccept(conn)
+}
+
+func (c *Callbacks) RunOnAcceptTCP(conn TCPConn) (TCPConn, error) {
+	if c == nil || c.OnAcceptTCP == nil {
+		return conn, nil
+	}
+	return c.OnAcceptTCP(conn)
+}
+
 // ConnWithCallbacks wraps a net.Conn with callbacks, using the most specific
 // wrapper type based on the underlying connection type.
 func ConnWithCallbacks(c net.Conn, cb *Callbacks) net.Conn {
@@ -153,7 +174,7 @@ type CallbackConn struct {
 
 // Close calls the BeforeClose callback, then closes the underlying connection.
 func (c *CallbackConn) Close() error {
-	c.CB.BeforeClose()
+	c.CB.RunBeforeClose()
 	return c.Conn.Close()
 }
 
@@ -170,7 +191,7 @@ type CallbackPacketConn struct {
 
 // Close calls the BeforeClose callback, then closes the underlying connection.
 func (c *CallbackPacketConn) Close() error {
-	c.CB.BeforeClose()
+	c.CB.RunBeforeClose()
 	return c.PacketConn.Close()
 }
 
@@ -187,7 +208,7 @@ type CallbackNetPacketConn struct {
 
 // Close calls the BeforeClose callback, then closes the underlying connection.
 func (c *CallbackNetPacketConn) Close() error {
-	c.CB.BeforeClose()
+	c.CB.RunBeforeClose()
 	return c.PacketConn.Close()
 }
 
@@ -206,7 +227,7 @@ type CallbackListener struct {
 func (c *CallbackListener) Accept() (net.Conn, error) {
 	conn, err := c.Listener.Accept()
 	if err == nil && conn != nil {
-		conn, err = c.CB.OnAccept(conn)
+		conn, err = c.CB.RunOnAccept(conn)
 		if err != nil {
 			return nil, err
 		}
@@ -216,7 +237,7 @@ func (c *CallbackListener) Accept() (net.Conn, error) {
 
 // Close calls the BeforeClose callback, then closes the underlying listener.
 func (c *CallbackListener) Close() error {
-	c.CB.BeforeClose()
+	c.CB.RunBeforeClose()
 	return c.Listener.Close()
 }
 
@@ -233,7 +254,7 @@ type CallbackTCPConn struct {
 
 // Close calls the BeforeClose callback, then closes the underlying connection.
 func (c *CallbackTCPConn) Close() error {
-	c.CB.BeforeClose()
+	c.CB.RunBeforeClose()
 	return c.TCPConn.Close()
 }
 
@@ -252,7 +273,7 @@ type CallbackTCPListener struct {
 func (c *CallbackTCPListener) Accept() (net.Conn, error) {
 	conn, err := c.TCPListener.Accept()
 	if err == nil && conn != nil {
-		conn, err = c.CB.OnAccept(conn)
+		conn, err = c.CB.RunOnAccept(conn)
 		if err != nil {
 			return nil, err
 		}
@@ -264,7 +285,7 @@ func (c *CallbackTCPListener) Accept() (net.Conn, error) {
 func (c *CallbackTCPListener) AcceptTCP() (TCPConn, error) {
 	conn, err := c.TCPListener.AcceptTCP()
 	if err == nil && conn != nil {
-		conn, err = c.CB.OnAcceptTCP(conn)
+		conn, err = c.CB.RunOnAcceptTCP(conn)
 		if err != nil {
 			return nil, err
 		}
@@ -274,7 +295,7 @@ func (c *CallbackTCPListener) AcceptTCP() (TCPConn, error) {
 
 // Close calls the BeforeClose callback, then closes the underlying listener.
 func (c *CallbackTCPListener) Close() error {
-	c.CB.BeforeClose()
+	c.CB.RunBeforeClose()
 	return c.TCPListener.Close()
 }
 
@@ -291,7 +312,7 @@ type CallbackUDPConn struct {
 
 // Close calls the BeforeClose callback, then closes the underlying connection.
 func (c *CallbackUDPConn) Close() error {
-	c.CB.BeforeClose()
+	c.CB.RunBeforeClose()
 	return c.UDPConn.Close()
 }
 
@@ -319,7 +340,7 @@ type callbackFullUDPConn struct {
 
 // Close calls the BeforeClose callback, then closes the underlying connection.
 func (c *callbackFullUDPConn) Close() error {
-	c.CB.BeforeClose()
+	c.CB.RunBeforeClose()
 	return c.fullUDPConn.Close()
 }
 

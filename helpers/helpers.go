@@ -507,3 +507,24 @@ func IsLocal(addr string) bool {
 	}
 	return ip.IsLoopback()
 }
+
+func NetworkFromConn(c net.Conn) string {
+	la := c.LocalAddr()
+	if la != nil {
+		return la.Network()
+	}
+	ra := c.RemoteAddr()
+	if ra != nil {
+		return ra.Network()
+	}
+	if _, ok := c.(net.PacketConn); ok {
+		return "udp"
+	}
+	return "tcp"
+}
+
+func CloseAll(closers []io.Closer) {
+	for _, c := range closers {
+		_ = c.Close()
+	}
+}

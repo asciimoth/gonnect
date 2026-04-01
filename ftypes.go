@@ -26,6 +26,8 @@ var (
 
 	_ TCPConn = &net.TCPConn{}
 	_ UDPConn = &net.UDPConn{}
+
+	_ TCPListener = &NetTCPListener{}
 )
 
 // PacketConn is an interface for UDP-like packet connections.
@@ -104,17 +106,49 @@ type TCPListener interface {
 	SetDeadline(t time.Time) error
 }
 
-// Dialer is a function type for establishing TCP-like connections.
+type NetTCPListener struct {
+	*net.TCPListener
+}
+
+func (l *NetTCPListener) AcceptTCP() (TCPConn, error) {
+	return l.TCPListener.AcceptTCP()
+}
+
+// Dial is a function type for establishing TCP-like connections.
 // It matches the signature of net.Dialer.DialContext.
 type Dial = func(ctx context.Context, network, address string) (net.Conn, error)
 
-// PacketDialer is a function type for establishing UDP-like packet connections.
+// DialTCP establishes a TCP connection similar to net.Dial for TCP networks.
+type DialTCP = func(
+	ctx context.Context,
+	network, laddr, raddr string,
+) (TCPConn, error)
+
+// PacketDial is a function type for establishing UDP-like packet connections.
 type PacketDial = func(ctx context.Context, network, address string) (PacketConn, error)
 
-// Listener is a function type for creating TCP-like listeners.
+// DialUDP creates a UDP connection similar to net.Dial for UDP networks.
+type DialUDP = func(
+	ctx context.Context,
+	network, laddr, raddr string,
+) (UDPConn, error)
+
+// Listen is a function type for creating TCP-like listeners.
 type Listen = func(ctx context.Context, network, address string) (net.Listener, error)
 
-// PacketListener is a function type for creating UDP-like packet listeners.
+// ListenTCP announces and returns a listener for TCP connections.
+type ListenTCP = func(
+	ctx context.Context,
+	network, laddr string,
+) (TCPListener, error)
+
+// ListenUDP announces and returns a packet-oriented UDP connection.
+type ListenUDP = func(
+	ctx context.Context,
+	network, laddr string,
+) (UDPConn, error)
+
+// PacketListen is a function type for creating UDP-like packet listeners.
 type PacketListen = func(ctx context.Context, network, address string) (PacketConn, error)
 
 // LookupIP looks up host. It returns a slice of that host's IPv4 and IPv6 addresses.
@@ -152,3 +186,105 @@ type LookupNS = func(ctx context.Context, name string) ([]*net.NS, error)
 // LookupSRV tries to resolve an SRV query of the given service, protocol, and domain name.
 // The proto is "tcp" or "udp".
 type LookupSRV = func(ctx context.Context, service, proto, name string) (string, []*net.SRV, error)
+
+type Resolver interface {
+	LookupIP(ctx context.Context, network, address string) ([]net.IP, error)
+
+	LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error)
+
+	LookupNetIP(ctx context.Context, network, host string) ([]netip.Addr, error)
+
+	LookupHost(ctx context.Context, host string) (addrs []string, err error)
+
+	LookupAddr(ctx context.Context, addr string) (names []string, err error)
+
+	LookupCNAME(ctx context.Context, host string) (cname string, err error)
+
+	LookupPort(
+		ctx context.Context,
+		network, service string,
+	) (port int, err error)
+
+	LookupNS(ctx context.Context, name string) ([]*net.NS, error)
+
+	LookupMX(
+		ctx context.Context,
+		name string,
+	) ([]*net.MX, error)
+
+	LookupSRV(
+		ctx context.Context,
+		service, proto, name string,
+	) (string, []*net.SRV, error)
+
+	LookupTXT(
+		ctx context.Context,
+		name string,
+	) ([]string, error)
+}
+
+// Network defines an abstraction over network providers.
+type Network interface {
+	Dial(
+		ctx context.Context,
+		network, address string,
+	) (net.Conn, error)
+
+	Listen(
+		ctx context.Context,
+		network, address string,
+	) (net.Listener, error)
+
+	ListenPacket(
+		ctx context.Context,
+		network, address string,
+	) (PacketConn, error)
+
+	DialTCP(
+		ctx context.Context,
+		network, laddr, raddr string,
+	) (TCPConn, error)
+
+	ListenTCP(
+		ctx context.Context,
+		network, laddr string,
+	) (TCPListener, error)
+
+	DialUDP(
+		ctx context.Context,
+		network, laddr, raddr string,
+	) (UDPConn, error)
+
+	ListenUDP(
+		ctx context.Context,
+		network, laddr string,
+	) (UDPConn, error)
+}
+
+// Network defines an abstraction over network providers
+// with multiple interfaces support.
+type InterfaceNetwork interface {
+	Network
+
+	// Interfaces returns the list of network interfaces known to this Network.
+	// Implementations may return an empty slice when the network is virtual,
+	// even though Dial/Listen/ListenPacket may still be usable. Multiple
+	// entries with the same Index or Name are allowed.
+	Interfaces() ([]NetworkInterface, error)
+	// InterfaceAddrs returns the addresses associated with interfaces known
+	// to this Network.
+	// Implementations may return an empty slice when the network is virtual,
+	// even though Dial/Listen/ListenPacket may still be usable.
+	// Duplicates are allowed.
+	InterfaceAddrs() ([]net.Addr, error)
+	// InterfacesByIndex returns all interfaces that match the provided index.
+	// Implementations may return an empty slice when the network is virtual,
+	// even though Dial/Listen/ListenPacket may still be usable.
+	// Multiple interfaces with the same index are allowed.
+	InterfacesByIndex(index int) ([]NetworkInterface, error)
+	// InterfacesByName returns all interfaces that match the provided name.
+	// Implementations may return an empty slice when the network is virtual,
+	// even though Dial/Listen/ListenPacket may still be usable.
+	// Multiple interfaces with the same name are allowed.
+	InterfacesByName(name string) ([]NetworkInterface, error)
+}

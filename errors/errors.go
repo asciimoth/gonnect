@@ -14,7 +14,7 @@ import (
 // NoSuchHost returns a net.Error representing a DNS lookup failure for the specified host.
 // The host parameter is the hostname that was looked up (e.g. example.com).
 // The srv parameter is the DNS server address (e.g. 8.8.8.8:53).
-func NoSuchHost(host, srv string) net.Error {
+func NoSuchHost(host, srv string) *net.DNSError {
 	return &net.DNSError{
 		Err:         "no such host",
 		Name:        host, // e.g. example.com

@@ -1,5 +1,11 @@
 version: "2"
 
+run:
+  skip-files:
+    - testing/*.go
+issues:
+  exclude-files:
+    - testing/*.go
 formatters:
   enable:
     # checks if the code and import statements are formatted according to the 'goimports' command'
@@ -95,4 +101,18 @@ linters:
     - contextcheck
     - tparallel
     - dupword
+  exclusions:
+    rules:
+      - path: testing
+        linters:
+          - unconvert
+          - staticcheck
+          - unparam
+          - whitespace
+          - noctx
+          - lll
+          - gosec
+          - golines
+          - errorlint
+          - errcheck
 

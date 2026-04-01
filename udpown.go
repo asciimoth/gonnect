@@ -6,4 +6,6 @@ type UpDown interface {
 	Up() error
 	// Down deactivates or brings the resource offline.
 	Down() error
+
+	IsUp() (bool, error)
 }

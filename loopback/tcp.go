@@ -153,6 +153,9 @@ type loopbackTCPListener struct {
 	acceptQ chan *LoopbackTCPConn
 	closed  chan struct{}
 	closeMu sync.Mutex
+
+	deadlineMu sync.Mutex
+	deadline   time.Time
 }
 
 // newLoopbackTCPListener creates a new TCP listener and registers it with the given registry.
@@ -218,16 +221,39 @@ func (l *loopbackTCPListener) Addr() net.Addr {
 // AcceptTCP accepts the next incoming connection from the queue.
 // Returns an error if the listener has been closed.
 func (l *loopbackTCPListener) AcceptTCP() (gonnect.TCPConn, error) {
+	l.deadlineMu.Lock()
+	deadline := l.deadline
+	l.deadlineMu.Unlock()
+
+	var timer *time.Timer
+	var deadlineCh <-chan time.Time
+	if !deadline.IsZero() {
+		timer = time.NewTimer(time.Until(deadline))
+		deadlineCh = timer.C
+	}
+
 	select {
 	case c := <-l.acceptQ:
+		if timer != nil {
+			timer.Stop()
+		}
 		c.Laddr = l.Laddr
 		c.Port = l.Port
 		return c, nil
 	case <-l.closed:
+		if timer != nil {
+			timer.Stop()
+		}
 		return nil, &net.OpError{
 			Op:  "accept",
 			Net: l.Laddr.Network(),
 			Err: errors.New("use of closed network connection"),
+		}
+	case <-deadlineCh:
+		return nil, &net.OpError{
+			Op:  "accept",
+			Net: l.Laddr.Network(),
+			Err: errors.New("i/o timeout"),
 		}
 	}
 }
@@ -238,9 +264,14 @@ func (l *loopbackTCPListener) Accept() (net.Conn, error) {
 	return l.AcceptTCP()
 }
 
-// SetDeadline is a no-op implementation.
-// TODO: Implement listener deadlines
-func (l *loopbackTCPListener) SetDeadline(t time.Time) error { return nil }
+// SetDeadline sets the deadline associated with the listener's Accept method.
+// A zero time value disables the deadline.
+func (l *loopbackTCPListener) SetDeadline(t time.Time) error {
+	l.deadlineMu.Lock()
+	defer l.deadlineMu.Unlock()
+	l.deadline = t
+	return nil
+}
 
 // LoopbackTCPConn is an in-memory TCP connection implemented using net.Pipe.
 // It wraps a net.Conn and adds loopback-specific address and port tracking.
@@ -280,6 +311,16 @@ func (ltc *LoopbackTCPConn) Close() error {
 		err = ltc.Conn.Close()
 	})
 	return err
+}
+
+// Read reads data from the connection with read deadline support.
+func (ltc *LoopbackTCPConn) Read(b []byte) (n int, err error) {
+	return ltc.Conn.Read(b)
+}
+
+// Write writes data to the connection with write deadline support.
+func (ltc *LoopbackTCPConn) Write(b []byte) (n int, err error) {
+	return ltc.Conn.Write(b)
 }
 
 // ReadFrom copies data from the provided reader to the connection.
@@ -327,4 +368,22 @@ func (ltc *LoopbackTCPConn) CloseRead() error {
 // It delegates to Close.
 func (ltc *LoopbackTCPConn) CloseWrite() error {
 	return ltc.Close()
+}
+
+// SetReadDeadline sets the deadline for future Read calls.
+// A zero time value disables the deadline.
+func (ltc *LoopbackTCPConn) SetReadDeadline(t time.Time) error {
+	return ltc.Conn.SetReadDeadline(t)
+}
+
+// SetWriteDeadline sets the deadline for future Write calls.
+// A zero time value disables the deadline.
+func (ltc *LoopbackTCPConn) SetWriteDeadline(t time.Time) error {
+	return ltc.Conn.SetWriteDeadline(t)
+}
+
+// SetDeadline sets both read and write deadlines.
+// A zero time value disables the deadline.
+func (ltc *LoopbackTCPConn) SetDeadline(t time.Time) error {
+	return ltc.Conn.SetDeadline(t)
 }

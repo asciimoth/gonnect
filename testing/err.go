@@ -36,17 +36,26 @@ func expectUnknownNetworkErrorWith(expectedNetwork string) func(error) error {
 		}
 		var u net.UnknownNetworkError
 		if !errors.As(err, &u) {
-			return fmt.Errorf("expected net.UnknownNetworkError in chain, got: %T", err)
+			return fmt.Errorf(
+				"expected net.UnknownNetworkError in chain, got: %T",
+				err,
+			)
 		}
 		// UnknownNetworkError is a string type containing network name
 		if expectedNetwork != "" && string(u) != expectedNetwork {
-			return fmt.Errorf("network mismatch: expected %q, got %q", expectedNetwork, string(u))
+			return fmt.Errorf(
+				"network mismatch: expected %q, got %q",
+				expectedNetwork,
+				string(u),
+			)
 		}
 		return nil
 	}
 }
 
-func expectAddrErrorWith(expectedAddr, expectedErrContains string) func(error) error {
+func expectAddrErrorWith(
+	expectedAddr, expectedErrContains string,
+) func(error) error {
 	return func(err error) error {
 		if err == nil {
 			return fmt.Errorf("expected *net.AddrError but got nil")
@@ -56,16 +65,29 @@ func expectAddrErrorWith(expectedAddr, expectedErrContains string) func(error) e
 			return fmt.Errorf("expected *net.AddrError in chain, got: %T", err)
 		}
 		if expectedAddr != "" && a.Addr != expectedAddr {
-			return fmt.Errorf("Addr mismatch: expected %q, got %q", expectedAddr, a.Addr)
+			return fmt.Errorf(
+				"Addr mismatch: expected %q, got %q",
+				expectedAddr,
+				a.Addr,
+			)
 		}
-		if expectedErrContains != "" && !strings.Contains(a.Err, expectedErrContains) {
-			return fmt.Errorf("Err mismatch: expected substring %q in %q", expectedErrContains, a.Err)
+		if expectedErrContains != "" &&
+			!strings.Contains(a.Err, expectedErrContains) {
+			return fmt.Errorf(
+				"Err mismatch: expected substring %q in %q",
+				expectedErrContains,
+				a.Err,
+			)
 		}
 		return nil
 	}
 }
 
-func expectDNSErrorWith(expectedName string, expectIsTimeout, expectIsTemporary, expectIsNotFound *bool, expectedErrContains string) func(error) error {
+func expectDNSErrorWith(
+	expectedName string,
+	expectIsTimeout, expectIsTemporary, expectIsNotFound *bool,
+	expectedErrContains string,
+) func(error) error {
 	return func(err error) error {
 		if err == nil {
 			return fmt.Errorf("expected *net.DNSError but got nil")
@@ -75,28 +97,51 @@ func expectDNSErrorWith(expectedName string, expectIsTimeout, expectIsTemporary,
 			return fmt.Errorf("expected *net.DNSError in chain, got: %T", err)
 		}
 		if expectedName != "" && d.Name != expectedName {
-			return fmt.Errorf("Name mismatch: expected %q, got %q", expectedName, d.Name)
+			return fmt.Errorf(
+				"Name mismatch: expected %q, got %q",
+				expectedName,
+				d.Name,
+			)
 		}
 		if expectIsTimeout != nil && d.IsTimeout != *expectIsTimeout {
-			return fmt.Errorf("IsTimeout mismatch: expected %v, got %v", *expectIsTimeout, d.IsTimeout)
+			return fmt.Errorf(
+				"IsTimeout mismatch: expected %v, got %v",
+				*expectIsTimeout,
+				d.IsTimeout,
+			)
 		}
 		if expectIsTemporary != nil && d.IsTemporary != *expectIsTemporary {
-			return fmt.Errorf("IsTemporary mismatch: expected %v, got %v", *expectIsTemporary, d.IsTemporary)
+			return fmt.Errorf(
+				"IsTemporary mismatch: expected %v, got %v",
+				*expectIsTemporary,
+				d.IsTemporary,
+			)
 		}
 		// IsNotFound exists on net.DNSError; if it's present in your go version, check it.
 		if expectIsNotFound != nil {
 			if d.IsNotFound != *expectIsNotFound {
-				return fmt.Errorf("IsNotFound mismatch: expected %v, got %v", *expectIsNotFound, d.IsNotFound)
+				return fmt.Errorf(
+					"IsNotFound mismatch: expected %v, got %v",
+					*expectIsNotFound,
+					d.IsNotFound,
+				)
 			}
 		}
-		if expectedErrContains != "" && !strings.Contains(d.Err, expectedErrContains) {
-			return fmt.Errorf("Err mismatch: expected substring %q in %q", expectedErrContains, d.Err)
+		if expectedErrContains != "" &&
+			!strings.Contains(d.Err, expectedErrContains) {
+			return fmt.Errorf(
+				"Err mismatch: expected substring %q in %q",
+				expectedErrContains,
+				d.Err,
+			)
 		}
 		return nil
 	}
 }
 
-func expectOpErrorWith(expectedOp, expectedErrContains string) func(error) error {
+func expectOpErrorWith(
+	expectedOp, expectedErrContains string,
+) func(error) error {
 	return func(err error) error {
 		if err == nil {
 			return fmt.Errorf("expected *net.OpError but got nil")
@@ -106,14 +151,25 @@ func expectOpErrorWith(expectedOp, expectedErrContains string) func(error) error
 			return fmt.Errorf("expected *net.OpError in chain, got: %T", err)
 		}
 		if expectedOp != "" && op.Op != expectedOp {
-			return fmt.Errorf("Op mismatch: expected %q, got %q", expectedOp, op.Op)
+			return fmt.Errorf(
+				"Op mismatch: expected %q, got %q",
+				expectedOp,
+				op.Op,
+			)
 		}
 		if expectedErrContains != "" {
 			if op.Err == nil {
-				return fmt.Errorf("underlying op.Err is nil, expected substring %q", expectedErrContains)
+				return fmt.Errorf(
+					"underlying op.Err is nil, expected substring %q",
+					expectedErrContains,
+				)
 			}
 			if !strings.Contains(op.Err.Error(), expectedErrContains) {
-				return fmt.Errorf("underlying error mismatch: expected substring %q in %q", expectedErrContains, op.Err.Error())
+				return fmt.Errorf(
+					"underlying error mismatch: expected substring %q in %q",
+					expectedErrContains,
+					op.Err.Error(),
+				)
 			}
 		}
 		return nil
@@ -162,12 +218,19 @@ func expectInterfaceNotFound() func(error) error {
 				}
 			}
 			// Also check the full op.Error() string since some wrappers embed the message there
-			if strings.Contains(strings.ToLower(op.Error()), "invalid network interface index") {
+			if strings.Contains(
+				strings.ToLower(op.Error()),
+				"invalid network interface index",
+			) {
 				return nil
 			}
 		}
 
-		return fmt.Errorf("expected interface-not-found error (substring or common errno or net.OpError), got: %T: %w", err, err)
+		return fmt.Errorf(
+			"expected interface-not-found error (substring or common errno or net.OpError), got: %T: %w",
+			err,
+			err,
+		)
 	}
 }
 
@@ -180,7 +243,10 @@ func expectInterfacesSystemErr() func(error) error {
 		}
 		// allow common substrings
 		low := strings.ToLower(err.Error())
-		if strings.Contains(low, "no such") || strings.Contains(low, "not found") || strings.Contains(low, "permission") || strings.Contains(low, "denied") {
+		if strings.Contains(low, "no such") ||
+			strings.Contains(low, "not found") ||
+			strings.Contains(low, "permission") ||
+			strings.Contains(low, "denied") {
 			return nil
 		}
 		// allow syscall errno
@@ -188,7 +254,11 @@ func expectInterfacesSystemErr() func(error) error {
 		if errors.As(err, &errno) {
 			return nil
 		}
-		return fmt.Errorf("unexpected error kind for Interfaces/InterfaceAddrs: %T: %w", err, err)
+		return fmt.Errorf(
+			"unexpected error kind for Interfaces/InterfaceAddrs: %T: %w",
+			err,
+			err,
+		)
 	}
 }
 
@@ -233,7 +303,10 @@ func RunNetworkErrorComplianceTests(t *testing.T, makeNetwork func() Network) {
 				_, err := n.Dial(ctx, "tcp", "127.0.0.1")
 				return err
 			},
-			expected: expectAddrErrorWith("127.0.0.1", ""), // only check Addr field
+			expected: expectAddrErrorWith(
+				"127.0.0.1",
+				"",
+			), // only check Addr field
 		},
 		{
 			name: "DialTCP malformed address (missing port)",
@@ -241,7 +314,10 @@ func RunNetworkErrorComplianceTests(t *testing.T, makeNetwork func() Network) {
 				_, err := n.DialTCP(ctx, "tcp", "127.0.0.1", "127.0.0.1")
 				return err
 			},
-			expected: expectAddrErrorWith("127.0.0.1", ""), // only check Addr field
+			expected: expectAddrErrorWith(
+				"127.0.0.1",
+				"",
+			), // only check Addr field
 		},
 		{
 			name: "DialUDP malformed address (missing port)",
@@ -249,7 +325,10 @@ func RunNetworkErrorComplianceTests(t *testing.T, makeNetwork func() Network) {
 				_, err := n.DialUDP(ctx, "udp", "127.0.0.1", "127.0.0.1")
 				return err
 			},
-			expected: expectAddrErrorWith("127.0.0.1", ""), // only check Addr field
+			expected: expectAddrErrorWith(
+				"127.0.0.1",
+				"",
+			), // only check Addr field
 		},
 		{
 			name: "DialUDP malformed address (missing port)",
@@ -257,31 +336,66 @@ func RunNetworkErrorComplianceTests(t *testing.T, makeNetwork func() Network) {
 				_, err := n.DialUDP(ctx, "udp", "127.0.0.1", "127.0.0.1")
 				return err
 			},
-			expected: expectAddrErrorWith("127.0.0.1", ""), // only check Addr field
+			expected: expectAddrErrorWith(
+				"127.0.0.1",
+				"",
+			), // only check Addr field
 		},
 		{
 			name: "Dial host not found",
 			got: func(n Network) error {
-				_, err := n.Dial(ctx, "tcp", "no-such-host.example.invalid:12345")
+				_, err := n.Dial(
+					ctx,
+					"tcp",
+					"no-such-host.example.invalid:12345",
+				)
 				return err
 			},
-			expected: expectDNSErrorWith("no-such-host.example.invalid", nil, nil, boolPtr(true), "no such host"),
+			expected: expectDNSErrorWith(
+				"no-such-host.example.invalid",
+				nil,
+				nil,
+				boolPtr(true),
+				"no such host",
+			),
 		},
 		{
 			name: "DialTCP host not found",
 			got: func(n Network) error {
-				_, err := n.DialTCP(ctx, "tcp", "127.0.0.1:", "no-such-host.example.invalid:12345")
+				_, err := n.DialTCP(
+					ctx,
+					"tcp",
+					"127.0.0.1:",
+					"no-such-host.example.invalid:12345",
+				)
 				return err
 			},
-			expected: expectDNSErrorWith("no-such-host.example.invalid", nil, nil, boolPtr(true), "no such host"),
+			expected: expectDNSErrorWith(
+				"no-such-host.example.invalid",
+				nil,
+				nil,
+				boolPtr(true),
+				"no such host",
+			),
 		},
 		{
 			name: "DialUDP host not found",
 			got: func(n Network) error {
-				_, err := n.DialUDP(ctx, "udp", "127.0.0.1:", "no-such-host.example.invalid:12345")
+				_, err := n.DialUDP(
+					ctx,
+					"udp",
+					"127.0.0.1:",
+					"no-such-host.example.invalid:12345",
+				)
 				return err
 			},
-			expected: expectDNSErrorWith("no-such-host.example.invalid", nil, nil, boolPtr(true), "no such host"),
+			expected: expectDNSErrorWith(
+				"no-such-host.example.invalid",
+				nil,
+				nil,
+				boolPtr(true),
+				"no such host",
+			),
 		},
 		{
 			name: "Listen unknown network",
@@ -353,7 +467,13 @@ func RunNetworkErrorComplianceTests(t *testing.T, makeNetwork func() Network) {
 				_, err := n.LookupMX(ctx, "no-such-domain.example.invalid")
 				return err
 			},
-			expected: expectDNSErrorWith("no-such-domain.example.invalid", nil, nil, boolPtr(true), "no such host"),
+			expected: expectDNSErrorWith(
+				"no-such-domain.example.invalid",
+				nil,
+				nil,
+				boolPtr(true),
+				"no such host",
+			),
 		},
 		{
 			name: "LookupTXT host not found",
@@ -361,15 +481,32 @@ func RunNetworkErrorComplianceTests(t *testing.T, makeNetwork func() Network) {
 				_, err := n.LookupTXT(ctx, "no-such-domain.example.invalid")
 				return err
 			},
-			expected: expectDNSErrorWith("no-such-domain.example.invalid", nil, nil, boolPtr(true), "no such host"),
+			expected: expectDNSErrorWith(
+				"no-such-domain.example.invalid",
+				nil,
+				nil,
+				boolPtr(true),
+				"no such host",
+			),
 		},
 		{
 			name: "LookupSRV host not found",
 			got: func(n Network) error {
-				_, _, err := n.LookupSRV(ctx, "svc", "tcp", "no-such-domain.example.invalid")
+				_, _, err := n.LookupSRV(
+					ctx,
+					"svc",
+					"tcp",
+					"no-such-domain.example.invalid",
+				)
 				return err
 			},
-			expected: expectDNSErrorWith("_svc._tcp.no-such-domain.example.invalid", nil, nil, boolPtr(true), "no such host"),
+			expected: expectDNSErrorWith(
+				"_svc._tcp.no-such-domain.example.invalid",
+				nil,
+				nil,
+				boolPtr(true),
+				"no such host",
+			),
 		},
 		{
 			name: "InterfacesByIndex invalid",
@@ -404,8 +541,13 @@ func RunNetworkErrorComplianceTests(t *testing.T, makeNetwork func() Network) {
 				return
 			}
 			if perr := c.expected(gotErr); perr != nil {
-				t.Fatalf("expectation failed for %s: %v\nreturned error: %#v\nerror string: %q",
-					c.name, perr, gotErr, errStr(gotErr))
+				t.Fatalf(
+					"expectation failed for %s: %v\nreturned error: %#v\nerror string: %q",
+					c.name,
+					perr,
+					gotErr,
+					errStr(gotErr),
+				)
 			}
 		})
 	}

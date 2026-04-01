@@ -264,8 +264,6 @@ type Network interface {
 // Network defines an abstraction over network providers
 // with multiple interfaces support.
 type InterfaceNetwork interface {
-	Network
-
 	// Interfaces returns the list of network interfaces known to this Network.
 	// Implementations may return an empty slice when the network is virtual,
 	// even though Dial/Listen/ListenPacket may still be usable. Multiple

@@ -17,7 +17,11 @@ type UpDownNetwork interface {
 
 // RunStoppableNetworkTests verify that all Dial/Listen/Lookup operation fails
 // for down networks.
-func RunStoppableNetworkTests(t *testing.T, makeNet func() UpDownNetwork, safeAddr string) {
+func RunStoppableNetworkTests(
+	t *testing.T,
+	makeNet func() UpDownNetwork,
+	safeAddr string,
+) {
 	t.Helper()
 	ctx := context.Background()
 
@@ -146,7 +150,11 @@ func RunStoppableNetworkTests(t *testing.T, makeNet func() UpDownNetwork, safeAd
 		_ = server.Close()
 
 		if clientReadErr == nil || serverWriteErr == nil {
-			t.Fatalf("expected read/write to fail after Stop(); got nil errors (clientReadErr=%v, serverWriteErr=%v)", clientReadErr, serverWriteErr)
+			t.Fatalf(
+				"expected read/write to fail after Stop(); got nil errors (clientReadErr=%v, serverWriteErr=%v)",
+				clientReadErr,
+				serverWriteErr,
+			)
 		}
 	})
 
@@ -174,7 +182,9 @@ func RunStoppableNetworkTests(t *testing.T, makeNet func() UpDownNetwork, safeAd
 		select {
 		case err := <-errCh:
 			if err == nil {
-				t.Fatalf("expected Accept() to return an error after Stop(), got nil")
+				t.Fatalf(
+					"expected Accept() to return an error after Stop(), got nil",
+				)
 			}
 		case <-time.After(10 * time.Second):
 			t.Fatal("timeout waiting for Accept() to return after Stop()")
@@ -207,70 +217,77 @@ func RunStoppableNetworkTests(t *testing.T, makeNet func() UpDownNetwork, safeAd
 		select {
 		case err := <-errCh:
 			if err == nil {
-				t.Fatalf("expected ReadFrom() to return an error after Stop(), got nil")
+				t.Fatalf(
+					"expected ReadFrom() to return an error after Stop(), got nil",
+				)
 			}
 		case <-time.After(10 * time.Second):
 			t.Fatal("timeout waiting for ReadFrom() to return after Stop()")
 		}
 	})
 
-	t.Run("Stop_closes_existing_tcp_connections_accept_and_dial_pairs", func(t *testing.T) {
-		nn := makeNet()
+	t.Run(
+		"Stop_closes_existing_tcp_connections_accept_and_dial_pairs",
+		func(t *testing.T) {
+			nn := makeNet()
 
-		ln, err := nn.Listen(ctx, "tcp", safeAddr)
-		if err != nil {
-			t.Fatalf("failed to start tcp listener: %#v", err)
-		}
-		defer ln.Close()
-
-		addr := ln.Addr().String()
-
-		// accept the connection and return the server conn over a channel
-		accCh := make(chan net.Conn, 1)
-		errCh := make(chan error, 1)
-		go func() {
-			c, err := ln.Accept()
+			ln, err := nn.Listen(ctx, "tcp", safeAddr)
 			if err != nil {
-				errCh <- err
+				t.Fatalf("failed to start tcp listener: %#v", err)
+			}
+			defer ln.Close()
+
+			addr := ln.Addr().String()
+
+			// accept the connection and return the server conn over a channel
+			accCh := make(chan net.Conn, 1)
+			errCh := make(chan error, 1)
+			go func() {
+				c, err := ln.Accept()
+				if err != nil {
+					errCh <- err
+					return
+				}
+				accCh <- c
+			}()
+
+			cli, err := nn.Dial(context.Background(), "tcp", addr)
+			if err != nil {
+				t.Fatalf("failed to dial tcp: %#v", err)
+			}
+
+			var srv net.Conn
+			select {
+			case srv = <-accCh:
+				// ok
+			case e := <-errCh:
+				cli.Close()
+				t.Fatalf("accept failed: %v", e)
+				return
+			case <-time.After(10 * time.Second):
+				cli.Close()
+				t.Fatal("timeout waiting for Accept()")
 				return
 			}
-			accCh <- c
-		}()
 
-		cli, err := nn.Dial(context.Background(), "tcp", addr)
-		if err != nil {
-			t.Fatalf("failed to dial tcp: %#v", err)
-		}
+			// now stop; existing conns must be closed
+			nn.Down()
 
-		var srv net.Conn
-		select {
-		case srv = <-accCh:
-			// ok
-		case e := <-errCh:
-			cli.Close()
-			t.Fatalf("accept failed: %v", e)
-			return
-		case <-time.After(10 * time.Second):
-			cli.Close()
-			t.Fatal("timeout waiting for Accept()")
-			return
-		}
+			// both sides should see EOF or error quickly
+			_ = cli.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+			_, rErr := cli.Read(make([]byte, 1))
 
-		// now stop; existing conns must be closed
-		nn.Down()
+			_ = srv.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+			_, sErr := srv.Read(make([]byte, 1))
 
-		// both sides should see EOF or error quickly
-		_ = cli.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
-		_, rErr := cli.Read(make([]byte, 1))
+			_ = cli.Close()
+			_ = srv.Close()
 
-		_ = srv.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
-		_, sErr := srv.Read(make([]byte, 1))
-
-		_ = cli.Close()
-		_ = srv.Close()
-
-		if rErr == nil || sErr == nil {
-			t.Fatalf("expected existing connections to be closed after Stop(); both Read() returned nil errors")
-		}
-	})
+			if rErr == nil || sErr == nil {
+				t.Fatalf(
+					"expected existing connections to be closed after Stop(); both Read() returned nil errors",
+				)
+			}
+		},
+	)
 }

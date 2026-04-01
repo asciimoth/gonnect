@@ -75,12 +75,21 @@ func RunUDPPingPongTest(
 
 			recvCount++
 			msg := string(buf[:n])
-			t.Logf("server got from %s: %q (recv# %d)\n", srcAddr, msg, recvCount)
+			t.Logf(
+				"server got from %s: %q (recv# %d)\n",
+				srcAddr,
+				msg,
+				recvCount,
+			)
 
 			// simulate drop of every dropEvery'th packet
 			if dropEvery > 0 && recvCount%dropEvery == 0 {
 				// drop: don't reply
-				t.Logf("server dropping packet #%d from %s to simulate loss\n", recvCount, srcAddr)
+				t.Logf(
+					"server dropping packet #%d from %s to simulate loss\n",
+					recvCount,
+					srcAddr,
+				)
 				continue
 			}
 
@@ -115,7 +124,12 @@ func RunUDPPingPongTest(
 			}
 			defer cc.Close()
 
-			t.Logf("client %d local %s -> server %s\n", clientID, cc.LocalAddr(), serverAddr)
+			t.Logf(
+				"client %d local %s -> server %s\n",
+				clientID,
+				cc.LocalAddr(),
+				serverAddr,
+			)
 
 			buf := make([]byte, 2048)
 			for r := 1; r <= rounds; r++ {
@@ -127,7 +141,11 @@ func RunUDPPingPongTest(
 					// check global test timeout to avoid infinite waits
 					select {
 					case <-deadline:
-						t.Errorf("test timeout reached while client %d waiting (seq %d)", clientID, seq)
+						t.Errorf(
+							"test timeout reached while client %d waiting (seq %d)",
+							clientID,
+							seq,
+						)
 						return
 					default:
 					}
@@ -135,7 +153,12 @@ func RunUDPPingPongTest(
 					// send ping
 					_, err := cc.Write([]byte(msg))
 					if err != nil {
-						t.Logf("client %d attempt %d: write error: %v\n", clientID, attempt, err)
+						t.Logf(
+							"client %d attempt %d: write error: %v\n",
+							clientID,
+							attempt,
+							err,
+						)
 						time.Sleep(5 * time.Millisecond)
 						continue
 					}
@@ -145,27 +168,57 @@ func RunUDPPingPongTest(
 					n, src, err := cc.ReadFrom(buf)
 					if err != nil {
 						// if timeout -> retry
-						if opErr, ok := err.(*net.OpError); ok && opErr != nil && opErr.Err.Error() == "i/o timeout" {
-							t.Logf("client %d seq %d attempt %d: timeout waiting pong, will retry\n", clientID, seq, attempt)
+						if opErr, ok := err.(*net.OpError); ok &&
+							opErr != nil &&
+							opErr.Err.Error() == "i/o timeout" {
+							t.Logf(
+								"client %d seq %d attempt %d: timeout waiting pong, will retry\n",
+								clientID,
+								seq,
+								attempt,
+							)
 							continue
 						}
-						t.Logf("client %d seq %d attempt %d: read error: %v\n", clientID, seq, attempt, err)
+						t.Logf(
+							"client %d seq %d attempt %d: read error: %v\n",
+							clientID,
+							seq,
+							attempt,
+							err,
+						)
 						continue
 					}
 
 					reply := string(buf[:n])
 					expected := fmt.Sprintf("pong %d", seq)
 					if reply == expected {
-						t.Logf("client %d seq %d got reply from %s: %q\n", clientID, seq, src.String(), reply)
+						t.Logf(
+							"client %d seq %d got reply from %s: %q\n",
+							clientID,
+							seq,
+							src.String(),
+							reply,
+						)
 						received = true
 						break
 					}
 					// else unexpected reply; keep retrying
-					t.Logf("client %d seq %d got unexpected reply %q (expected %q)\n", clientID, seq, reply, expected)
+					t.Logf(
+						"client %d seq %d got unexpected reply %q (expected %q)\n",
+						clientID,
+						seq,
+						reply,
+						expected,
+					)
 				}
 				if !received {
 					// don't fail the test outright; log that this sequence gave up after retries
-					t.Logf("client %d seq %d: giving up after %d attempts\n", clientID, seq, maxRetries)
+					t.Logf(
+						"client %d seq %d: giving up after %d attempts\n",
+						clientID,
+						seq,
+						maxRetries,
+					)
 				}
 				// small pause between rounds
 				time.Sleep(roundDelay)
@@ -207,7 +260,12 @@ func RunUdpPingPongForNetworks(t *testing.T, a, b NetAddrPair) {
 	defer lnB.Close()
 
 	dialA := func(serverAddr net.Addr) (FullPacketConn, error) {
-		c, err := a.Network.DialUDP(ctx, serverAddr.Network(), "", serverAddr.String())
+		c, err := a.Network.DialUDP(
+			ctx,
+			serverAddr.Network(),
+			"",
+			serverAddr.String(),
+		)
 		if err != nil {
 			return nil, err
 		}
@@ -215,13 +273,40 @@ func RunUdpPingPongForNetworks(t *testing.T, a, b NetAddrPair) {
 	}
 
 	dialB := func(serverAddr net.Addr) (FullPacketConn, error) {
-		c, err := b.Network.DialUDP(ctx, serverAddr.Network(), "", serverAddr.String())
+		c, err := b.Network.DialUDP(
+			ctx,
+			serverAddr.Network(),
+			"",
+			serverAddr.String(),
+		)
 		if err != nil {
 			return nil, err
 		}
 		return c, nil
 	}
 
-	RunUDPPingPongTest(t, lnA, dialB, numClients, rounds, clientTimeout, roundDelay, maxRetries, dropEvery, testTimeout)
-	RunUDPPingPongTest(t, lnB, dialA, numClients, rounds, clientTimeout, roundDelay, maxRetries, dropEvery, testTimeout)
+	RunUDPPingPongTest(
+		t,
+		lnA,
+		dialB,
+		numClients,
+		rounds,
+		clientTimeout,
+		roundDelay,
+		maxRetries,
+		dropEvery,
+		testTimeout,
+	)
+	RunUDPPingPongTest(
+		t,
+		lnB,
+		dialA,
+		numClients,
+		rounds,
+		clientTimeout,
+		roundDelay,
+		maxRetries,
+		dropEvery,
+		testTimeout,
+	)
 }

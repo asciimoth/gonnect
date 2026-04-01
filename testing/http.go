@@ -46,7 +46,10 @@ func RunSimpleHTTPTest(t *testing.T, ln net.Listener, dial gonnect.Dial) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 
-		_, _ = io.WriteString(w, body) // ignore write error here; Serve will report
+		_, _ = io.WriteString(
+			w,
+			body,
+		) // ignore write error here; Serve will report
 	})
 
 	server := &http.Server{
@@ -104,8 +107,13 @@ func RunSimpleHTTPTest(t *testing.T, ln net.Listener, dial gonnect.Dial) {
 	// Compare
 	if gotBody != body {
 		_ = server.Close()
-		t.Fatalf("body mismatch: expected %d bytes, got %d bytes\nexpected: %q\nreceived: %q",
-			len(body), len(gotBody), body, gotBody)
+		t.Fatalf(
+			"body mismatch: expected %d bytes, got %d bytes\nexpected: %q\nreceived: %q",
+			len(body),
+			len(gotBody),
+			body,
+			gotBody,
+		)
 	}
 
 	// close server gracefully

@@ -94,7 +94,7 @@ func TestLoopbackFilter(t *testing.T) {
 	}
 }
 
-func TestBuildFilter(t *testing.T) {
+func TestCustomFilter(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -337,19 +337,60 @@ func TestBuildFilter(t *testing.T) {
 				{"tcp", "192.168.1.1:80", false},
 			},
 		},
+		{
+			name:    "unicode domains",
+			pattern: "münchen.de",
+			tests: []struct {
+				network string
+				address string
+				want    bool
+			}{
+				{"tcp", "münchen.de:80", true},
+			},
+		},
+		{
+			name:    "punycode domains",
+			pattern: "xn--mnchen-3ya.xn--de, xn--80aswg.xn--p1ai",
+			tests: []struct {
+				network string
+				address string
+				want    bool
+			}{
+				{"tcp", "xn--mnchen-3ya.xn--de:80", true},
+				{"tcp", "xn--80aswg.xn--p1ai:80", true},
+				{"tcp", "münchen.de:80", false},
+				{"tcp", "example.com:80", false},
+			},
+		},
+		{
+			name:    "mixed unicode and ascii",
+			pattern: "café.example.com,日本語.test.org",
+			tests: []struct {
+				network string
+				address string
+				want    bool
+			}{
+				{"tcp", "café.example.com:443", true},
+				{"tcp", "日本語.test.org:80", true},
+				{"tcp", "xn--caf-dma.example.com:443", false},
+				{"tcp", "xn--wgv71a.test.org:80", false},
+				{"tcp", "cafe.example.com:443", false},
+				{"tcp", "test.org:80", false},
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			filter := gonnect.BuildFilter(tt.pattern)
+			filter := gonnect.FilterFromString(tt.pattern)
 
 			for _, test := range tt.tests {
 				t.Run(test.address, func(t *testing.T) {
 					t.Parallel()
 
-					if got := filter(test.network, test.address); got != test.want {
+					if got := filter.Filter(test.network, test.address); got != test.want {
 						t.Errorf("filter(%q, %q) = %v, want %v (pattern: %q)",
 							test.network, test.address, got, test.want, tt.pattern)
 					}
@@ -359,16 +400,16 @@ func TestBuildFilter(t *testing.T) {
 	}
 }
 
-func TestBuildFilter_IPMatching(t *testing.T) {
+func TestCustomFilter_IPMatching(t *testing.T) {
 	t.Parallel()
 
 	// Test that numeric IPs don't match host patterns
 	t.Run("IP does not match host pattern", func(t *testing.T) {
 		t.Parallel()
 
-		filter := gonnect.BuildFilter("example.com")
+		filter := gonnect.FilterFromString("example.com")
 
-		if got := filter("tcp", "93.184.216.34:80"); got != false {
+		if got := filter.Filter("tcp", "93.184.216.34:80"); got != false {
 			t.Errorf("filter(tcp, 93.184.216.34:80) = %v, want false", got)
 		}
 	})
@@ -377,19 +418,19 @@ func TestBuildFilter_IPMatching(t *testing.T) {
 	t.Run("hostname pattern does not match IP", func(t *testing.T) {
 		t.Parallel()
 
-		filter := gonnect.BuildFilter("192.168.1.1")
+		filter := gonnect.FilterFromString("192.168.1.1")
 
-		if got := filter("tcp", "192.168.1.1:8080"); got != true {
+		if got := filter.Filter("tcp", "192.168.1.1:8080"); got != true {
 			t.Errorf("filter(tcp, 192.168.1.1:8080) = %v, want true", got)
 		}
 
-		if got := filter("tcp", "192.168.1.1"); got != true {
+		if got := filter.Filter("tcp", "192.168.1.1"); got != true {
 			t.Errorf("filter(tcp, 192.168.1.1) = %v, want true", got)
 		}
 	})
 }
 
-func TestBuildFilter_EdgeCases(t *testing.T) {
+func TestCustomFilter_EdgeCases(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -434,10 +475,199 @@ func TestBuildFilter_EdgeCases(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			filter := gonnect.BuildFilter(tt.pattern)
+			filter := gonnect.FilterFromString(tt.pattern)
 
-			if got := filter("tcp", tt.address); got != tt.want {
+			if got := filter.Filter("tcp", tt.address); got != tt.want {
 				t.Errorf("filter(tcp, %q) = %v, want %v (pattern: %q)", tt.address, got, tt.want, tt.pattern)
+			}
+		})
+	}
+}
+
+func TestInvertFilter(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		filter  gonnect.Filter
+		network string
+		address string
+		want    bool
+	}{
+		{
+			name:    "invert TrueFilter returns false",
+			filter:  gonnect.TrueFilter,
+			network: "tcp",
+			address: "any:80",
+			want:    false,
+		},
+		{
+			name:    "invert FalseFilter returns true",
+			filter:  gonnect.FalseFilter,
+			network: "tcp",
+			address: "any:80",
+			want:    true,
+		},
+		{
+			name:    "invert LoopbackFilter for loopback",
+			filter:  gonnect.LoopbackFilter,
+			network: "tcp",
+			address: "127.0.0.1:80",
+			want:    false,
+		},
+		{
+			name:    "invert LoopbackFilter for non-loopback",
+			filter:  gonnect.LoopbackFilter,
+			network: "tcp",
+			address: "192.168.1.1:80",
+			want:    true,
+		},
+		{
+			name:    "invert custom filter match",
+			filter:  gonnect.FilterFromString("localhost").Filter,
+			network: "tcp",
+			address: "localhost:80",
+			want:    false,
+		},
+		{
+			name:    "invert custom filter no match",
+			filter:  gonnect.FilterFromString("localhost").Filter,
+			network: "tcp",
+			address: "example.com:80",
+			want:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			inverted := gonnect.InvertFilter(tt.filter)
+
+			if got := inverted(tt.network, tt.address); got != tt.want {
+				t.Errorf("InvertFilter(%q)(%q, %q) = %v, want %v",
+					tt.name, tt.network, tt.address, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestOrFilter(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		filters []gonnect.Filter
+		network string
+		address string
+		want    bool
+	}{
+		{
+			name:    "no filters returns false",
+			filters: []gonnect.Filter{},
+			network: "tcp",
+			address: "any:80",
+			want:    false,
+		},
+		{
+			name:    "single TrueFilter",
+			filters: []gonnect.Filter{gonnect.TrueFilter},
+			network: "tcp",
+			address: "any:80",
+			want:    true,
+		},
+		{
+			name:    "single FalseFilter",
+			filters: []gonnect.Filter{gonnect.FalseFilter},
+			network: "tcp",
+			address: "any:80",
+			want:    false,
+		},
+		{
+			name:    "any filter returns true",
+			filters: []gonnect.Filter{gonnect.FalseFilter, gonnect.TrueFilter, gonnect.FalseFilter},
+			network: "tcp",
+			address: "any:80",
+			want:    true,
+		},
+		{
+			name:    "all filters false",
+			filters: []gonnect.Filter{gonnect.FalseFilter, gonnect.FalseFilter},
+			network: "tcp",
+			address: "any:80",
+			want:    false,
+		},
+		{
+			name: "LoopbackFilter and custom filter",
+			filters: []gonnect.Filter{
+				gonnect.LoopbackFilter,
+				gonnect.FilterFromString("example.com").Filter,
+			},
+			network: "tcp",
+			address: "127.0.0.1:80",
+			want:    true,
+		},
+		{
+			name: "LoopbackFilter and custom filter - second matches",
+			filters: []gonnect.Filter{
+				gonnect.LoopbackFilter,
+				gonnect.FilterFromString("example.com").Filter,
+			},
+			network: "tcp",
+			address: "example.com:80",
+			want:    true,
+		},
+		{
+			name: "LoopbackFilter and custom filter - neither matches",
+			filters: []gonnect.Filter{
+				gonnect.LoopbackFilter,
+				gonnect.FilterFromString("example.com").Filter,
+			},
+			network: "tcp",
+			address: "other.com:80",
+			want:    false,
+		},
+		{
+			name: "multiple CIDR filters",
+			filters: []gonnect.Filter{
+				gonnect.FilterFromString("10.0.0.0/8").Filter,
+				gonnect.FilterFromString("192.168.0.0/16").Filter,
+			},
+			network: "tcp",
+			address: "10.1.2.3:80",
+			want:    true,
+		},
+		{
+			name: "multiple CIDR filters - second matches",
+			filters: []gonnect.Filter{
+				gonnect.FilterFromString("10.0.0.0/8").Filter,
+				gonnect.FilterFromString("192.168.0.0/16").Filter,
+			},
+			network: "tcp",
+			address: "192.168.1.1:80",
+			want:    true,
+		},
+		{
+			name: "multiple CIDR filters - neither matches",
+			filters: []gonnect.Filter{
+				gonnect.FilterFromString("10.0.0.0/8").Filter,
+				gonnect.FilterFromString("192.168.0.0/16").Filter,
+			},
+			network: "tcp",
+			address: "172.16.0.1:80",
+			want:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			orFilter := gonnect.OrFilter(tt.filters...)
+
+			if got := orFilter(tt.network, tt.address); got != tt.want {
+				t.Errorf("OrFilter(...)(%q, %q) = %v, want %v",
+					tt.network, tt.address, got, tt.want)
 			}
 		})
 	}

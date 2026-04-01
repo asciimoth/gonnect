@@ -24,6 +24,25 @@ func TrueFilter(_, _ string) bool {
 	return true
 }
 
+// InvertFilter is a Filter that returns iverted result of filter.
+func InvertFilter(filter Filter) Filter {
+	return func(network, address string) bool {
+		return !filter(network, address)
+	}
+}
+
+// OrFilter is a Filter that returns true if any of filters do it.
+func OrFilter(filters ...Filter) Filter {
+	return func(network, address string) bool {
+		for _, filter := range filters {
+			if filter(network, address) {
+				return true
+			}
+		}
+		return false
+	}
+}
+
 // LoopbackFilter returns true for localhost and loopback addresses.
 func LoopbackFilter(_, address string) bool {
 	host, _, err := net.SplitHostPort(address)
@@ -40,8 +59,27 @@ func LoopbackFilter(_, address string) bool {
 	return ip.IsLoopback()
 }
 
-// BuildFilter creates a Filter from a comma-separated string similar to the
-// NO_PROXY environment variable format.
+// CustomFilter is a Filter that matches addresses based on a set of patterns.
+// Patterns are similar to the NO_PROXY environment variable format.
+type CustomFilter struct {
+	Hosts []HostFilterEntry
+	IPs   []IpFilterEntry
+	CIDRs []*net.IPNet
+}
+
+type HostFilterEntry struct {
+	Pattern  string // wildcard pattern, lowercased, no trailing dot
+	WithPort bool
+	Port     string
+}
+
+type IpFilterEntry struct {
+	IP       net.IP
+	WithPort bool
+	Port     string
+}
+
+// FilterFromString creates a CustomFilter from a comma-separated string.
 //
 // Each entry can be:
 //   - host:port - matches this host and port combination
@@ -58,19 +96,9 @@ func LoopbackFilter(_, address string) bool {
 //
 // The filter is case-insensitive and handles both bracketed IPv6 addresses
 // (e.g., [::1]:8080) and trailing dots in hostnames.
-func BuildFilter(str string) Filter {
-	type hostEntry struct {
-		pattern string // wildcard pattern, lowercased, no trailing dot
-		hasPort bool
-		port    string
-	}
-	type ipEntry struct {
-		ip      net.IP
-		hasPort bool
-		port    string
-	}
-	var hosts []hostEntry
-	var ips []ipEntry
+func FilterFromString(str string) CustomFilter {
+	var hosts []HostFilterEntry
+	var ips []IpFilterEntry
 	var cidrs []*net.IPNet
 
 	// parse entries
@@ -88,7 +116,7 @@ func BuildFilter(str string) Filter {
 
 		// Try plain IP (v4 or v6) without port
 		if ip := net.ParseIP(e); ip != nil {
-			ips = append(ips, ipEntry{ip: ip, hasPort: false})
+			ips = append(ips, IpFilterEntry{IP: ip, WithPort: false})
 			continue
 		}
 
@@ -97,11 +125,11 @@ func BuildFilter(str string) Filter {
 			// host part might be IP or pattern/hostname
 			host = trimDot(strings.ToLower(host))
 			if ip := net.ParseIP(host); ip != nil {
-				ips = append(ips, ipEntry{ip: ip, hasPort: true, port: port})
+				ips = append(ips, IpFilterEntry{IP: ip, WithPort: true, Port: port})
 			} else {
 				hosts = append(
 					hosts,
-					hostEntry{pattern: host, hasPort: true, port: port},
+					HostFilterEntry{Pattern: host, WithPort: true, Port: port},
 				)
 			}
 			continue
@@ -110,58 +138,60 @@ func BuildFilter(str string) Filter {
 		// Finally treat as host pattern (may include wildcards)
 		if e != "" {
 			patt := trimDot(strings.ToLower(e))
-			hosts = append(hosts, hostEntry{pattern: patt, hasPort: false})
+			hosts = append(hosts, HostFilterEntry{Pattern: patt, WithPort: false})
 		}
 	}
 
-	// filter function
-	return func(network, address string) bool {
-		// normalize host and port from address input
-		var host string
-		var port string
+	return CustomFilter{Hosts: hosts, IPs: ips, CIDRs: cidrs}
+}
 
-		// Try to split host:port using net.SplitHostPort (will handle [::1]:80)
-		if h, p, err := net.SplitHostPort(address); err == nil {
-			host, port = h, p
-		} else {
-			host = address
-			port = ""
-		}
+// Filter implements the Filter function for CustomFilter.
+func (f CustomFilter) Filter(network, address string) bool {
+	// normalize host and port from address input
+	var host string
+	var port string
 
-		// normalize host for comparisons
-		normHost := trimDot(strings.ToLower(host))
+	// Try to split host:port using net.SplitHostPort (will handle [::1]:80)
+	if h, p, err := net.SplitHostPort(address); err == nil {
+		host, port = h, p
+	} else {
+		host = address
+		port = ""
+	}
 
-		// Try parse host as IP
-		if ip := net.ParseIP(strings.Trim(normHost, "[]")); ip != nil {
-			// match exact IP entries
-			for _, e := range ips {
-				if e.ip.Equal(ip) {
-					if !e.hasPort || e.port == port {
-						return true
-					}
-				}
-			}
-			// match CIDR entries
-			for _, n := range cidrs {
-				if n.Contains(ip) {
-					return true
-				}
-			}
-			// no host-pattern match for numeric IPs
-			return false
-		}
+	// normalize host for comparisons
+	normHost := trimDot(strings.ToLower(host))
 
-		// host is a hostname - match host patterns (with wildcard support)
-		for _, h := range hosts {
-			// path.Match uses shell-style globs: '*' '?' '[]'
-			if ok, _ := path.Match(h.pattern, normHost); ok {
-				if !h.hasPort || h.port == port {
+	// Try parse host as IP
+	if ip := net.ParseIP(strings.Trim(normHost, "[]")); ip != nil {
+		// match exact IP entries
+		for _, e := range f.IPs {
+			if e.IP.Equal(ip) {
+				if !e.WithPort || e.Port == port {
 					return true
 				}
 			}
 		}
+		// match CIDR entries
+		for _, n := range f.CIDRs {
+			if n.Contains(ip) {
+				return true
+			}
+		}
+		// no host-pattern match for numeric IPs
 		return false
 	}
+
+	// host is a hostname - match host patterns (with wildcard support)
+	for _, h := range f.Hosts {
+		// path.Match uses shell-style globs: '*' '?' '[]'
+		if ok, _ := path.Match(h.Pattern, normHost); ok {
+			if !h.WithPort || h.Port == port {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func trimDot(s string) string {

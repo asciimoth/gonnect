@@ -30,7 +30,10 @@ func NoSuchHost(host, srv string) net.Error {
 // The srv parameter is the DNS server address (e.g. 8.8.8.8:53).
 func DnsReqErr(host, srv string) error {
 	return &net.DNSError{
-		Err:         fmt.Sprintf("dial udp %s: connect: connection refused", srv),
+		Err: fmt.Sprintf(
+			"dial udp %s: connect: connection refused",
+			srv,
+		),
 		Name:        host, // e.g. example.com
 		Server:      srv,  // e.g. 8.8.8.8:53
 		IsTimeout:   false,
@@ -67,7 +70,7 @@ func ConnRefused(n, a string) error {
 		},
 		Err: &os.SyscallError{
 			Syscall: "connect",
-			Err:     syscall.Errno(syscall.ECONNREFUSED),
+			Err:     syscall.ECONNREFUSED,
 		},
 	}
 }
@@ -87,7 +90,7 @@ func ListenDeniedErr(n, a string) error {
 		},
 		Err: &os.SyscallError{
 			Syscall: "bind",
-			Err:     syscall.Errno(syscall.EACCES),
+			Err:     syscall.EACCES,
 		},
 	}
 }

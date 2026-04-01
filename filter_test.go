@@ -87,8 +87,15 @@ func TestLoopbackFilter(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			if got := gonnect.LoopbackFilter(tt.network, tt.address); got != tt.want {
-				t.Errorf("LoopbackFilter(%q, %q) = %v, want %v", tt.network, tt.address, got, tt.want)
+			got := gonnect.LoopbackFilter(tt.network, tt.address)
+			if got != tt.want {
+				t.Errorf(
+					"LoopbackFilter(%q, %q) = %v, want %v",
+					tt.network,
+					tt.address,
+					got,
+					tt.want,
+				)
 			}
 		})
 	}
@@ -390,9 +397,16 @@ func TestCustomFilter(t *testing.T) {
 				t.Run(test.address, func(t *testing.T) {
 					t.Parallel()
 
-					if got := filter.Filter(test.network, test.address); got != test.want {
-						t.Errorf("filter(%q, %q) = %v, want %v (pattern: %q)",
-							test.network, test.address, got, test.want, tt.pattern)
+					got := filter.Filter(test.network, test.address)
+					if got != test.want {
+						t.Errorf(
+							"filter(%q, %q) = %v, want %v (pattern: %q)",
+							test.network,
+							test.address,
+							got,
+							test.want,
+							tt.pattern,
+						)
 					}
 				})
 			}
@@ -478,7 +492,13 @@ func TestCustomFilter_EdgeCases(t *testing.T) {
 			filter := gonnect.FilterFromString(tt.pattern)
 
 			if got := filter.Filter("tcp", tt.address); got != tt.want {
-				t.Errorf("filter(tcp, %q) = %v, want %v (pattern: %q)", tt.address, got, tt.want, tt.pattern)
+				t.Errorf(
+					"filter(tcp, %q) = %v, want %v (pattern: %q)",
+					tt.address,
+					got,
+					tt.want,
+					tt.pattern,
+				)
 			}
 		})
 	}
@@ -584,8 +604,12 @@ func TestOrFilter(t *testing.T) {
 			want:    false,
 		},
 		{
-			name:    "any filter returns true",
-			filters: []gonnect.Filter{gonnect.FalseFilter, gonnect.TrueFilter, gonnect.FalseFilter},
+			name: "any filter returns true",
+			filters: []gonnect.Filter{
+				gonnect.FalseFilter,
+				gonnect.TrueFilter,
+				gonnect.FalseFilter,
+			},
 			network: "tcp",
 			address: "any:80",
 			want:    true,

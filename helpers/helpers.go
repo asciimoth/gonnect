@@ -139,11 +139,11 @@ func PickIP(ips []net.IP, prefer int) net.IP {
 	// No specific preferences.
 	// Just selecting a random one
 	if prefer != 4 && prefer != 6 {
-		return ips[rand.Intn(len(ips))]
+		return ips[rand.Intn(len(ips))] //nolint gosec
 	}
 
-	var pool4 []net.IP = make([]net.IP, 0, len(ips))
-	var pool6 []net.IP = make([]net.IP, 0, len(ips))
+	var pool4 = make([]net.IP, 0, len(ips))
+	var pool6 = make([]net.IP, 0, len(ips))
 	var prefOccur bool
 
 	for _, ip := range ips {
@@ -187,7 +187,7 @@ func PickIP(ips []net.IP, prefer int) net.IP {
 		}
 	}
 
-	return pool[rand.Intn(len(pool))]
+	return pool[rand.Intn(len(pool))] //nolint gosec
 }
 
 // ReadNullTerminatedString reads bytes from r until a null byte (0x00) is encountered.
@@ -377,7 +377,7 @@ type withSyscall interface {
 // Returns nil if the value is nil or doesn't implement the interface.
 func SyscallConn(a any) (syscall.RawConn, error) {
 	if a == nil {
-		return nil, nil
+		return nil, nil //nolint nilnil
 	}
 	if ws, ok := a.(withSyscall); ok {
 		return ws.SyscallConn()
@@ -395,7 +395,7 @@ type withFile interface {
 // Returns nil if the value is nil or doesn't implement the interface.
 func File(a any) (f *os.File, err error) {
 	if a == nil {
-		return nil, nil
+		return nil, nil //nolint gosec
 	}
 	if wf, ok := a.(withFile); ok {
 		return wf.File()

@@ -125,7 +125,10 @@ func FilterFromString(str string) CustomFilter {
 			// host part might be IP or pattern/hostname
 			host = trimDot(strings.ToLower(host))
 			if ip := net.ParseIP(host); ip != nil {
-				ips = append(ips, IpFilterEntry{IP: ip, WithPort: true, Port: port})
+				ips = append(
+					ips,
+					IpFilterEntry{IP: ip, WithPort: true, Port: port},
+				)
 			} else {
 				hosts = append(
 					hosts,
@@ -138,7 +141,10 @@ func FilterFromString(str string) CustomFilter {
 		// Finally treat as host pattern (may include wildcards)
 		if e != "" {
 			patt := trimDot(strings.ToLower(e))
-			hosts = append(hosts, HostFilterEntry{Pattern: patt, WithPort: false})
+			hosts = append(
+				hosts,
+				HostFilterEntry{Pattern: patt, WithPort: false},
+			)
 		}
 	}
 

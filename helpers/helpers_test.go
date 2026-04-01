@@ -45,7 +45,13 @@ func TestJointIPPort(t *testing.T) {
 
 			got := helpers.JointIPPort(tt.ip, tt.port)
 			if got != tt.want {
-				t.Errorf("JointIPPort(%v, %d) = %q, want %q", tt.ip, tt.port, got, tt.want)
+				t.Errorf(
+					"JointIPPort(%v, %d) = %q, want %q",
+					tt.ip,
+					tt.port,
+					got,
+					tt.want,
+				)
 			}
 		})
 	}
@@ -76,7 +82,12 @@ func TestIsTCPNetwork(t *testing.T) {
 			t.Parallel()
 
 			if got := helpers.IsTCPNetwork(tt.network); got != tt.want {
-				t.Errorf("IsTCPNetwork(%q) = %v, want %v", tt.network, got, tt.want)
+				t.Errorf(
+					"IsTCPNetwork(%q) = %v, want %v",
+					tt.network,
+					got,
+					tt.want,
+				)
 			}
 		})
 	}
@@ -107,7 +118,12 @@ func TestIsUDPNetwork(t *testing.T) {
 			t.Parallel()
 
 			if got := helpers.IsUDPNetwork(tt.network); got != tt.want {
-				t.Errorf("IsUDPNetwork(%q) = %v, want %v", tt.network, got, tt.want)
+				t.Errorf(
+					"IsUDPNetwork(%q) = %v, want %v",
+					tt.network,
+					got,
+					tt.want,
+				)
 			}
 		})
 	}
@@ -138,7 +154,12 @@ func TestIsIPNetwork(t *testing.T) {
 			t.Parallel()
 
 			if got := helpers.IsIPNetwork(tt.network); got != tt.want {
-				t.Errorf("IsIPNetwork(%q) = %v, want %v", tt.network, got, tt.want)
+				t.Errorf(
+					"IsIPNetwork(%q) = %v, want %v",
+					tt.network,
+					got,
+					tt.want,
+				)
 			}
 		})
 	}
@@ -171,7 +192,12 @@ func TestFamilyFromNetwork(t *testing.T) {
 			t.Parallel()
 
 			if got := helpers.FamilyFromNetwork(tt.network); got != tt.want {
-				t.Errorf("FamilyFromNetwork(%q) = %q, want %q", tt.network, got, tt.want)
+				t.Errorf(
+					"FamilyFromNetwork(%q) = %q, want %q",
+					tt.network,
+					got,
+					tt.want,
+				)
 			}
 		})
 	}
@@ -202,7 +228,12 @@ func TestNormalNet(t *testing.T) {
 			t.Parallel()
 
 			if got := helpers.NormalNet(tt.network); got != tt.want {
-				t.Errorf("NormalNet(%q) = %q, want %q", tt.network, got, tt.want)
+				t.Errorf(
+					"NormalNet(%q) = %q, want %q",
+					tt.network,
+					got,
+					tt.want,
+				)
 			}
 		})
 	}
@@ -265,7 +296,11 @@ func TestSplitHostPort(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			host, port := helpers.SplitHostPort(tt.network, tt.hostport, tt.defport)
+			host, port := helpers.SplitHostPort(
+				tt.network,
+				tt.hostport,
+				tt.defport,
+			)
 			if host != tt.wantHost {
 				t.Errorf("host = %q, want %q", host, tt.wantHost)
 			}
@@ -347,17 +382,32 @@ func TestPickIP(t *testing.T) {
 			got := helpers.PickIP(tt.ips, tt.prefer)
 			if tt.wantNil {
 				if got != nil {
-					t.Errorf("PickIP(%v, %d) = %v, want nil", tt.ips, tt.prefer, got)
+					t.Errorf(
+						"PickIP(%v, %d) = %v, want nil",
+						tt.ips,
+						tt.prefer,
+						got,
+					)
 				}
 				return
 			}
 			if tt.wantIPv4 && got.To4() == nil {
-				t.Errorf("PickIP(%v, %d) = %v, want IPv4", tt.ips, tt.prefer, got)
+				t.Errorf(
+					"PickIP(%v, %d) = %v, want IPv4",
+					tt.ips,
+					tt.prefer,
+					got,
+				)
 			}
 			if tt.wantIPv6 && got.To4() == nil && len(got) == net.IPv6len {
 				// OK - got is IPv6
 			} else if tt.wantIPv6 && (got == nil || got.To4() != nil) {
-				t.Errorf("PickIP(%v, %d) = %v, want IPv6", tt.ips, tt.prefer, got)
+				t.Errorf(
+					"PickIP(%v, %d) = %v, want IPv6",
+					tt.ips,
+					tt.prefer,
+					got,
+				)
 			}
 		})
 	}
@@ -482,7 +532,11 @@ func TestClosedNetworkErrToNil(t *testing.T) {
 				t.Errorf("ClosedNetworkErrToNil() = %v, want %v", got, tt.want)
 			}
 			if got != nil && tt.want != nil && got.Error() != tt.want.Error() {
-				t.Errorf("got.Error() = %q, want %q", got.Error(), tt.want.Error())
+				t.Errorf(
+					"got.Error() = %q, want %q",
+					got.Error(),
+					tt.want.Error(),
+				)
 			}
 		})
 	}

@@ -53,18 +53,6 @@ type ResolverCfg struct {
 	Server *DnsServer
 }
 
-// dial establishes a connection using the custom Dial function if provided,
-// otherwise falls back to net.Dialer.DialContext.
-func (cfg ResolverCfg) dial(
-	ctx context.Context, network, address string,
-) (net.Conn, error) {
-	if cfg.Dial == nil {
-		return (&net.Dialer{}).DialContext(ctx, network, address)
-	} else {
-		return cfg.Dial(ctx, network, address)
-	}
-}
-
 // Build creates and returns a configured net.Resolver instance.
 // If Server is set, all DNS queries are routed through that server.
 // If Dial is set, it is used for establishing connections instead of the default dialer.
@@ -79,6 +67,18 @@ func (cfg ResolverCfg) Build() net.Resolver {
 				return cfg.dial(ctx, cfg.Server.net(), cfg.Server.addr())
 			}
 		},
+	}
+}
+
+// dial establishes a connection using the custom Dial function if provided,
+// otherwise falls back to net.Dialer.DialContext.
+func (cfg ResolverCfg) dial(
+	ctx context.Context, network, address string,
+) (net.Conn, error) {
+	if cfg.Dial == nil {
+		return (&net.Dialer{}).DialContext(ctx, network, address)
+	} else {
+		return cfg.Dial(ctx, network, address)
 	}
 }
 
@@ -158,8 +158,8 @@ func UnfuckGoDns() {
 		return
 	}
 	if godebug == "" {
-		os.Setenv("GODEBUG", "netedns0=0")
+		_ = os.Setenv("GODEBUG", "netedns0=0")
 	} else {
-		os.Setenv("GODEBUG", godebug+",netedns0=0")
+		_ = os.Setenv("GODEBUG", godebug+",netedns0=0")
 	}
 }

@@ -66,7 +66,10 @@ func ConnWithCallbacks(c net.Conn, cb *Callbacks) net.Conn {
 
 // NetPacketConnWithCallbacks wraps a net.PacketConn with callbacks, using the
 // most specific wrapper type based on the underlying connection type.
-func NetPacketConnWithCallbacks(c net.PacketConn, cb *Callbacks) net.PacketConn {
+func NetPacketConnWithCallbacks(
+	c net.PacketConn,
+	cb *Callbacks,
+) net.PacketConn {
 	if uc, ok := c.(fullUDPConn); ok {
 		return &callbackFullUDPConn{
 			fullUDPConn: uc,

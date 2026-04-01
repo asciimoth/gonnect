@@ -83,10 +83,15 @@ type UDPConn interface {
 	WriteToUDPAddrPort(b []byte, addr netip.AddrPort) (int, error)
 
 	ReadMsgUDP(b, oob []byte) (n, oobn, flags int, addr *net.UDPAddr, err error)
-	ReadMsgUDPAddrPort(b, oob []byte) (n, oobn, flags int, addr netip.AddrPort, err error)
+	ReadMsgUDPAddrPort(
+		b, oob []byte,
+	) (n, oobn, flags int, addr netip.AddrPort, err error)
 
 	WriteMsgUDP(b, oob []byte, addr *net.UDPAddr) (n, oobn int, err error)
-	WriteMsgUDPAddrPort(b, oob []byte, addr netip.AddrPort) (n, oobn int, err error)
+	WriteMsgUDPAddrPort(
+		b, oob []byte,
+		addr netip.AddrPort,
+	) (n, oobn int, err error)
 }
 
 type TCPListener interface {

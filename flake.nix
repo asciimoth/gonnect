@@ -38,17 +38,17 @@
               ''; in builtins.toString script;
               stages = [ "commit-msg" ];
             };
-            # govet.enable = true;
-            # gofmt.enable = true;
-            # golangci-lint.enable = true;
-            # gotidy = {
-            #   enable = true;
-            #   description = "Makes sure go.mod matches the source code";
-            #   entry = let script = pkgs.writeShellScript "gotidyhook" ''
-            #     go mod tidy -v
-            #   ''; in builtins.toString script;
-            #   stages = [ "pre-commit" ];
-            # };
+            govet.enable = true;
+            gofmt.enable = true;
+            golangci-lint.enable = true;
+            gotidy = {
+              enable = true;
+              description = "Makes sure go.mod matches the source code";
+              entry = let script = pkgs.writeShellScript "gotidyhook" ''
+                go mod tidy -v
+              ''; in builtins.toString script;
+              stages = [ "pre-commit" ];
+            };
           };
         };
       };

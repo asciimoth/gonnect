@@ -1,0 +1,98 @@
+version: "2"
+
+formatters:
+  enable:
+    # checks if the code and import statements are formatted according to the 'goimports' command'
+    - goimports
+    - gofmt
+    - golines # checks if code is formatted, and fixes long lines
+  settings:
+    golines:
+      # Target maximum line length
+      # Default: 100
+      max-len: 80
+linters:
+  # exclude-rules:
+  #   - linters:
+  #       - errcheck
+  #       source: "^\\s*defer\\s+"
+  settings:
+    ireturn:
+      allow: [anon, error, empty, stdlib]
+    mnd:
+      ignored-numbers: ["2", "3", "0.5"]
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - asasalint
+    - asciicheck
+    - bidichk
+    - bodyclose
+    - canonicalheader
+    - containedctx
+    - contextcheck
+    - copyloopvar
+    - durationcheck
+    - errchkjson
+    - errname
+    - errorlint
+    - exhaustive
+    - exptostd
+    - fatcontext
+    - forcetypeassert
+    - funcorder
+    - ginkgolinter
+    - gocheckcompilerdirectives
+    - gochecksumtype
+    - gocritic
+    - gomoddirectives
+    - goprintffuncname
+    - gosec
+    - grouper
+    - iface
+    - importas
+    - inamedparam
+    - intrange
+    - lll
+    - loggercheck
+    - makezero
+    - mirror
+    - nestif
+    - nilerr
+    - nilnesserr
+    - nilnil
+    - noctx
+    - nosprintfhostport
+    # - perfsprint
+    - prealloc
+    - predeclared
+    - promlinter
+    - protogetter
+    - reassign
+    - recvcheck
+    # - revive
+    - rowserrcheck
+    - sloglint
+    - spancheck
+    - sqlclosecheck
+    - tagalign
+    - tagliatelle
+    - testifylint
+    - testpackage
+    - unconvert
+    - unparam
+    - usestdlibvars
+    - usetesting
+    - wastedassign
+    - whitespace
+    # - wrapcheck
+    - zerologlint
+  disable:
+    - unused
+    - contextcheck
+    - tparallel
+    - dupword
+

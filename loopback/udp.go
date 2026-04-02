@@ -116,6 +116,11 @@ type loopbackUDPConn struct {
 
 	readDeadline  time.Time
 	writeDeadline time.Time
+
+	// directSend is used for PipeUDP() to send directly to paired connection
+	// without going through registry lookup
+	directSend  chan loopbackUDPPacket
+	peerCloseCh chan struct{}
 }
 
 // newLoopbackUDPConn creates a new UDP connection and registers it with the given registry.
@@ -148,7 +153,9 @@ func (c *loopbackUDPConn) Close() error {
 		defer c.mu.Unlock()
 		if !c.closed {
 			c.closed = true
-			c.reg.unreg(c)
+			if c.reg != nil {
+				c.reg.unreg(c)
+			}
 			close(c.in)
 			close(c.closeCh)
 		}
@@ -384,7 +391,8 @@ func (luc *loopbackUDPConn) WriteMsgUDPAddrPort(
 }
 
 // sendTo sends a UDP packet to the specified address.
-// It looks up the destination connection in the registry and queues the packet.
+// If directSend is set (for PipeUDP()), it sends directly to the paired connection.
+// Otherwise, it looks up the destination connection in the registry and queues the packet.
 // The method respects the write deadline if set.
 func (c *loopbackUDPConn) sendTo(
 	addr net.Addr,
@@ -392,6 +400,37 @@ func (c *loopbackUDPConn) sendTo(
 	wd time.Time,
 ) error {
 	pkg.srcAddr = c.laddr
+
+	// Use direct send for PipeUDP() connections
+	if c.directSend != nil {
+		// Check if peer is closed before attempting to send
+		select {
+		case <-c.peerCloseCh:
+			return ge.ConnClosed("write", c.laddr.Network(), c.laddr, c.raddr)
+		default:
+		}
+
+		var timer <-chan time.Time
+		if !wd.IsZero() {
+			timer = timerForDeadline(wd)
+		}
+
+		select {
+		case c.directSend <- pkg:
+			return nil
+		case <-c.peerCloseCh:
+			return ge.ConnClosed("write", c.laddr.Network(), c.laddr, c.raddr)
+		case <-timer:
+			return &net.OpError{
+				Op:  "write",
+				Net: "memudp",
+				Err: errors.New("i/o timeout"),
+			}
+		case <-c.closeCh:
+			return ge.ConnClosed("write", c.laddr.Network(), c.laddr, c.raddr)
+		}
+	}
+
 	dst := c.reg.lookup(addr)
 	if dst == nil {
 		return &net.OpError{
@@ -420,4 +459,47 @@ func (c *loopbackUDPConn) sendTo(
 	case <-c.closeCh:
 		return ge.ConnClosed("write", c.laddr.Network(), c.laddr, c.raddr)
 	}
+}
+
+// PipeUDP creates a pair of connected loopbackUDPConn that communicate
+// via buffered channels. The connections are set up to send packets to
+// each other directly without using actual network sockets or registry lookup.
+// This is analogous to net.Pipe() but for UDP-style packet communication.
+func PipeUDP() (conn1, conn2 gonnect.UDPConn) {
+	// Create two channels for bidirectional communication
+	ch1to2 := make(chan loopbackUDPPacket, 1024)
+	ch2to1 := make(chan loopbackUDPPacket, 1024)
+	closeCh1 := make(chan struct{})
+	closeCh2 := make(chan struct{})
+
+	addr1 := &helpers.NetAddr{
+		Net:  "udp",
+		Addr: "pipe:conn1",
+	}
+	addr2 := &helpers.NetAddr{
+		Net:  "udp",
+		Addr: "pipe:conn2",
+	}
+
+	// conn1 sends to conn2 via ch1to2, receives from conn2 via ch2to1
+	conn1 = &loopbackUDPConn{
+		laddr:       addr1,
+		raddr:       addr2,
+		in:          ch2to1,
+		closeCh:     closeCh1,
+		directSend:  ch1to2,
+		peerCloseCh: closeCh2,
+	}
+
+	// conn2 sends to conn1 via ch2to1, receives from conn1 via ch1to2
+	conn2 = &loopbackUDPConn{
+		laddr:       addr2,
+		raddr:       addr1,
+		in:          ch1to2,
+		closeCh:     closeCh2,
+		directSend:  ch2to1,
+		peerCloseCh: closeCh1,
+	}
+
+	return conn1, conn2
 }

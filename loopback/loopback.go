@@ -416,11 +416,11 @@ func (ln *LoopbackNetwork) DialTCP(
 	}
 
 	serverPipe, clientPipe := net.Pipe()
-	serverConn := &LoopbackTCPConn{
+	serverConn := &loopbackTCPConn{
 		Conn:  serverPipe,
 		Laddr: serverAddr,
 	}
-	clientConn := &LoopbackTCPConn{
+	clientConn := &loopbackTCPConn{
 		Conn:  clientPipe,
 		Raddr: serverAddr,
 	}

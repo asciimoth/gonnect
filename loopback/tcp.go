@@ -14,8 +14,8 @@ import (
 )
 
 var (
-	_ gonnect.TCPConn     = &LoopbackTCPConn{}
-	_ net.Conn            = &LoopbackTCPConn{}
+	_ gonnect.TCPConn     = &loopbackTCPConn{}
+	_ net.Conn            = &loopbackTCPConn{}
 	_ gonnect.TCPListener = &loopbackTCPListener{}
 )
 
@@ -97,7 +97,7 @@ func (r *loopbackTCPRegistry) UnregListener(listener *loopbackTCPListener) {
 // Returns an error if the port is already in use.
 func (r *loopbackTCPRegistry) RegConn(
 	port *uint16,
-	conn *LoopbackTCPConn,
+	conn *loopbackTCPConn,
 ) (err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -117,7 +117,7 @@ func (r *loopbackTCPRegistry) RegConn(
 
 // UnregConn unregisters a TCP connection from the registry.
 // It frees the allocated port associated with the connection.
-func (r *loopbackTCPRegistry) UnregConn(conn *LoopbackTCPConn) {
+func (r *loopbackTCPRegistry) UnregConn(conn *loopbackTCPConn) {
 	if r == nil || conn == nil {
 		return
 	}
@@ -150,7 +150,7 @@ type loopbackTCPListener struct {
 	reg     *loopbackTCPRegistry
 	Laddr   net.Addr
 	Port    uint16
-	acceptQ chan *LoopbackTCPConn
+	acceptQ chan *loopbackTCPConn
 	closed  chan struct{}
 	closeMu sync.Mutex
 
@@ -166,7 +166,7 @@ func newLoopbackTCPListener(
 ) (*loopbackTCPListener, error) {
 	listener := &loopbackTCPListener{
 		reg:     reg,
-		acceptQ: make(chan *LoopbackTCPConn, runtime.NumCPU()),
+		acceptQ: make(chan *loopbackTCPConn, runtime.NumCPU()),
 		closed:  make(chan struct{}),
 	}
 	err := reg.RegListener(lport, listener)
@@ -175,7 +175,7 @@ func newLoopbackTCPListener(
 
 // NewConn queues an incoming connection for acceptance.
 // Returns an error if the listener has been closed.
-func (l *loopbackTCPListener) NewConn(c *LoopbackTCPConn) error {
+func (l *loopbackTCPListener) NewConn(c *loopbackTCPConn) error {
 	select {
 	case l.acceptQ <- c:
 		return nil
@@ -273,9 +273,9 @@ func (l *loopbackTCPListener) SetDeadline(t time.Time) error {
 	return nil
 }
 
-// LoopbackTCPConn is an in-memory TCP connection implemented using net.Pipe.
+// loopbackTCPConn is an in-memory TCP connection implemented using net.Pipe.
 // It wraps a net.Conn and adds loopback-specific address and port tracking.
-type LoopbackTCPConn struct {
+type loopbackTCPConn struct {
 	net.Conn
 	reg          *loopbackTCPRegistry
 	Laddr, Raddr net.Addr
@@ -286,7 +286,7 @@ type LoopbackTCPConn struct {
 
 // LocalAddr returns the local address of the connection.
 // If Laddr is set, it returns Laddr; otherwise it delegates to the underlying Conn.
-func (ltc *LoopbackTCPConn) LocalAddr() net.Addr {
+func (ltc *loopbackTCPConn) LocalAddr() net.Addr {
 	if ltc.Laddr == nil {
 		return ltc.Conn.LocalAddr()
 	}
@@ -295,7 +295,7 @@ func (ltc *LoopbackTCPConn) LocalAddr() net.Addr {
 
 // RemoteAddr returns the remote address of the connection.
 // If Raddr is set, it returns Raddr; otherwise it delegates to the underlying Conn.
-func (ltc *LoopbackTCPConn) RemoteAddr() net.Addr {
+func (ltc *loopbackTCPConn) RemoteAddr() net.Addr {
 	if ltc.Raddr == nil {
 		return ltc.Conn.RemoteAddr()
 	}
@@ -304,86 +304,120 @@ func (ltc *LoopbackTCPConn) RemoteAddr() net.Addr {
 
 // Close closes the connection and unregisters it from the registry.
 // It uses sync.Once to ensure the close operation is performed only once.
-func (ltc *LoopbackTCPConn) Close() error {
+func (ltc *loopbackTCPConn) Close() error {
 	var err error
 	ltc.closeOnce.Do(func() {
-		ltc.reg.UnregConn(ltc)
+		if ltc.reg != nil {
+			ltc.reg.UnregConn(ltc)
+		}
 		err = ltc.Conn.Close()
 	})
 	return err
 }
 
 // Read reads data from the connection with read deadline support.
-func (ltc *LoopbackTCPConn) Read(b []byte) (n int, err error) {
+func (ltc *loopbackTCPConn) Read(b []byte) (n int, err error) {
 	return ltc.Conn.Read(b)
 }
 
 // Write writes data to the connection with write deadline support.
-func (ltc *LoopbackTCPConn) Write(b []byte) (n int, err error) {
+func (ltc *loopbackTCPConn) Write(b []byte) (n int, err error) {
 	return ltc.Conn.Write(b)
 }
 
 // ReadFrom copies data from the provided reader to the connection.
 // It delegates to io.Copy.
-func (ltc *LoopbackTCPConn) ReadFrom(r io.Reader) (int64, error) {
+func (ltc *loopbackTCPConn) ReadFrom(r io.Reader) (int64, error) {
 	return io.Copy(ltc.Conn, r)
 }
 
 // WriteTo copies data from the connection to the provided writer.
 // It delegates to io.Copy.
-func (ltc *LoopbackTCPConn) WriteTo(w io.Writer) (int64, error) {
+func (ltc *loopbackTCPConn) WriteTo(w io.Writer) (int64, error) {
 	return io.Copy(w, ltc.Conn)
 }
 
 // SetKeepAlive is a no-op for loopback connections.
-func (ltc *LoopbackTCPConn) SetKeepAlive(_ bool) error { return nil }
+func (ltc *loopbackTCPConn) SetKeepAlive(_ bool) error { return nil }
 
 // SetKeepAliveConfig is a no-op for loopback connections.
-func (ltc *LoopbackTCPConn) SetKeepAliveConfig(
+func (ltc *loopbackTCPConn) SetKeepAliveConfig(
 	_ net.KeepAliveConfig,
 ) error {
 	return nil
 }
 
 // SetKeepAlivePeriod is a no-op for loopback connections.
-func (ltc *LoopbackTCPConn) SetKeepAlivePeriod(
+func (ltc *loopbackTCPConn) SetKeepAlivePeriod(
 	_ time.Duration,
 ) error {
 	return nil
 }
 
 // SetLinger is a no-op for loopback connections.
-func (ltc *LoopbackTCPConn) SetLinger(sec int) error { return nil }
+func (ltc *loopbackTCPConn) SetLinger(sec int) error { return nil }
 
 // SetNoDelay is a no-op for loopback connections.
-func (ltc *LoopbackTCPConn) SetNoDelay(_ bool) error { return nil }
+func (ltc *loopbackTCPConn) SetNoDelay(_ bool) error { return nil }
 
 // CloseRead closes the read side of the connection.
 // It delegates to Close.
-func (ltc *LoopbackTCPConn) CloseRead() error {
+func (ltc *loopbackTCPConn) CloseRead() error {
 	return ltc.Close()
 }
 
 // CloseWrite closes the write side of the connection.
 // It delegates to Close.
-func (ltc *LoopbackTCPConn) CloseWrite() error {
+func (ltc *loopbackTCPConn) CloseWrite() error {
 	return ltc.Close()
 }
 
 // SetReadDeadline sets the deadline for future Read calls.
 // A zero time value disables the deadline.
-func (ltc *LoopbackTCPConn) SetReadDeadline(t time.Time) error {
+func (ltc *loopbackTCPConn) SetReadDeadline(t time.Time) error {
 	return ltc.Conn.SetReadDeadline(t)
 }
 
 // SetWriteDeadline sets the deadline for future Write calls.
 // A zero time value disables the deadline.
-func (ltc *LoopbackTCPConn) SetWriteDeadline(t time.Time) error {
+func (ltc *loopbackTCPConn) SetWriteDeadline(t time.Time) error {
 	return ltc.Conn.SetWriteDeadline(t)
 }
 
 // SetDeadline sets both read and write deadlines.
 // A zero time value disables the deadline.
-func (ltc *LoopbackTCPConn) SetDeadline(t time.Time) error {
+func (ltc *loopbackTCPConn) SetDeadline(t time.Time) error {
 	return ltc.Conn.SetDeadline(t)
+}
+
+// PipeTCP creates a pair of connected loopbackTCPConn using net.Pipe.
+// The connections communicate directly through an in-memory pipe without
+// using actual network sockets. Both connections have their local and
+// remote addresses set to point to each other.
+// This is analogous to net.Pipe() but returns loopbackTCPConn instances.
+func PipeTCP() (client, server gonnect.TCPConn) {
+	serverPipe, clientPipe := net.Pipe()
+
+	serverAddr := &helpers.NetAddr{
+		Net:  "tcp",
+		Addr: "pipe:server",
+	}
+	clientAddr := &helpers.NetAddr{
+		Net:  "tcp",
+		Addr: "pipe:client",
+	}
+
+	serverConn := &loopbackTCPConn{
+		Conn:  serverPipe,
+		Laddr: serverAddr,
+		Raddr: clientAddr,
+	}
+
+	clientConn := &loopbackTCPConn{
+		Conn:  clientPipe,
+		Laddr: clientAddr,
+		Raddr: serverAddr,
+	}
+
+	return clientConn, serverConn
 }

@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/asciimoth/gonnect"
@@ -87,6 +88,8 @@ type Config struct {
 	FallbackDelay   time.Duration
 	KeepAlive       time.Duration
 	KeepAliveConfig net.KeepAliveConfig
+	Control         func(network, address string, c syscall.RawConn) error
+	ControlContext  func(ctx context.Context, network, address string, c syscall.RawConn) error
 }
 
 // Build creates and returns a new Network instance from the configuration.
@@ -115,6 +118,8 @@ func (c Config) Build() *Network {
 		FallbackDelay:   c.FallbackDelay,
 		KeepAlive:       c.KeepAlive,
 		KeepAliveConfig: c.KeepAliveConfig,
+		Control:         c.Control,
+		ControlContext:  c.ControlContext,
 	}
 	return n
 }

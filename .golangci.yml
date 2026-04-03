@@ -102,6 +102,8 @@ linters:
     - tparallel
     - dupword
   exclusions:
+    paths:
+      - _examples
     rules:
       - path: testing
         linters:

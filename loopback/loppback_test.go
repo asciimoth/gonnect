@@ -407,16 +407,28 @@ func TestPipeTCP(t *testing.T) {
 
 	// Verify addresses are set
 	if client.LocalAddr().String() != "pipe:client" {
-		t.Fatalf("expected client local addr 'pipe:client', got %v", client.LocalAddr())
+		t.Fatalf(
+			"expected client local addr 'pipe:client', got %v",
+			client.LocalAddr(),
+		)
 	}
 	if client.RemoteAddr().String() != "pipe:server" {
-		t.Fatalf("expected client remote addr 'pipe:server', got %v", client.RemoteAddr())
+		t.Fatalf(
+			"expected client remote addr 'pipe:server', got %v",
+			client.RemoteAddr(),
+		)
 	}
 	if server.LocalAddr().String() != "pipe:server" {
-		t.Fatalf("expected server local addr 'pipe:server', got %v", server.LocalAddr())
+		t.Fatalf(
+			"expected server local addr 'pipe:server', got %v",
+			server.LocalAddr(),
+		)
 	}
 	if server.RemoteAddr().String() != "pipe:client" {
-		t.Fatalf("expected server remote addr 'pipe:client', got %v", server.RemoteAddr())
+		t.Fatalf(
+			"expected server remote addr 'pipe:client', got %v",
+			server.RemoteAddr(),
+		)
 	}
 
 	// Test bidirectional communication using goroutines to avoid blocking
@@ -454,7 +466,11 @@ func TestPipeTCP(t *testing.T) {
 		t.Fatalf("expected %d bytes read, got %d", len(writeData), result.n)
 	}
 	if string(readBuf[:result.n]) != string(writeData) {
-		t.Fatalf("expected %q, got %q", string(writeData), string(readBuf[:result.n]))
+		t.Fatalf(
+			"expected %q, got %q",
+			string(writeData),
+			string(readBuf[:result.n]),
+		)
 	}
 
 	// Test reverse direction
@@ -481,7 +497,11 @@ func TestPipeTCP(t *testing.T) {
 		t.Fatalf("client read failed: %v", result2.err)
 	}
 	if string(readBuf[:result2.n]) != string(writeData) {
-		t.Fatalf("expected %q, got %q", string(writeData), string(readBuf[:result2.n]))
+		t.Fatalf(
+			"expected %q, got %q",
+			string(writeData),
+			string(readBuf[:result2.n]),
+		)
 	}
 }
 
@@ -539,16 +559,28 @@ func TestPipeUDP(t *testing.T) {
 
 	// Verify addresses are set
 	if conn1.LocalAddr().String() != "pipe:conn1" {
-		t.Fatalf("expected conn1 local addr 'pipe:conn1', got %v", conn1.LocalAddr())
+		t.Fatalf(
+			"expected conn1 local addr 'pipe:conn1', got %v",
+			conn1.LocalAddr(),
+		)
 	}
 	if conn1.RemoteAddr().String() != "pipe:conn2" {
-		t.Fatalf("expected conn1 remote addr 'pipe:conn2', got %v", conn1.RemoteAddr())
+		t.Fatalf(
+			"expected conn1 remote addr 'pipe:conn2', got %v",
+			conn1.RemoteAddr(),
+		)
 	}
 	if conn2.LocalAddr().String() != "pipe:conn2" {
-		t.Fatalf("expected conn2 local addr 'pipe:conn2', got %v", conn2.LocalAddr())
+		t.Fatalf(
+			"expected conn2 local addr 'pipe:conn2', got %v",
+			conn2.LocalAddr(),
+		)
 	}
 	if conn2.RemoteAddr().String() != "pipe:conn1" {
-		t.Fatalf("expected conn2 remote addr 'pipe:conn1', got %v", conn2.RemoteAddr())
+		t.Fatalf(
+			"expected conn2 remote addr 'pipe:conn1', got %v",
+			conn2.RemoteAddr(),
+		)
 	}
 
 	// Test conn1 -> conn2

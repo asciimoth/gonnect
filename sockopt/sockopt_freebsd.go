@@ -51,14 +51,23 @@ func GetBuffSize(a any) (recvSize, sendSize int, err error) {
 // SetRoutingMark sets the routing mark (SO_USER_COOKIE) on the socket.
 func SetRoutingMark(a any, mark int) error {
 	return Control(a, func(fd uintptr) {
-		_ = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_USER_COOKIE, mark)
+		_ = unix.SetsockoptInt(
+			int(fd),
+			unix.SOL_SOCKET,
+			unix.SO_USER_COOKIE,
+			mark,
+		)
 	})
 }
 
 // GetRoutingMark retrieves the routing mark (SO_USER_COOKIE) from the socket.
 func GetRoutingMark(a any) (mark int, err error) {
 	err1 := Control(a, func(fd uintptr) {
-		mark, err = unix.GetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_USER_COOKIE)
+		mark, err = unix.GetsockoptInt(
+			int(fd),
+			unix.SOL_SOCKET,
+			unix.SO_USER_COOKIE,
+		)
 	})
 	if err1 != nil {
 		err = err1

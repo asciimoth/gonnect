@@ -2,6 +2,7 @@
 package helpers
 
 import (
+	"context"
 	"errors"
 	"io"
 	"math"
@@ -19,6 +20,10 @@ import (
 var (
 	ip4nets = []string{"ip4", "tcp4", "udp4"}
 	ip6nets = []string{"ip6", "tcp6", "udp6"}
+)
+
+var (
+	ErrNoDefaultInterface = errors.New("failed to found default interface")
 )
 
 // NetAddr is a simple implementation of net.Addr using a network string and address string.
@@ -527,4 +532,72 @@ func CloseAll(closers []io.Closer) {
 	for _, c := range closers {
 		_ = c.Close()
 	}
+}
+
+type NetDefIface interface {
+	Dial(
+		ctx context.Context,
+		network, address string,
+	) (net.Conn, error)
+	Interfaces() ([]gonnect.NetworkInterface, error)
+}
+
+func DefaultInterface(
+	ctx context.Context,
+	n NetDefIface,
+) (gonnect.NetworkInterface, error) {
+	// Dirty hack but somehow it is a de-facto standard way to do it
+	var laddr *net.UDPAddr
+	addrs := []struct {
+		Net  string
+		Addr string
+	}{
+		// TODO: More addrs
+		{"udp4", "8.8.8.8:53"},
+		{"udp4", "8.8.4.4:53"},
+		{"udp4", "1.1.1.1:53"},
+		{"udp4", "1.0.0.1:53"},
+		{"udp4", "9.9.9.9:53"},
+
+		{"udp6", "2001:4860:4860::8888:53"},
+		{"udp6", "2001:4860:4860::8844:53"},
+		{"udp6", "2606:4700:4700::1111:53"},
+		{"udp6", "2606:4700:4700::1001:53"},
+		{"udp6", "2620:fe::fe:53"},
+		{"udp6", "2620:fe::9:53"},
+	}
+	for _, addr := range addrs {
+		c, err := n.Dial(ctx, addr.Net, addr.Addr)
+		if err != nil {
+			return nil, err
+		}
+		if l, ok := c.LocalAddr().(*net.UDPAddr); ok && l != nil {
+			laddr = l
+			_ = c.Close()
+			break
+		}
+		_ = c.Close()
+	}
+	if laddr == nil {
+		return nil, ErrNoDefaultInterface
+	}
+
+	ifaces, err := n.Interfaces()
+	if err != nil {
+		return nil, err
+	}
+	for _, iface := range ifaces {
+		addrs, err := iface.Addrs()
+		if err != nil {
+			return nil, err
+		}
+		for _, addr := range addrs {
+			if ip, ok := addr.(*net.IPNet); ok {
+				if ip.Contains(laddr.IP) {
+					return iface, nil
+				}
+			}
+		}
+	}
+	return nil, ErrNoDefaultInterface
 }

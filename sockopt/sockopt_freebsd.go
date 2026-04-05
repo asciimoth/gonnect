@@ -88,3 +88,9 @@ func SetBindToInterface(a any, i gonnect.NetworkInterface) error {
 func SetTCPTimeout(a any, timeout time.Duration) error {
 	return ErrUnsupported
 }
+
+// GetTCPRTT returns RTT for TCPConn.
+// This operation is not supported on this platform.
+func GetTCPRTT(a any) (rtt time.Duration, err error) {
+	return 0, ErrUnsupported
+}

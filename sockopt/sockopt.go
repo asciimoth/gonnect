@@ -53,6 +53,7 @@ type Support struct {
 	RoutingMark     bool // Routing mark (SO_MARK, SO_USER_COOKIE, etc.) support
 	BindToInterface bool // Bind to device/interface support
 	TCPUserTimeout  bool // TCP user timeout support
+	TCPRtt          bool // TCP Round Trip Time getter
 }
 
 // Control extracts the raw file descriptor from a network connection and

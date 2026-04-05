@@ -17,6 +17,7 @@ func CheckSupport() Support {
 		RoutingMark:     true,
 		BindToInterface: true,
 		TCPUserTimeout:  true,
+		TCPRtt:          true,
 	}
 }
 
@@ -102,4 +103,21 @@ func SetTCPTimeout(a any, timeout time.Duration) error {
 		return err1
 	}
 	return err2
+}
+
+// GetTCPRTT returns RTT for TCPConn.
+func GetTCPRTT(a any) (rtt time.Duration, err error) {
+	err1 := Control(a, func(fd uintptr) {
+		var info *unix.TCPInfo
+		info, err = unix.GetsockoptTCPInfo(
+			int(fd),
+			unix.IPPROTO_TCP,
+			unix.TCP_INFO,
+		)
+		rtt = time.Duration(info.Rtt) * time.Microsecond
+	})
+	if err1 != nil {
+		err = err1
+	}
+	return
 }

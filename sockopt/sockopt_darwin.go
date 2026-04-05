@@ -18,6 +18,7 @@ func CheckSupport() Support {
 		BufSize:         true,
 		RoutingMark:     false,
 		BindToInterface: true,
+		TCPRtt:          true,
 	}
 }
 
@@ -114,4 +115,19 @@ func SetBindToInterface(a any, i gonnect.NetworkInterface) error {
 // This operation is not supported on this platform.
 func SetTCPTimeout(a any, timeout time.Duration) error {
 	return ErrUnsupported
+}
+
+// GetTCPRTT returns RTT for TCPConn.
+func GetTCPRTT(a any) (rtt time.Duration, err error) {
+	err1 := Control(a, func(fd uintptr) {
+		var info *unix.TCPConnectionInfo
+		info, err = unix.GetsockoptTCPConnectionInfo(
+			int(fd), unix.IPPROTO_TCP, unix.TCP_CONNECTION_INFO,
+		)
+		rtt = time.Duration(info.Rttcur) * time.Millisecond
+	})
+	if err1 != nil {
+		err = err1
+	}
+	return
 }

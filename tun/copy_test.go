@@ -265,12 +265,7 @@ func TestCopyWithDifferentBatchSizes(t *testing.T) {
 			// Both ends of Pipe have same batch size, but we test the logic anyway
 			tun1, tun2 := tun.Pipe(tc.batch1, 1500)
 
-			var wg sync.WaitGroup
-			wg.Go(func() {
-				tun.Copy(tun1, tun2)
-			})
-
-			// Write some packets
+			// Write and read some packets directly (without Copy running)
 			for i := range 4 {
 				data := []byte{byte(i)}
 				_, err := tun1.Write([][]byte{data}, 0)
@@ -290,6 +285,34 @@ func TestCopyWithDifferentBatchSizes(t *testing.T) {
 				if buf[0] != byte(i) {
 					t.Errorf("Packet %d: got %d, want %d", i, buf[0], i)
 				}
+			}
+
+			// Now start Copy and verify it works
+			var wg sync.WaitGroup
+			wg.Go(func() {
+				tun.Copy(tun1, tun2)
+			})
+
+			// Write one more packet through Copy
+			data := []byte{0xFF}
+			_, err := tun1.Write([][]byte{data}, 0)
+			if err != nil {
+				t.Fatalf("Write() error: %v", err)
+			}
+
+			buf := make([]byte, 100)
+			sizes := make([]int, 1)
+			n, err := tun2.Read([][]byte{buf}, sizes, 0)
+			if err != nil {
+				t.Fatalf("Read() error: %v", err)
+			}
+			if n != 1 || sizes[0] != 1 || buf[0] != 0xFF {
+				t.Errorf(
+					"Read() through Copy returned n=%d, size=%d, data=%d",
+					n,
+					sizes[0],
+					buf[0],
+				)
 			}
 
 			tun1.Close()

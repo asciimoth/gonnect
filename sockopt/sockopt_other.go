@@ -2,7 +2,11 @@
 
 package sockopt
 
-import "github.com/asciimoth/gonnect"
+import (
+	"time"
+
+	"github.com/asciimoth/gonnect"
+)
 
 // CheckSupport returns the set of supported socket options on this platform.
 // This fallback implementation indicates no socket options are supported
@@ -42,5 +46,11 @@ func GetRoutingMark(a any) (mark int, err error) {
 // SetBindToInterface binds the socket to a specific network interface.
 // This operation is not supported on this platform.
 func SetBindToInterface(a any, i gonnect.NetworkInterface) error {
+	return ErrUnsupported
+}
+
+// SetTCPTimeout sets the TCP user timeout.
+// This operation is not supported on this platform.
+func SetTCPTimeout(a any, timeout time.Duration) error {
 	return ErrUnsupported
 }

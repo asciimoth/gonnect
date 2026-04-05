@@ -3,6 +3,8 @@
 package sockopt
 
 import (
+	"time"
+
 	"github.com/asciimoth/gonnect"
 	"golang.org/x/sys/unix"
 )
@@ -62,5 +64,11 @@ func GetRoutingMark(a any) (mark int, err error) {
 // SetBindToInterface binds the socket to a specific network interface.
 // This operation is not supported on generic Unix systems.
 func SetBindToInterface(a any, i gonnect.NetworkInterface) error {
+	return ErrUnsupported
+}
+
+// SetTCPTimeout sets the TCP user timeout.
+// This operation is not supported on this platform.
+func SetTCPTimeout(a any, timeout time.Duration) error {
 	return ErrUnsupported
 }

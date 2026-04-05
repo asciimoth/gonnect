@@ -3,6 +3,8 @@
 package sockopt
 
 import (
+	"time"
+
 	"github.com/asciimoth/gonnect"
 	"golang.org/x/sys/unix"
 )
@@ -14,6 +16,7 @@ func CheckSupport() Support {
 		BufSize:         true,
 		RoutingMark:     true,
 		BindToInterface: true,
+		TCPUserTimeout:  true,
 	}
 }
 
@@ -77,6 +80,23 @@ func SetBindToInterface(a any, i gonnect.NetworkInterface) error {
 	var err2 error
 	err1 := Control(a, func(fd uintptr) {
 		err2 = unix.BindToDevice(int(fd), i.Name())
+	})
+	if err1 != nil {
+		return err1
+	}
+	return err2
+}
+
+// SetTCPTimeout sets the TCP_USER_TIMEOUT option on the given file descriptor.
+func SetTCPTimeout(a any, timeout time.Duration) error {
+	var err2 error
+	err1 := Control(a, func(fd uintptr) {
+		err2 = unix.SetsockoptInt(
+			int(fd),
+			unix.SOL_TCP,
+			unix.TCP_USER_TIMEOUT,
+			int(timeout/time.Millisecond),
+		)
 	})
 	if err1 != nil {
 		return err1

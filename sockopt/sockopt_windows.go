@@ -5,6 +5,7 @@ package sockopt
 import (
 	"math/bits"
 	"net"
+	"time"
 
 	"github.com/asciimoth/gonnect"
 	"github.com/asciimoth/gonnect/helpers"
@@ -131,4 +132,10 @@ func SetBindToInterface(a any, i gonnect.NetworkInterface) error {
 	}
 
 	return err2
+}
+
+// SetTCPTimeout sets the TCP user timeout.
+// This operation is not supported on this platform.
+func SetTCPTimeout(a any, timeout time.Duration) error {
+	return ErrUnsupported
 }

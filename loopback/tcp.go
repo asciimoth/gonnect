@@ -17,6 +17,8 @@ var (
 	_ gonnect.TCPConn     = &loopbackTCPConn{}
 	_ net.Conn            = &loopbackTCPConn{}
 	_ gonnect.TCPListener = &loopbackTCPListener{}
+	_ io.Closer           = &loopbackTCPListener{}
+	_ io.Closer           = &loopbackTCPConn{}
 )
 
 // loopbackTCPRegistry manages TCP listeners and connections for a specific
@@ -156,6 +158,9 @@ type loopbackTCPListener struct {
 
 	deadlineMu sync.Mutex
 	deadline   time.Time
+
+	// cb is the callback invoked on events.
+	cb *gonnect.Callbacks
 }
 
 // newLoopbackTCPListener creates a new TCP listener and registers it with the given registry.
@@ -196,6 +201,9 @@ func (l *loopbackTCPListener) Close() error {
 	select {
 	case <-l.closed:
 	default:
+		if l.cb != nil {
+			l.cb.RunBeforeClose()
+		}
 		l.reg.UnregListener(l)
 		close(l.closed)
 		// drain acceptQ to avoid leaks
@@ -239,6 +247,15 @@ func (l *loopbackTCPListener) AcceptTCP() (gonnect.TCPConn, error) {
 		}
 		c.Laddr = l.Laddr
 		c.Port = l.Port
+		if l.cb != nil {
+			var wrapped gonnect.TCPConn
+			var err error
+			wrapped, err = l.cb.RunOnAcceptTCP(c)
+			if err != nil {
+				return nil, err
+			}
+			return wrapped, nil
+		}
 		return c, nil
 	case <-l.closed:
 		if timer != nil {
@@ -282,6 +299,9 @@ type loopbackTCPConn struct {
 	Port         uint16
 
 	closeOnce sync.Once
+
+	// cb is the callback invoked on events.
+	cb *gonnect.Callbacks
 }
 
 // LocalAddr returns the local address of the connection.
@@ -307,6 +327,9 @@ func (ltc *loopbackTCPConn) RemoteAddr() net.Addr {
 func (ltc *loopbackTCPConn) Close() error {
 	var err error
 	ltc.closeOnce.Do(func() {
+		if ltc.cb != nil {
+			ltc.cb.RunBeforeClose()
+		}
 		if ltc.reg != nil {
 			ltc.reg.UnregConn(ltc)
 		}

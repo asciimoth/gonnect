@@ -40,6 +40,12 @@ func TestNativeNetworkUdpPingPong(t *testing.T) {
 	gt.RunUdpPingPongForNetworks(t, pair, pair)
 }
 
+func TestLoopbackNetwork_Stoppable(t *testing.T) {
+	gt.RunStoppableNetworkTests(t, func() gt.UpDownNetwork {
+		return loopback.NewLoopbackNetwok()
+	}, "127.0.0.1:0")
+}
+
 func TestLoopbackTCPListenerDeadline(t *testing.T) {
 	network := loopback.NewLoopbackNetwok()
 	listener, err := network.ListenTCP(t.Context(), "tcp", "127.0.0.1:0")

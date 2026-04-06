@@ -8,6 +8,7 @@ package sockopt
 
 import (
 	"errors"
+	"strings"
 
 	"github.com/asciimoth/gonnect/helpers"
 )
@@ -37,11 +38,15 @@ const NOFD = -1
 // on the current platform or for the given socket type.
 var ErrUnsupported = errors.New("option unsupported")
 
-// IgnoreUnsupported returns nil if the error is ErrUnsupported, otherwise
-// returns the original error. This is useful for optional socket options
+// IgnoreUnsupported returns nil if the error is ErrUnsupported
+// or contains "not supported", otherwise returns the original error.
+// This is useful for optional socket options
 // where unsupported platforms should be silently skipped.
 func IgnoreUnsupported(err error) error {
 	if errors.Is(err, ErrUnsupported) {
+		return nil
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "not supported") {
 		return nil
 	}
 	return err

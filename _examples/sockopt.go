@@ -27,4 +27,9 @@ func main() {
 	fmt.Println(sockopt.GetRoutingMark(l))
 	fmt.Println(sockopt.SetRoutingMark(l, 42))
 	fmt.Println(sockopt.GetRoutingMark(l))
+
+	fmt.Println("Unsupported operation:")
+	rtt, err := sockopt.GetTCPRTT(l)
+	fmt.Println(rtt, err)
+	fmt.Println(rtt, sockopt.IgnoreUnsupported(err))
 }

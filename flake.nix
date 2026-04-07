@@ -1,5 +1,5 @@
 {
-  description = "Most complete and featured socks library for go";
+  description = "Collection of network helper functions and common types";
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
     flake-utils = {

@@ -2,6 +2,7 @@
 <img src="./gonnect.svg" width="150" align="center">
 </p>
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/asciimoth/gonnect.svg)](https://pkg.go.dev/github.com/asciimoth/gonnect)
 # Gonnect
 
 **Gonnect** is a collection of network helper functions and common types that

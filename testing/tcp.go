@@ -208,7 +208,7 @@ func RunTcpPingPongForNetworks(t *testing.T, a, b NetAddrPair) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	defer lnA.Close()
+	defer lnB.Close()
 
 	dialA := func(addr net.Addr) (net.Conn, error) {
 		return a.Network.Dial(ctx, addr.Network(), addr.String())

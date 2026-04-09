@@ -227,7 +227,7 @@ func expectInterfaceNotFound() func(error) error {
 		}
 
 		return fmt.Errorf(
-			"expected interface-not-found error (substring or common errno or net.OpError), got: %T: %w",
+			"expected interface-not-found error (substring or common errno or net.OpError), got: %T: %v",
 			err,
 			err,
 		)
@@ -255,7 +255,7 @@ func expectInterfacesSystemErr() func(error) error {
 			return nil
 		}
 		return fmt.Errorf(
-			"unexpected error kind for Interfaces/InterfaceAddrs: %T: %w",
+			"unexpected error kind for Interfaces/InterfaceAddrs: %T: %v",
 			err,
 			err,
 		)

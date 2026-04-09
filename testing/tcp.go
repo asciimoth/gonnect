@@ -46,7 +46,7 @@ func RunTCPPingPongTest(t *testing.T, ln net.Listener, dial DialFunc) {
 			conn, err := ln.Accept()
 			if err != nil {
 				// if accept fails, report and continue trying to accept remaining connections
-				serverResults <- fmt.Errorf("accept #%d: %w", c, err)
+				serverResults <- fmt.Errorf("accept #%d: %v", c, err)
 				continue
 			}
 
@@ -66,7 +66,7 @@ func RunTCPPingPongTest(t *testing.T, ln net.Listener, dial DialFunc) {
 				for i := range 10 {
 					line, err := r.ReadString('\n')
 					if err != nil {
-						serverResults <- fmt.Errorf("server #%d read #%d: %w", idx, i, err)
+						serverResults <- fmt.Errorf("server #%d read #%d: %v", idx, i, err)
 						return
 					}
 					line = strings.TrimSpace(line)
@@ -78,11 +78,11 @@ func RunTCPPingPongTest(t *testing.T, ln net.Listener, dial DialFunc) {
 
 					_, err = fmt.Fprintf(w, "pong %d\n", i)
 					if err != nil {
-						serverResults <- fmt.Errorf("server #%d write #%d: %w", idx, i, err)
+						serverResults <- fmt.Errorf("server #%d write #%d: %v", idx, i, err)
 						return
 					}
 					if err := w.Flush(); err != nil {
-						serverResults <- fmt.Errorf("server #%d flush #%d: %w", idx, i, err)
+						serverResults <- fmt.Errorf("server #%d flush #%d: %v", idx, i, err)
 						return
 					}
 				}
@@ -110,7 +110,7 @@ func RunTCPPingPongTest(t *testing.T, ln net.Listener, dial DialFunc) {
 		go func(idx int) {
 			conn, err := dial(addr)
 			if err != nil {
-				clientResults <- fmt.Errorf("client #%d dial: %w", idx, err)
+				clientResults <- fmt.Errorf("client #%d dial: %v", idx, err)
 				return
 			}
 			// ensure connection closed by this goroutine
@@ -127,17 +127,17 @@ func RunTCPPingPongTest(t *testing.T, ln net.Listener, dial DialFunc) {
 			for i := range 10 {
 				_, err := fmt.Fprintf(cw, "ping %d\n", i)
 				if err != nil {
-					clientResults <- fmt.Errorf("client #%d write ping %d: %w", idx, i, err)
+					clientResults <- fmt.Errorf("client #%d write ping %d: %v", idx, i, err)
 					return
 				}
 				if err := cw.Flush(); err != nil {
-					clientResults <- fmt.Errorf("client #%d flush ping %d: %w", idx, i, err)
+					clientResults <- fmt.Errorf("client #%d flush ping %d: %v", idx, i, err)
 					return
 				}
 
 				line, err := cr.ReadString('\n')
 				if err != nil {
-					clientResults <- fmt.Errorf("client #%d read pong %d: %w", idx, i, err)
+					clientResults <- fmt.Errorf("client #%d read pong %d: %v", idx, i, err)
 					return
 				}
 				line = strings.TrimSpace(line)
@@ -150,7 +150,7 @@ func RunTCPPingPongTest(t *testing.T, ln net.Listener, dial DialFunc) {
 				// after receiving pong 9, close and finish
 				if i == 9 {
 					if err := conn.Close(); err != nil {
-						clientResults <- fmt.Errorf("client #%d close: %w", idx, err)
+						clientResults <- fmt.Errorf("client #%d close: %v", idx, err)
 						return
 					}
 					break

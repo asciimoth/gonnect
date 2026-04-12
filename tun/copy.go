@@ -13,28 +13,18 @@ import (
 func CopyOffset(a, b Tun, offset int) error {
 	errCh := make(chan error, 2)
 	var wg sync.WaitGroup
-
-	// Copy from a to b
 	wg.Go(func() {
-		defer a.Close() //nolint errcheck
+		defer a.Close() // nolint
 		errCh <- copyOneWay(a, b, offset)
 	})
-
-	// Copy from b to a
 	wg.Go(func() {
-		defer b.Close() //nolint errcheck
+		defer b.Close() // nolint
 		errCh <- copyOneWay(b, a, offset)
 	})
-
-	// Wait for both directions to complete
 	wg.Wait()
 	close(errCh)
-
-	// Close both Tuns (doublecheck)
 	_ = a.Close()
 	_ = b.Close()
-
-	// Return the first non-nil error (if any)
 	for err := range errCh {
 		if err != nil {
 			return err
@@ -63,52 +53,48 @@ func copyOneWay(src, dst Tun, offset int) error {
 		batchSize = 1
 	}
 
-	// Determine buffer size based on MTU
 	mtu, err := src.MTU()
 	if err != nil {
-		mtu = 1500 // default MTU
+		mtu = 1500
 	}
 	if dstMTU, err := dst.MTU(); err == nil && dstMTU > mtu {
 		mtu = dstMTU
 	}
 
-	// Allocate batch buffers
+	// Allocate buffers with room for the offset
 	bufs := make([][]byte, batchSize)
 	sizes := make([]int, batchSize)
 	for i := range bufs {
 		bufs[i] = make([]byte, mtu+offset)
 	}
 
-	// Pre-allocate write buffers to avoid allocations in the loop
-	writeBufs := make([][]byte, batchSize)
 	dataBufs := make([][]byte, batchSize)
+	writeBufs := make([][]byte, batchSize)
 	for i := range dataBufs {
 		dataBufs[i] = make([]byte, mtu+offset)
 	}
 
 	for {
-		// Read a batch of packets from source
 		n, err := src.Read(bufs, sizes, offset)
 		if err != nil {
 			return err
 		}
-
 		if n == 0 {
 			continue
 		}
 
-		// Prepare buffers for writing (only the packets we read)
 		for i := range n {
-			// Copy data to pre-allocated buffer to avoid race conditions
+			// Copy from read buffer (at offset) to write buffer (at offset)
 			copy(
 				dataBufs[i][offset:offset+sizes[i]],
 				bufs[i][offset:offset+sizes[i]],
 			)
-			writeBufs[i] = dataBufs[i][offset : offset+sizes[i]]
+			// Slice to include the offset region so dst.Write can access data at offset
+			writeBufs[i] = dataBufs[i][:offset+sizes[i]]
 		}
 
-		// Write the batch to destination, handling partial writes
 		for written := 0; written < n; {
+			// Pass the full slice (including offset region) to dst.Write
 			wn, err := dst.Write(writeBufs[written:n], offset)
 			if err != nil {
 				return err

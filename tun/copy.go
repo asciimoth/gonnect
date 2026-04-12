@@ -4,26 +4,26 @@ import (
 	"sync"
 )
 
-// Copy copies packets bidirectionally between two Tun implementations.
+// CopyOffset copies packets bidirectionally between two Tun implementations
+// with an explicit offset.
 // It uses the batch nature of the Tun interface for optimal performance.
-// Copy blocks until one of the Tuns is closed or encounters an error,
+// CopyOffset blocks until one of the Tuns is closed or encounters an error,
 // then closes both Tuns and returns the first error encountered (if any).
-func Copy(a, b Tun) error {
+// The offset parameter specifies the starting position in the buffers for read/write operations.
+func CopyOffset(a, b Tun, offset int) error {
 	errCh := make(chan error, 2)
 	var wg sync.WaitGroup
 
 	// Copy from a to b
 	wg.Go(func() {
 		defer a.Close() //nolint errcheck
-		defer a.Close() //nolint errcheck
-		errCh <- copyOneWay(a, b)
+		errCh <- copyOneWay(a, b, offset)
 	})
 
 	// Copy from b to a
 	wg.Go(func() {
-		defer a.Close() //nolint errcheck
-		defer a.Close() //nolint errcheck
-		errCh <- copyOneWay(b, a)
+		defer b.Close() //nolint errcheck
+		errCh <- copyOneWay(b, a, offset)
 	})
 
 	// Wait for both directions to complete
@@ -43,9 +43,18 @@ func Copy(a, b Tun) error {
 	return nil
 }
 
+// Copy copies packets bidirectionally between two Tun implementations.
+// It uses the batch nature of the Tun interface for optimal performance.
+// Copy blocks until one of the Tuns is closed or encounters an error,
+// then closes both Tuns and returns the first error encountered (if any).
+// This is a convenience wrapper around CopyOffset with offset=0.
+func Copy(a, b Tun) error {
+	return CopyOffset(a, b, 0)
+}
+
 // copyOneWay copies packets from src to dst using batch operations.
 // It returns when src is closed or an error occurs.
-func copyOneWay(src, dst Tun) error {
+func copyOneWay(src, dst Tun, offset int) error {
 	batchSize := src.BatchSize()
 	if dstBatch := dst.BatchSize(); dstBatch < batchSize {
 		batchSize = dstBatch
@@ -79,7 +88,7 @@ func copyOneWay(src, dst Tun) error {
 
 	for {
 		// Read a batch of packets from source
-		n, err := src.Read(bufs, sizes, 0)
+		n, err := src.Read(bufs, sizes, offset)
 		if err != nil {
 			return err
 		}
@@ -97,7 +106,7 @@ func copyOneWay(src, dst Tun) error {
 
 		// Write the batch to destination, handling partial writes
 		for written := 0; written < n; {
-			wn, err := dst.Write(writeBufs[written:n], 0)
+			wn, err := dst.Write(writeBufs[written:n], offset)
 			if err != nil {
 				return err
 			}

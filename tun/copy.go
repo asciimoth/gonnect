@@ -76,14 +76,14 @@ func copyOneWay(src, dst Tun, offset int) error {
 	bufs := make([][]byte, batchSize)
 	sizes := make([]int, batchSize)
 	for i := range bufs {
-		bufs[i] = make([]byte, mtu)
+		bufs[i] = make([]byte, mtu+offset)
 	}
 
 	// Pre-allocate write buffers to avoid allocations in the loop
 	writeBufs := make([][]byte, batchSize)
 	dataBufs := make([][]byte, batchSize)
 	for i := range dataBufs {
-		dataBufs[i] = make([]byte, mtu)
+		dataBufs[i] = make([]byte, mtu+offset)
 	}
 
 	for {
@@ -100,8 +100,11 @@ func copyOneWay(src, dst Tun, offset int) error {
 		// Prepare buffers for writing (only the packets we read)
 		for i := range n {
 			// Copy data to pre-allocated buffer to avoid race conditions
-			copy(dataBufs[i][:sizes[i]], bufs[i][:sizes[i]])
-			writeBufs[i] = dataBufs[i][:sizes[i]]
+			copy(
+				dataBufs[i][offset:offset+sizes[i]],
+				bufs[i][offset:offset+sizes[i]],
+			)
+			writeBufs[i] = dataBufs[i][offset : offset+sizes[i]]
 		}
 
 		// Write the batch to destination, handling partial writes

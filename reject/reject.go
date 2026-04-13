@@ -118,6 +118,13 @@ func (n *Network) ListenTCP(
 	return nil, listenError(network, laddr)
 }
 
+// PacketDial returns an appropriate error based on the network and address.
+func (n *Network) PacketDial(
+	ctx context.Context, network, address string,
+) (gonnect.PacketConn, error) {
+	return nil, dialError(network, address)
+}
+
 // DialUDP returns an appropriate error based on the network and address.
 func (n *Network) DialUDP(
 	ctx context.Context,

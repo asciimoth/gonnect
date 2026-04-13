@@ -235,6 +235,8 @@ type Network interface {
 		network, address string,
 	) (net.Listener, error)
 
+	PacketDial(ctx context.Context, network, address string) (PacketConn, error)
+
 	ListenPacket(
 		ctx context.Context,
 		network, address string,

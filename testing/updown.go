@@ -65,8 +65,8 @@ func RunStoppableNetworkTests(
 			_, err := nn.ListenTCP(ctx, "tcp", "127.0.0.1:0")
 			return err
 		})
-		try("DialUDP", func() error {
-			_, err := nn.DialUDP(ctx, "udp", "", "127.0.0.1:1")
+		try("PacketDial", func() error {
+			_, err := nn.PacketDial(ctx, "udp", "127.0.0.1:1")
 			return err
 		})
 		try("ListenUDP", func() error {

@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/asciimoth/gonnect"
 )
 
 const (
@@ -20,14 +22,9 @@ const (
 	testTimeout   = time.Duration(5 * time.Second)
 )
 
-type FullPacketConn interface {
-	net.PacketConn
-	net.Conn
-}
-
 // DialPacketFunc dials to the given listener address and returns a net.PacketConn.
 // The returned PacketConn should ideally be connected to the server address (so Write/Read work).
-type DialPacketFunc func(addr net.Addr) (FullPacketConn, error)
+type DialPacketFunc func(addr net.Addr) (gonnect.PacketConn, error)
 
 // RunUDPPingPongTest runs a ping-pong test over PacketConn (UDP-like semantics).
 // Client will use a single connected PacketConn and prefer Write/Read. If the returned PacketConn
@@ -40,7 +37,7 @@ type DialPacketFunc func(addr net.Addr) (FullPacketConn, error)
 //   - Server ignores out-of-order pings (seq > expected) and resends pongs for duplicates.
 func RunUDPPingPongTest(
 	t *testing.T,
-	pc FullPacketConn,
+	pc gonnect.PacketConn,
 	dial DialPacketFunc,
 	numClients int,
 	rounds int,
@@ -259,11 +256,10 @@ func RunUdpPingPongForNetworks(t *testing.T, a, b NetAddrPair) {
 	}
 	defer lnB.Close()
 
-	dialA := func(serverAddr net.Addr) (FullPacketConn, error) {
-		c, err := a.Network.DialUDP(
+	dialA := func(serverAddr net.Addr) (gonnect.PacketConn, error) {
+		c, err := a.Network.PacketDial(
 			ctx,
 			serverAddr.Network(),
-			"",
 			serverAddr.String(),
 		)
 		if err != nil {
@@ -272,11 +268,10 @@ func RunUdpPingPongForNetworks(t *testing.T, a, b NetAddrPair) {
 		return c, nil
 	}
 
-	dialB := func(serverAddr net.Addr) (FullPacketConn, error) {
-		c, err := b.Network.DialUDP(
+	dialB := func(serverAddr net.Addr) (gonnect.PacketConn, error) {
+		c, err := b.Network.PacketDial(
 			ctx,
 			serverAddr.Network(),
-			"",
 			serverAddr.String(),
 		)
 		if err != nil {

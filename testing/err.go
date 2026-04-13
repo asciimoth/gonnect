@@ -290,9 +290,9 @@ func RunNetworkErrorComplianceTests(t *testing.T, makeNetwork func() Network) {
 			expected: expectUnknownNetworkErrorWith("tcp5"),
 		},
 		{
-			name: "DialUDP unknown network",
+			name: "PacketDial unknown network",
 			got: func(n Network) error {
-				_, err := n.DialUDP(ctx, "udp5", "127.0.0.1:80", "127.0.0.1:80")
+				_, err := n.PacketDial(ctx, "udp5", "127.0.0.1:80")
 				return err
 			},
 			expected: expectUnknownNetworkErrorWith("udp5"),
@@ -320,20 +320,9 @@ func RunNetworkErrorComplianceTests(t *testing.T, makeNetwork func() Network) {
 			), // only check Addr field
 		},
 		{
-			name: "DialUDP malformed address (missing port)",
+			name: "PacketDial malformed address (missing port)",
 			got: func(n Network) error {
-				_, err := n.DialUDP(ctx, "udp", "127.0.0.1", "127.0.0.1")
-				return err
-			},
-			expected: expectAddrErrorWith(
-				"127.0.0.1",
-				"",
-			), // only check Addr field
-		},
-		{
-			name: "DialUDP malformed address (missing port)",
-			got: func(n Network) error {
-				_, err := n.DialUDP(ctx, "udp", "127.0.0.1", "127.0.0.1")
+				_, err := n.PacketDial(ctx, "udp", "127.0.0.1")
 				return err
 			},
 			expected: expectAddrErrorWith(
@@ -379,12 +368,11 @@ func RunNetworkErrorComplianceTests(t *testing.T, makeNetwork func() Network) {
 			),
 		},
 		{
-			name: "DialUDP host not found",
+			name: "PacketDial host not found",
 			got: func(n Network) error {
-				_, err := n.DialUDP(
+				_, err := n.PacketDial(
 					ctx,
 					"udp",
-					"127.0.0.1:",
 					"no-such-host.example.invalid:12345",
 				)
 				return err

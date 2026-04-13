@@ -574,6 +574,14 @@ func (n *Network) ListenTCP(
 	return listener, nil
 }
 
+// PacketDial establishes a UDP connection to the remote address using the specified network.
+// The returned PacketConn is wrapped with callbacks for automatic tracking.
+func (n *Network) PacketDial(
+	ctx context.Context, network, address string,
+) (gonnect.PacketConn, error) {
+	return n.DialUDP(ctx, network, "", address)
+}
+
 // DialUDP establishes a UDP connection to the remote address using the specified network.
 // If laddr is not empty, it is used as the local address for the connection.
 // The returned UDPConn is wrapped with callbacks for automatic tracking.

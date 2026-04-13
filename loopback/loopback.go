@@ -632,6 +632,14 @@ func (ln *LoopbackNetwork) DialTCP(
 	return clientConn, nil
 }
 
+// PacketDial establishes a UDP connection to the remote address using the specified network.
+// The returned PacketConn is wrapped with callbacks for automatic tracking.
+func (ln *LoopbackNetwork) PacketDial(
+	ctx context.Context, network, address string,
+) (gonnect.PacketConn, error) {
+	return ln.DialUDP(ctx, network, "", address)
+}
+
 // DialUDP establishes a UDP connection to the remote address using the specified network.
 // It accepts "udp", "udp4", or "udp6" as valid network types.
 // If laddr is not empty, it is used as the local address for the connection.

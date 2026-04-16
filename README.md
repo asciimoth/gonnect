@@ -15,9 +15,11 @@ I created it mostly for myself, but feel free to use it in your projects or
 There are some projects based on Gonnect or created for similar use cases. 
 You may find them useful too:
 
+- [gonnect-netstack](https://github.com/asciimoth/gonnect-netstack) - gVisor's netstack integration for the gonnect ecosystem 
+- [tuntap](https://github.com/asciimoth/tuntap) - Cross-platform TUN device library extracted from wireguard-go 
+- [socksgo](https://github.com/asciimoth/socksgo) – The most complete, compatible, feature-rich, and extensible SOCKS library for Go
 - [bufpool](https://github.com/asciimoth/bufpool) – Byte buffer pool interface and testing helpers
 - [putback](https://github.com/asciimoth/putback) – A minimal library that provides wrappers for common I/O interfaces, adding the ability to return read bytes back to the stream for subsequent reading
-- [socksgo](https://github.com/asciimoth/socksgo) – The most complete, compatible, feature-rich, and extensible SOCKS library for Go
 
 ## License
 Files in this repository are distributed under the CC0 license.  

@@ -26,12 +26,14 @@ type pipeTun struct {
 	mtu       int
 	events    chan Event
 	batchSize int
+
+	mwo, mro int
 }
 
 // Pipe creates two connected Tun implementations that are bound together.
 // Packets written to one Tun can be read from the other, similar to net.Pipe.
 // The returned Tun instances share a bidirectional channel-based connection.
-func Pipe(batch int, mtu int) (Tun, Tun) {
+func Pipe(batch int, mtu, mwo, mro int) (Tun, Tun) {
 	// Create channels for both directions
 	// chan1: tun1 writes (tx), tun2 reads (rx)
 	// chan2: tun2 writes (tx), tun1 reads (rx)
@@ -64,6 +66,9 @@ func Pipe(batch int, mtu int) (Tun, Tun) {
 	return tun1, tun2
 }
 
+func (p *pipeTun) MWO() int { return p.mwo }
+func (p *pipeTun) MRO() int { return p.mro }
+
 func (p *pipeTun) File() *os.File { return nil }
 
 func (p *pipeTun) Read(
@@ -71,6 +76,10 @@ func (p *pipeTun) Read(
 	sizes []int,
 	offset int,
 ) (n int, err error) {
+	if offset < p.mro {
+		return 0, errors.New("too small read offset")
+	}
+
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
@@ -106,6 +115,10 @@ func (p *pipeTun) Read(
 }
 
 func (p *pipeTun) Write(bufs [][]byte, offset int) (int, error) {
+	if offset < p.mwo {
+		return 0, errors.New("too small write offset")
+	}
+
 	if len(bufs) == 0 {
 		return 0, nil
 	}

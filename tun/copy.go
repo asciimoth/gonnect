@@ -4,22 +4,20 @@ import (
 	"sync"
 )
 
-// CopyOffset copies packets bidirectionally between two Tun implementations
-// with an explicit offset.
+// Copy copies packets bidirectionally between two Tun implementations.
 // It uses the batch nature of the Tun interface for optimal performance.
-// CopyOffset blocks until one of the Tuns is closed or encounters an error,
+// Copy blocks until one of the Tuns is closed or encounters an error,
 // then closes both Tuns and returns the first error encountered (if any).
-// The offset parameter specifies the starting position in the buffers for read/write operations.
-func CopyOffset(a, b Tun, offset int) error {
+func Copy(a, b Tun) error {
 	errCh := make(chan error, 2)
 	var wg sync.WaitGroup
 	wg.Go(func() {
 		defer a.Close() // nolint
-		errCh <- copyOneWay(a, b, offset)
+		errCh <- copyOneWay(a, b, max(a.MRO(), b.MWO()))
 	})
 	wg.Go(func() {
 		defer b.Close() // nolint
-		errCh <- copyOneWay(b, a, offset)
+		errCh <- copyOneWay(b, a, max(b.MRO(), a.MWO()))
 	})
 	wg.Wait()
 	close(errCh)
@@ -31,15 +29,6 @@ func CopyOffset(a, b Tun, offset int) error {
 		}
 	}
 	return nil
-}
-
-// Copy copies packets bidirectionally between two Tun implementations.
-// It uses the batch nature of the Tun interface for optimal performance.
-// Copy blocks until one of the Tuns is closed or encounters an error,
-// then closes both Tuns and returns the first error encountered (if any).
-// This is a convenience wrapper around CopyOffset with offset=0.
-func Copy(a, b Tun) error {
-	return CopyOffset(a, b, 0)
 }
 
 // copyOneWay copies packets from src to dst using batch operations.

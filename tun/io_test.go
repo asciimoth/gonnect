@@ -14,7 +14,7 @@ var _ io.ReadWriteCloser = (*tun.IO)(nil)
 func TestIOBasic(t *testing.T) {
 	t.Parallel()
 
-	tun1, tun2 := tun.Pipe(1, 1500)
+	tun1, tun2 := tun.Pipe(1, 1500, 0, 0)
 	defer tun1.Close()
 	defer tun2.Close()
 
@@ -32,7 +32,7 @@ func TestIOBasic(t *testing.T) {
 func TestIOReadWrite(t *testing.T) {
 	t.Parallel()
 
-	tun1, tun2 := tun.Pipe(1, 1500)
+	tun1, tun2 := tun.Pipe(1, 1500, 0, 0)
 	defer tun1.Close()
 	defer tun2.Close()
 
@@ -89,7 +89,7 @@ func TestIOReadWrite(t *testing.T) {
 func TestIOClose(t *testing.T) {
 	t.Parallel()
 
-	tun1, _ := tun.Pipe(1, 1500)
+	tun1, _ := tun.Pipe(1, 1500, 0, 0)
 	io1 := tun.NewIO(tun1)
 
 	// Close via IO
@@ -108,7 +108,7 @@ func TestIOClose(t *testing.T) {
 func TestIOReadOnClosed(t *testing.T) {
 	t.Parallel()
 
-	tun1, tun2 := tun.Pipe(1, 1500)
+	tun1, tun2 := tun.Pipe(1, 1500, 0, 0)
 	io1 := tun.NewIO(tun1)
 	io2 := tun.NewIO(tun2)
 
@@ -127,7 +127,7 @@ func TestIOReadOnClosed(t *testing.T) {
 func TestIOWriteOnClosed(t *testing.T) {
 	t.Parallel()
 
-	tun1, _ := tun.Pipe(1, 1500)
+	tun1, _ := tun.Pipe(1, 1500, 0, 0)
 	io1 := tun.NewIO(tun1)
 
 	io1.Close()
@@ -142,7 +142,7 @@ func TestIOWriteOnClosed(t *testing.T) {
 func TestIOReadEOF(t *testing.T) {
 	t.Parallel()
 
-	tun1, tun2 := tun.Pipe(1, 1500)
+	tun1, tun2 := tun.Pipe(1, 1500, 0, 0)
 	io1 := tun.NewIO(tun1)
 	io2 := tun.NewIO(tun2)
 
@@ -160,7 +160,7 @@ func TestIOReadEOF(t *testing.T) {
 func TestIOWriteZeroLength(t *testing.T) {
 	t.Parallel()
 
-	tun1, tun2 := tun.Pipe(1, 1500)
+	tun1, tun2 := tun.Pipe(1, 1500, 0, 0)
 	io1 := tun.NewIO(tun1)
 	io2 := tun.NewIO(tun2)
 	defer io1.Close()
@@ -180,7 +180,7 @@ func TestIOLargePacket(t *testing.T) {
 	t.Parallel()
 
 	const mtu = 9000
-	tun1, tun2 := tun.Pipe(1, mtu)
+	tun1, tun2 := tun.Pipe(1, mtu, 0, 0)
 	io1 := tun.NewIO(tun1)
 	io2 := tun.NewIO(tun2)
 	defer io1.Close()
@@ -230,34 +230,50 @@ func TestIOWithDifferentBatchSizes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			tun1, tun2 := tun.Pipe(tc.batch, 1500)
-			io1 := tun.NewIO(tun1)
-			io2 := tun.NewIO(tun2)
-			defer io1.Close()
-			defer io2.Close()
+			for mwo := range 10 {
+				for mro := range 10 {
+					tun1, tun2 := tun.Pipe(tc.batch, 1500, mwo, mro)
+					io1 := tun.NewIO(tun1)
+					io2 := tun.NewIO(tun2)
+					defer io1.Close()
+					defer io2.Close()
 
-			// Write and read multiple packets
-			for i := range 10 {
-				data := []byte{byte(i), byte(i + 1), byte(i + 2)}
+					// Write and read multiple packets
+					for i := range 10 {
+						data := []byte{byte(i), byte(i + 1), byte(i + 2)}
 
-				n, err := io1.Write(data)
-				if err != nil {
-					t.Fatalf("IO.Write() error: %v", err)
-				}
-				if n != len(data) {
-					t.Errorf("IO.Write() returned n=%d, want %d", n, len(data))
-				}
+						n, err := io1.Write(data)
+						if err != nil {
+							t.Fatalf("IO.Write() error: %v", err)
+						}
+						if n != len(data) {
+							t.Errorf(
+								"IO.Write() returned n=%d, want %d",
+								n,
+								len(data),
+							)
+						}
 
-				buf := make([]byte, 100)
-				n, err = io2.Read(buf)
-				if err != nil {
-					t.Fatalf("IO.Read() error: %v", err)
-				}
-				if n != len(data) {
-					t.Errorf("IO.Read() returned n=%d, want %d", n, len(data))
-				}
-				if string(buf[:n]) != string(data) {
-					t.Errorf("Data mismatch: got %q, want %q", buf[:n], data)
+						buf := make([]byte, 100)
+						n, err = io2.Read(buf)
+						if err != nil {
+							t.Fatalf("IO.Read() error: %v", err)
+						}
+						if n != len(data) {
+							t.Errorf(
+								"IO.Read() returned n=%d, want %d",
+								n,
+								len(data),
+							)
+						}
+						if string(buf[:n]) != string(data) {
+							t.Errorf(
+								"Data mismatch: got %q, want %q",
+								buf[:n],
+								data,
+							)
+						}
+					}
 				}
 			}
 		})

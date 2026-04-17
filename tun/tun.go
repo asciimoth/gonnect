@@ -43,6 +43,15 @@ type Tun interface {
 	// each packet contained within the bufs slice.
 	Write(bufs [][]byte, offset int) (int, error)
 
+	// MWO stands for Minimal Write Offset.
+	// It is typically used by native tun implementations to reserver space for
+	// OS specific headers.
+	MWO() int
+
+	// MRO stands for Minimal Read Offset.
+	// It isn't used anywhere at the moment but added for future use.
+	MRO() int
+
 	// MTU returns the MTU of the Device.
 	MTU() (int, error)
 

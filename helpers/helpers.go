@@ -601,3 +601,15 @@ func DefaultInterface(
 	}
 	return nil, ErrNoDefaultInterface
 }
+
+// Drain reads all elements from c while there are some.
+// It doesnt. Close channel.
+func Drain[T any](c <-chan T) {
+	for {
+		select {
+		case <-c:
+		default:
+			return
+		}
+	}
+}

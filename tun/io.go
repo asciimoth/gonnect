@@ -2,6 +2,8 @@ package tun
 
 import (
 	"io"
+
+	"github.com/asciimoth/bufpool"
 )
 
 // Static type assertion
@@ -12,17 +14,17 @@ var _ io.ReadWriteCloser = (*IO)(nil)
 // io.ReadWriteCloser interface, handling one packet at a time.
 type IO struct {
 	Tun
-	buf    []byte
 	wo, ro int
+	pool   bufpool.Pool
 }
 
 // NewIO creates a new IO wrapper for the given Tun.
-func NewIO(tun Tun) *IO {
+func NewIO(tun Tun, pool bufpool.Pool) *IO {
 	return &IO{
-		Tun: tun,
-		buf: make([]byte, 0, tun.BatchSize()),
-		wo:  tun.MWO(),
-		ro:  tun.MRO(),
+		Tun:  tun,
+		wo:   tun.MWO(),
+		ro:   tun.MRO(),
+		pool: pool,
 	}
 }
 
@@ -35,15 +37,11 @@ func (r *IO) Read(p []byte) (int, error) {
 	// If there is a read offset, read into a temporary buffer that includes it,
 	// then copy the packet payload back into p.
 	if r.ro > 0 {
-		need := r.ro + len(p)
-		if cap(r.buf) < need {
-			r.buf = make([]byte, need)
-		} else {
-			r.buf = r.buf[:need]
-		}
+		buf := r.pool.Get(r.ro + len(p))
+		defer r.pool.Put(buf)
 
 		sizes := []int{1}
-		n, err := r.Tun.Read([][]byte{r.buf[r.ro:]}, sizes, 0)
+		n, err := r.Tun.Read([][]byte{buf}, sizes, r.ro)
 		if err != nil {
 			return 0, err
 		}
@@ -52,7 +50,7 @@ func (r *IO) Read(p []byte) (int, error) {
 		}
 
 		n = min(sizes[0], len(p))
-		copy(p, r.buf[r.ro:r.ro+n])
+		copy(p, buf[r.ro:r.ro+n])
 		return n, nil
 	}
 
@@ -75,16 +73,12 @@ func (r *IO) Write(p []byte) (int, error) {
 
 	// If there is a write offset, build a temporary packet with leading space.
 	if r.wo > 0 {
-		need := r.wo + len(p)
-		if cap(r.buf) < need {
-			r.buf = make([]byte, need)
-		} else {
-			r.buf = r.buf[:need]
-		}
+		buf := r.pool.Get(r.wo + len(p))
+		defer r.pool.Put(buf)
 
-		copy(r.buf[r.wo:], p)
+		copy(buf[r.wo:], p)
 
-		n, err := r.Tun.Write([][]byte{r.buf[r.wo:]}, 0)
+		n, err := r.Tun.Write([][]byte{buf}, r.wo)
 		if err != nil {
 			return 0, err
 		}

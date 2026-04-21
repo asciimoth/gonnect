@@ -2,12 +2,6 @@
 // network devices. It defines the Tun interface, which is compatible with
 // wireguard-go and similar projects, along with utility functions for I/O
 // adaptation, testing, and bidirectional packet copying.
-//
-// The package includes:
-//   - Tun: Core interface for reading/writing network packets in batches
-//   - IO: Adapter that wraps Tun to implement io.ReadWriteCloser for single-packet operations
-//   - Pipe: Creates paired connected Tun implementations for testing (similar to net.Pipe)
-//   - Copy: Bidirectional packet copying between two Tun implementations
 package tun
 
 import "os"

@@ -37,8 +37,8 @@ func (r *IO) Read(p []byte) (int, error) {
 	// If there is a read offset, read into a temporary buffer that includes it,
 	// then copy the packet payload back into p.
 	if r.ro > 0 {
-		buf := r.pool.Get(r.ro + len(p))
-		defer r.pool.Put(buf)
+		buf := bufpool.GetBuffer(r.pool, r.ro+len(p))
+		defer bufpool.PutBuffer(r.pool, buf)
 
 		sizes := []int{1}
 		n, err := r.Tun.Read([][]byte{buf}, sizes, r.ro)
@@ -73,8 +73,8 @@ func (r *IO) Write(p []byte) (int, error) {
 
 	// If there is a write offset, build a temporary packet with leading space.
 	if r.wo > 0 {
-		buf := r.pool.Get(r.wo + len(p))
-		defer r.pool.Put(buf)
+		buf := bufpool.GetBuffer(r.pool, r.wo+len(p))
+		defer bufpool.PutBuffer(r.pool, buf)
 
 		copy(buf[r.wo:], p)
 

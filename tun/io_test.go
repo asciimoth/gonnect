@@ -34,6 +34,24 @@ func TestIOBasic(t *testing.T) {
 	}
 }
 
+func TestIOBasicNilPool(t *testing.T) {
+	t.Parallel()
+
+	tun1, tun2 := tun.Pipe(1, 1500, 0, 0)
+	defer tun1.Close()
+	defer tun2.Close()
+
+	io1 := tun.NewIO(tun1, nil)
+	io2 := tun.NewIO(tun2, nil)
+	defer io1.Close()
+	defer io2.Close()
+
+	// Verify non-nil
+	if io1 == nil || io2 == nil {
+		t.Fatal("NewIO() returned nil")
+	}
+}
+
 func TestIOReadWrite(t *testing.T) {
 	t.Parallel()
 
@@ -98,53 +116,16 @@ func TestIOReadWrite(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			pool := bufpool.NewTestDebugPool(t)
-			defer pool.Close()
+		for i := range 2 {
+			t.Run(tt.name, func(t *testing.T) {
+				var pool bufpool.Pool
+				if i > 0 {
+					dpool := bufpool.NewTestDebugPool(t)
+					pool = dpool
+					defer dpool.Close()
+				}
 
-			tun1, tun2 := tun.Pipe(tt.batch, tt.mtu, tt.mwo, tt.mro)
-			defer tun1.Close()
-			defer tun2.Close()
-
-			io1 := tun.NewIO(tun1, pool)
-			io2 := tun.NewIO(tun2, pool)
-			defer io1.Close()
-			defer io2.Close()
-
-			resultCh := make(chan string, 3)
-
-			var wgWrite sync.WaitGroup
-			var wgRead sync.WaitGroup
-
-			wgWrite.Go(func() {
-				texToWriter(tt.orig, io1)
-			})
-			wgRead.Go(func() {
-				resultCh <- textFromReader(io2, 1024)
-			})
-
-			wgWrite.Wait()
-			io1.Close()
-			wgRead.Wait()
-
-			result := <-resultCh
-			if result != tt.exp {
-				t.Fatal(result)
-			}
-		})
-	}
-}
-
-func TestIOBiderectional(t *testing.T) {
-	t.Parallel()
-
-	for mwo := range 30 {
-		for mro := range 30 {
-			func() {
-				pool := bufpool.NewTestDebugPool(t)
-				defer pool.Close()
-
-				tun1, tun2 := tun.Pipe(1, 3, mwo, mro)
+				tun1, tun2 := tun.Pipe(tt.batch, tt.mtu, tt.mwo, tt.mro)
 				defer tun1.Close()
 				defer tun2.Close()
 
@@ -153,46 +134,95 @@ func TestIOBiderectional(t *testing.T) {
 				defer io1.Close()
 				defer io2.Close()
 
-				result1Ch := make(chan string, 2)
-				result2Ch := make(chan string, 2)
+				resultCh := make(chan string, 3)
 
 				var wgWrite sync.WaitGroup
 				var wgRead sync.WaitGroup
 
 				wgWrite.Go(func() {
-					texToWriter("abcdefghijklmn", io1)
-					texToWriter("opqrstuvwxyz", io1)
-				})
-				wgWrite.Go(func() {
-					texToWriter("ABCD", io2)
-					texToWriter("EFGH", io2)
-					texToWriter("IJKL", io2)
-					texToWriter("MNOP", io2)
-					texToWriter("QRST", io2)
-					texToWriter("UVWXYZ", io2)
-				})
-
-				wgRead.Go(func() {
-					result1Ch <- textFromReader(io2, 1024)
+					texToWriter(tt.orig, io1)
 				})
 				wgRead.Go(func() {
-					result2Ch <- textFromReader(io1, 1024)
+					resultCh <- textFromReader(io2, 1024)
 				})
 
 				wgWrite.Wait()
 				io1.Close()
 				wgRead.Wait()
 
-				result := <-result1Ch
-				if result != "abcdefghijklmnopqrstuvwxyz" {
+				result := <-resultCh
+				if result != tt.exp {
 					t.Fatal(result)
 				}
+			})
+		}
+	}
+}
 
-				result2 := <-result2Ch
-				if result2 != "ABCDEFGHIJKLMNOPQRSTUVWXYZ" {
-					t.Fatal(result2)
-				}
-			}()
+func TestIOBiderectional(t *testing.T) {
+	t.Parallel()
+
+	for mwo := range 30 {
+		for mro := range 30 {
+			for i := range 2 {
+				func() {
+					var pool bufpool.Pool
+					if i > 0 {
+						dpool := bufpool.NewTestDebugPool(t)
+						pool = dpool
+						defer dpool.Close()
+					}
+
+					tun1, tun2 := tun.Pipe(1, 3, mwo, mro)
+					defer tun1.Close()
+					defer tun2.Close()
+
+					io1 := tun.NewIO(tun1, pool)
+					io2 := tun.NewIO(tun2, pool)
+					defer io1.Close()
+					defer io2.Close()
+
+					result1Ch := make(chan string, 2)
+					result2Ch := make(chan string, 2)
+
+					var wgWrite sync.WaitGroup
+					var wgRead sync.WaitGroup
+
+					wgWrite.Go(func() {
+						texToWriter("abcdefghijklmn", io1)
+						texToWriter("opqrstuvwxyz", io1)
+					})
+					wgWrite.Go(func() {
+						texToWriter("ABCD", io2)
+						texToWriter("EFGH", io2)
+						texToWriter("IJKL", io2)
+						texToWriter("MNOP", io2)
+						texToWriter("QRST", io2)
+						texToWriter("UVWXYZ", io2)
+					})
+
+					wgRead.Go(func() {
+						result1Ch <- textFromReader(io2, 1024)
+					})
+					wgRead.Go(func() {
+						result2Ch <- textFromReader(io1, 1024)
+					})
+
+					wgWrite.Wait()
+					io1.Close()
+					wgRead.Wait()
+
+					result := <-result1Ch
+					if result != "abcdefghijklmnopqrstuvwxyz" {
+						t.Fatal(result)
+					}
+
+					result2 := <-result2Ch
+					if result2 != "ABCDEFGHIJKLMNOPQRSTUVWXYZ" {
+						t.Fatal(result2)
+					}
+				}()
+			}
 		}
 	}
 }

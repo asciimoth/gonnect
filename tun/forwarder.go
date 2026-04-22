@@ -92,7 +92,7 @@ func (f *Forwarder) Stop() {
 	for range f.chCfgWrite {
 	}
 	for pkg := range f.sendCh {
-		f.pool.Put(pkg.data)
+		bufpool.PutBuffer(f.pool, pkg.data)
 	}
 }
 
@@ -192,15 +192,15 @@ func frwWriter(
 				cfg = c
 			case pkg := <-recvCh:
 				data := pkg.data[pkg.offset : pkg.offset+pkg.size]
-				buf := pool.Get(cfg.offset + len(data))
+				buf := bufpool.GetBuffer(pool, cfg.offset+len(data))
 				copy(buf[cfg.offset:], data)
 				_, err := cfg.tun.Write([][]byte{buf}, cfg.offset)
 				if err != nil {
 					_ = cfg.tun.Close()
 					cfg.tun = nil
 				}
-				pool.Put(pkg.data)
-				pool.Put(buf)
+				bufpool.PutBuffer(pool, pkg.data)
+				bufpool.PutBuffer(pool, buf)
 			}
 		}
 	}
@@ -231,10 +231,10 @@ func frwReader(
 			if err != nil {
 				_ = cfg.tun.Close()
 				cfg.tun = nil
-				pool.Put(bufs[0])
+				bufpool.PutBuffer(pool, bufs[0])
 			} else {
 				if n == 0 {
-					pool.Put(bufs[0])
+					bufpool.PutBuffer(pool, bufs[0])
 				} else {
 					select {
 					case sendCh <- frwPkg{
@@ -243,7 +243,7 @@ func frwReader(
 						size:   sizes[0],
 					}:
 					case c := <-cfgCh:
-						pool.Put(bufs[0]) //nolint
+						bufpool.PutBuffer(pool, bufs[0]) // nolint
 						if c == nil {
 							return
 						}

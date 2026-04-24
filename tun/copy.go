@@ -34,13 +34,7 @@ func Copy(a, b Tun) error {
 // copyOneWay copies packets from src to dst using batch operations.
 // It returns when src is closed or an error occurs.
 func copyOneWay(src, dst Tun, offset int) error {
-	batchSize := src.BatchSize()
-	if dstBatch := dst.BatchSize(); dstBatch < batchSize {
-		batchSize = dstBatch
-	}
-	if batchSize <= 0 {
-		batchSize = 1
-	}
+	readBatch := batchSizeOf(src)
 
 	mtu, err := src.MTU()
 	if err != nil {
@@ -50,15 +44,15 @@ func copyOneWay(src, dst Tun, offset int) error {
 		mtu = dstMTU
 	}
 
-	// Allocate buffers with room for the offset
-	bufs := make([][]byte, batchSize)
-	sizes := make([]int, batchSize)
+	// Allocate buffers with room for the offset.
+	bufs := make([][]byte, readBatch)
+	sizes := make([]int, readBatch)
 	for i := range bufs {
 		bufs[i] = make([]byte, mtu+offset)
 	}
 
-	dataBufs := make([][]byte, batchSize)
-	writeBufs := make([][]byte, batchSize)
+	dataBufs := make([][]byte, readBatch)
+	writeBufs := make([][]byte, readBatch)
 	for i := range dataBufs {
 		dataBufs[i] = make([]byte, mtu+offset)
 	}
@@ -66,6 +60,9 @@ func copyOneWay(src, dst Tun, offset int) error {
 	for {
 		n, err := src.Read(bufs, sizes, offset)
 		if err != nil {
+			if isRetryableReadError(err) {
+				continue
+			}
 			return err
 		}
 		if n == 0 {
@@ -82,13 +79,8 @@ func copyOneWay(src, dst Tun, offset int) error {
 			writeBufs[i] = dataBufs[i][:offset+sizes[i]]
 		}
 
-		for written := 0; written < n; {
-			// Pass the full slice (including offset region) to dst.Write
-			wn, err := dst.Write(writeBufs[written:n], offset)
-			if err != nil {
-				return err
-			}
-			written += wn
+		if err := writePackets(dst, writeBufs[:n], offset); err != nil {
+			return err
 		}
 	}
 }

@@ -27,6 +27,9 @@ type Tun interface {
 	// they are stripped under the hood.
 	// On a successful read it returns the number of packets read, and sets
 	// packet lengths within the sizes slice. len(sizes) must be >= len(bufs).
+	// Callers must size bufs from the source Tun's BatchSize(); a single Read
+	// may yield multiple logical packets, and some native TUN implementations
+	// can require multiple buffers even for one inbound frame.
 	// A nonzero offset can be used to instruct the Tun on where to begin
 	// reading into each element of the bufs slice.
 	Read(bufs [][]byte, sizes []int, offset int) (n int, err error)
@@ -34,7 +37,8 @@ type Tun interface {
 	// Write one or more packets to the tun (without any additional headers).
 	// On a successful write it returns the number of packets written. A nonzero
 	// offset can be used to instruct the Device on where to begin writing from
-	// each packet contained within the bufs slice.
+	// each packet contained within the bufs slice. Callers must chunk writes
+	// using the destination Tun's BatchSize() and handle partial writes.
 	Write(bufs [][]byte, offset int) (int, error)
 
 	// MWO stands for Minimal Write Offset.
@@ -58,9 +62,12 @@ type Tun interface {
 	// Close stops the Device and closes the Event channel.
 	Close() error
 
-	// BatchSize returns the preferred/max number of packets that can be read or
-	// written in a single read/write call. BatchSize must not change over the
-	// lifetime of a Device.
+	// BatchSize returns the preferred/max number of packets that this Tun can
+	// read or write in a single read/write call. BatchSize must not change over
+	// the lifetime of a Device. Callers must not assume symmetric batch
+	// compatibility across two different Tun implementations: reads should be
+	// sized from the source Tun, and writes should be chunked for the
+	// destination Tun.
 	BatchSize() int
 
 	// TODO: Add getter for gonnect.NetworkInterface?

@@ -1,6 +1,7 @@
 package tun
 
 import (
+	"bytes"
 	"io"
 
 	"github.com/asciimoth/bufpool"
@@ -16,6 +17,8 @@ type IO struct {
 	Tun
 	wo, ro int
 	pool   bufpool.Pool
+
+	pending [][]byte
 }
 
 // NewIO creates a new IO wrapper for the given Tun.
@@ -34,35 +37,53 @@ func (r *IO) Read(p []byte) (int, error) {
 		return 0, nil
 	}
 
-	// If there is a read offset, read into a temporary buffer that includes it,
-	// then copy the packet payload back into p.
-	if r.ro > 0 {
-		buf := bufpool.GetBuffer(r.pool, r.ro+len(p))
-		defer bufpool.PutBuffer(r.pool, buf)
-
-		sizes := []int{1}
-		n, err := r.Tun.Read([][]byte{buf}, sizes, r.ro)
-		if err != nil {
-			return 0, err
-		}
-		if n == 0 {
-			return 0, io.EOF
-		}
-
-		n = min(sizes[0], len(p))
-		copy(p, buf[r.ro:r.ro+n])
+	if len(r.pending) > 0 {
+		packet := r.pending[0]
+		r.pending[0] = nil
+		r.pending = r.pending[1:]
+		n := min(len(packet), len(p))
+		copy(p, packet[:n])
 		return n, nil
 	}
 
-	sizes := []int{1}
-	n, err := r.Tun.Read([][]byte{p}, sizes, 0)
+	packetSize := len(p)
+	if mtu, err := r.MTU(); err == nil && mtu > packetSize {
+		packetSize = mtu
+	}
+
+	readBatch := batchSizeOf(r.Tun)
+	bufs := make([][]byte, readBatch)
+	sizes := make([]int, readBatch)
+	for i := range bufs {
+		bufs[i] = bufpool.GetBuffer(r.pool, r.ro+packetSize)
+	}
+
+	n, err := r.Tun.Read(bufs, sizes, r.ro)
 	if err != nil {
+		for i := range bufs {
+			bufpool.PutBuffer(r.pool, bufs[i])
+		}
 		return 0, err
 	}
 	if n == 0 {
+		for i := range bufs {
+			bufpool.PutBuffer(r.pool, bufs[i])
+		}
 		return 0, io.EOF
 	}
-	return sizes[0], nil
+
+	readLen := min(sizes[0], len(p))
+	copy(p, bufs[0][r.ro:r.ro+readLen])
+
+	for i := 1; i < n; i++ {
+		r.pending = append(r.pending, bytes.Clone(bufs[i][r.ro:r.ro+sizes[i]]))
+	}
+
+	for i := range bufs {
+		bufpool.PutBuffer(r.pool, bufs[i])
+	}
+
+	return readLen, nil
 }
 
 // Write implements io.Writer. It writes a single packet to the Device.
@@ -78,22 +99,18 @@ func (r *IO) Write(p []byte) (int, error) {
 
 		copy(buf[r.wo:], p)
 
-		n, err := r.Tun.Write([][]byte{buf}, r.wo)
-		if err != nil {
+		if err := writePackets(
+			r.Tun,
+			[][]byte{buf[:r.wo+len(p)]},
+			r.wo,
+		); err != nil {
 			return 0, err
-		}
-		if n == 0 {
-			return 0, nil
 		}
 		return len(p), nil
 	}
 
-	n, err := r.Tun.Write([][]byte{p}, 0)
-	if err != nil {
+	if err := writePackets(r.Tun, [][]byte{p}, 0); err != nil {
 		return 0, err
-	}
-	if n == 0 {
-		return 0, nil
 	}
 	return len(p), nil
 }

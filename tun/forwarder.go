@@ -7,8 +7,10 @@ import (
 )
 
 type frwPkg struct {
-	data         []byte
-	offset, size int
+	bufs   [][]byte
+	sizes  []int
+	n      int
+	offset int
 }
 
 type frwCfg struct {
@@ -92,7 +94,9 @@ func (f *Forwarder) Stop() {
 	for range f.chCfgWrite {
 	}
 	for pkg := range f.sendCh {
-		bufpool.PutBuffer(f.pool, pkg.data)
+		for i := range pkg.n {
+			bufpool.PutBuffer(f.pool, pkg.bufs[i])
+		}
 	}
 }
 
@@ -191,16 +195,24 @@ func frwWriter(
 				}
 				cfg = c
 			case pkg := <-recvCh:
-				data := pkg.data[pkg.offset : pkg.offset+pkg.size]
-				buf := bufpool.GetBuffer(pool, cfg.offset+len(data))
-				copy(buf[cfg.offset:], data)
-				_, err := cfg.tun.Write([][]byte{buf}, cfg.offset)
+				writeBufs := make([][]byte, pkg.n)
+				for i := range pkg.n {
+					data := pkg.bufs[i][pkg.offset : pkg.offset+pkg.sizes[i]]
+					buf := bufpool.GetBuffer(pool, cfg.offset+len(data))
+					copy(buf[cfg.offset:], data)
+					writeBufs[i] = buf[:cfg.offset+len(data)]
+				}
+
+				err := writePackets(cfg.tun, writeBufs, cfg.offset)
 				if err != nil {
 					_ = cfg.tun.Close()
 					cfg.tun = nil
 				}
-				bufpool.PutBuffer(pool, pkg.data)
-				bufpool.PutBuffer(pool, buf)
+
+				for i := range pkg.n {
+					bufpool.PutBuffer(pool, pkg.bufs[i])
+					bufpool.PutBuffer(pool, writeBufs[i])
+				}
 			}
 		}
 	}
@@ -225,25 +237,43 @@ func frwReader(
 			cfg = c
 		} else {
 			// Active
-			bufs := [][]byte{bufpool.GetBuffer(pool, cfg.mtu+cfg.offset)}
-			sizes := []int{0}
+			readBatch := batchSizeOf(cfg.tun)
+			bufs := make([][]byte, readBatch)
+			sizes := make([]int, readBatch)
+			for i := range bufs {
+				bufs[i] = bufpool.GetBuffer(pool, cfg.mtu+cfg.offset)
+			}
+
 			n, err := cfg.tun.Read(bufs, sizes, cfg.offset)
 			if err != nil {
+				for i := range bufs {
+					bufpool.PutBuffer(pool, bufs[i])
+				}
+				if isRetryableReadError(err) {
+					continue
+				}
 				_ = cfg.tun.Close()
 				cfg.tun = nil
-				bufpool.PutBuffer(pool, bufs[0])
 			} else {
 				if n == 0 {
-					bufpool.PutBuffer(pool, bufs[0])
+					for i := range bufs {
+						bufpool.PutBuffer(pool, bufs[i])
+					}
 				} else {
+					for i := n; i < len(bufs); i++ {
+						bufpool.PutBuffer(pool, bufs[i])
+					}
 					select {
 					case sendCh <- frwPkg{
-						data:   bufs[0],
+						bufs:   bufs[:n],
+						sizes:  append([]int(nil), sizes[:n]...),
+						n:      n,
 						offset: cfg.offset,
-						size:   sizes[0],
 					}:
 					case c := <-cfgCh:
-						bufpool.PutBuffer(pool, bufs[0]) // nolint
+						for i := range n {
+							bufpool.PutBuffer(pool, bufs[i])
+						}
 						if c == nil {
 							return
 						}

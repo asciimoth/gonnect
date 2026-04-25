@@ -16,6 +16,7 @@ There are some projects based on Gonnect or created for similar use cases.
 You may find them useful too:
 
 - [gonnect-netstack](https://github.com/asciimoth/gonnect-netstack) - gVisor's netstack integration for the gonnect ecosystem 
+- [gonnect-vpn-example](https://github.com/asciimoth/gonnect-vpn-example) - An example of simple point-to-point VPN built on top of the gonnect ecosystem 
 - [tuntap](https://github.com/asciimoth/tuntap) - Cross-platform TUN device library extracted from wireguard-go 
 - [socksgo](https://github.com/asciimoth/socksgo) – The most complete, compatible, feature-rich, and extensible SOCKS library for Go
 - [bufpool](https://github.com/asciimoth/bufpool) – Byte buffer pool interface and testing helpers

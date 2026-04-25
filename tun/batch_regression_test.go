@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/asciimoth/bufpool"
 )
 
 var errMockTooManySegments = errors.New("too many segments")
@@ -248,11 +250,14 @@ func TestCopyOneWayRetriesRetryableReadCapacityError(t *testing.T) {
 func TestForwarderUsesIndependentReadAndWriteBatchSizes(t *testing.T) {
 	t.Parallel()
 
+	pool := bufpool.NewTestDebugPool(t)
+	defer pool.Close()
+
 	src := newMockTun(4, 1500, 2, 3)
 	dst := newMockTun(1, 1500, 5, 7)
 	dst.writeLimit = 1
 
-	frw := NewForwarder(nil)
+	frw := NewForwarder(pool)
 	defer frw.Stop()
 
 	frw.SetReadTun(src)
@@ -292,10 +297,13 @@ func TestForwarderUsesIndependentReadAndWriteBatchSizes(t *testing.T) {
 func TestForwarderRetriesRetryableReadCapacityError(t *testing.T) {
 	t.Parallel()
 
+	pool := bufpool.NewTestDebugPool(t)
+	defer pool.Close()
+
 	src := newMockTun(4, 1500, 0, 0)
 	dst := newMockTun(2, 1500, 0, 0)
 
-	frw := NewForwarder(nil)
+	frw := NewForwarder(pool)
 	defer frw.Stop()
 
 	frw.SetReadTun(src)
@@ -358,6 +366,9 @@ func TestP2PUsesIndependentReadAndWriteBatchSizes(t *testing.T) {
 func TestIOReadUsesTunBatchSizeAndBuffersRemainingPackets(t *testing.T) {
 	t.Parallel()
 
+	pool := bufpool.NewTestDebugPool(t)
+	defer pool.Close()
+
 	src := newMockTun(4, 1500, 0, 0)
 	src.enqueueRead(mockReadResult{
 		packets: [][]byte{
@@ -367,7 +378,7 @@ func TestIOReadUsesTunBatchSizeAndBuffersRemainingPackets(t *testing.T) {
 		},
 	})
 
-	r := NewIO(src, nil)
+	r := NewIO(src, pool)
 
 	buf := make([]byte, 16)
 

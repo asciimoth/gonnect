@@ -456,8 +456,8 @@ func (n *Network) Listen(
 	id := n.getID()
 	listener = gonnect.ListenerWithCallbacks(listener, &gonnect.Callbacks{
 		BeforeClose: n.buildUnregCallback(id),
-		OnAccept:    n.registerConnCallback,
-		OnAcceptTCP: n.registerTCPConnCallback,
+		OnAccept:    n.RegisterConnCallback,
+		OnAcceptTCP: n.RegisterTCPConnCallback,
 	})
 	n.register(id, listener)
 
@@ -608,8 +608,8 @@ func (n *Network) ListenTCP(
 		},
 		CB: &gonnect.Callbacks{
 			BeforeClose: n.buildUnregCallback(id),
-			OnAccept:    n.registerConnCallback,
-			OnAcceptTCP: n.registerTCPConnCallback,
+			OnAccept:    n.RegisterConnCallback,
+			OnAcceptTCP: n.RegisterTCPConnCallback,
 		},
 	}
 	n.register(id, listener)
@@ -733,6 +733,66 @@ func (n *Network) ListenUDPConfig(
 	return nil, errors.ConnRefused(network, laddrUDP.String())
 }
 
+func (n *Network) Register(id uint64, c io.Closer) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if !n.up {
+		return fmt.Errorf("network down")
+	}
+	n.register(id, c)
+	return nil
+}
+
+// Unregister removes a connection or listener from tracking by ID.
+func (n *Network) Unregister(id uint64) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	delete(n.closers, id)
+}
+
+// RegisterConnCallback wraps an accepted connection with tracking callbacks.
+// It rejects the connection if the network is down.
+func (n *Network) RegisterConnCallback(conn net.Conn) (net.Conn, error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if !n.up {
+		return nil, errors.ConnRefused(
+			helpers.NetworkFromConn(conn),
+			conn.RemoteAddr().String(),
+		)
+	}
+	id := n.getID()
+	conn = gonnect.ConnWithCallbacks(conn, &gonnect.Callbacks{
+		BeforeClose: n.buildUnregCallback(id),
+	})
+	n.register(id, conn)
+	return conn, nil
+}
+
+// RegisterTCPConnCallback wraps an accepted TCP connection with tracking callbacks.
+// It rejects the connection if the network is down.
+func (n *Network) RegisterTCPConnCallback(
+	conn gonnect.TCPConn,
+) (gonnect.TCPConn, error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if !n.up {
+		return nil, errors.ConnRefused(
+			helpers.NetworkFromConn(conn),
+			conn.RemoteAddr().String(),
+		)
+	}
+	id := n.getID()
+	conn = &gonnect.CallbackTCPConn{
+		TCPConn: conn,
+		CB: &gonnect.Callbacks{
+			BeforeClose: n.buildUnregCallback(id),
+		},
+	}
+	n.register(id, conn)
+	return conn, nil
+}
+
 // doFilter checks if the network is up and applies the filter function if set.
 // It returns an error if the network is down or if the filter rejects the operation.
 // WARN: Not thread safe - caller must hold n.mu lock.
@@ -780,62 +840,12 @@ func (n *Network) register(id uint64, c io.Closer) {
 	n.closers[id] = c
 }
 
-// unregister removes a connection or listener from tracking by ID.
-func (n *Network) unregister(id uint64) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	delete(n.closers, id)
-}
-
 // buildUnregCallback returns a callback function that unregisters a connection
 // by ID when called. This is used as the BeforeClose callback for tracked connections.
 func (n *Network) buildUnregCallback(id uint64) func() {
 	return func() {
-		n.unregister(id)
+		n.Unregister(id)
 	}
-}
-
-// registerConnCallback wraps an accepted connection with tracking callbacks.
-// It rejects the connection if the network is down.
-func (n *Network) registerConnCallback(conn net.Conn) (net.Conn, error) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	if !n.up {
-		return nil, errors.ConnRefused(
-			helpers.NetworkFromConn(conn),
-			conn.RemoteAddr().String(),
-		)
-	}
-	id := n.getID()
-	conn = gonnect.ConnWithCallbacks(conn, &gonnect.Callbacks{
-		BeforeClose: n.buildUnregCallback(id),
-	})
-	n.register(id, conn)
-	return conn, nil
-}
-
-// registerTCPConnCallback wraps an accepted TCP connection with tracking callbacks.
-// It rejects the connection if the network is down.
-func (n *Network) registerTCPConnCallback(
-	conn gonnect.TCPConn,
-) (gonnect.TCPConn, error) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	if !n.up {
-		return nil, errors.ConnRefused(
-			helpers.NetworkFromConn(conn),
-			conn.RemoteAddr().String(),
-		)
-	}
-	id := n.getID()
-	conn = &gonnect.CallbackTCPConn{
-		TCPConn: conn,
-		CB: &gonnect.Callbacks{
-			BeforeClose: n.buildUnregCallback(id),
-		},
-	}
-	n.register(id, conn)
-	return conn, nil
 }
 
 // downPrep prepares the network for shutdown by marking it as down

@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"syscall"
 	"time"
 )
 
@@ -265,6 +266,24 @@ type Network interface {
 
 	ListenUDP(
 		ctx context.Context,
+		network, laddr string,
+	) (UDPConn, error)
+}
+
+type ListenConfig struct {
+	Control func(network, address string, c syscall.RawConn) error
+}
+
+type ListenConfigNetwork interface {
+	ListenPacketConfig(
+		ctx context.Context,
+		lc *ListenConfig,
+		network, address string,
+	) (PacketConn, error)
+
+	ListenUDPConfig(
+		ctx context.Context,
+		lc *ListenConfig,
 		network, laddr string,
 	) (UDPConn, error)
 }

@@ -22,10 +22,11 @@ import (
 
 // Static type assertions
 var (
-	_ gonnect.Network          = &Network{}
-	_ gonnect.InterfaceNetwork = &Network{}
-	_ gonnect.Resolver         = &Network{}
-	_ gonnect.UpDown           = &Network{}
+	_ gonnect.Network             = &Network{}
+	_ gonnect.ListenConfigNetwork = &Network{}
+	_ gonnect.InterfaceNetwork    = &Network{}
+	_ gonnect.Resolver            = &Network{}
+	_ gonnect.UpDown              = &Network{}
 
 	_ gonnect.Dial         = (&Network{}).Dial
 	_ gonnect.Listen       = (&Network{}).Listen
@@ -499,6 +500,44 @@ func (n *Network) ListenPacket(
 	return nil, errors.ConnRefused(network, address)
 }
 
+// ListenPacketConfig announces on the specified network and address for
+// packet-oriented protocols using the provided listen configuration.
+// It resolves the address, applies filtering, and creates a packet connection.
+// The returned PacketConn is wrapped with callbacks for automatic tracking.
+func (n *Network) ListenPacketConfig(
+	ctx context.Context,
+	lc *gonnect.ListenConfig,
+	network, address string,
+) (gonnect.PacketConn, error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	ip, port, err := n.resolveAddr(ctx, network, address, actionListen)
+	if err != nil {
+		return nil, err
+	}
+	address = helpers.JointIPPort(ip, port)
+
+	c, err := n.getListenCfgWith(lc).ListenPacket(ctx, network, address)
+	if err != nil {
+		return nil, err
+	}
+
+	pc, ok := c.(gonnect.PacketConn)
+	if ok {
+		id := n.getID()
+		pc = gonnect.PacketConnWithCallbacks(pc, &gonnect.Callbacks{
+			BeforeClose: n.buildUnregCallback(id),
+		})
+		n.register(id, pc)
+
+		return pc, nil
+	}
+
+	_ = c.Close()
+	return nil, errors.ConnRefused(network, address)
+}
+
 // DialTCP establishes a TCP connection to the remote address using the specified network.
 // If laddr is not empty, it is used as the local address for the connection.
 // The returned TCPConn is wrapped with callbacks for automatic tracking.
@@ -656,6 +695,44 @@ func (n *Network) ListenUDP(
 	return cc, err
 }
 
+// ListenUDPConfig announces on the specified network and address for UDP
+// connections using the provided listen configuration. Since net.ListenConfig
+// does not expose ListenUDP, this is implemented via ListenPacket and narrowed
+// back to UDPConn.
+func (n *Network) ListenUDPConfig(
+	ctx context.Context,
+	lc *gonnect.ListenConfig,
+	network, laddr string,
+) (gonnect.UDPConn, error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	laddrUDP, err := n.resolveUDPAddr(ctx, network, laddr, actionListen)
+	if err != nil {
+		return nil, err
+	}
+
+	c, err := n.getListenCfgWith(lc).
+		ListenPacket(ctx, network, laddrUDP.String())
+	if err != nil {
+		return nil, err
+	}
+
+	uc, ok := c.(gonnect.UDPConn)
+	if ok {
+		id := n.getID()
+		uc = gonnect.UDPConnWithCallbacks(uc, &gonnect.Callbacks{
+			BeforeClose: n.buildUnregCallback(id),
+		})
+		n.register(id, uc)
+
+		return uc, nil
+	}
+
+	_ = c.Close()
+	return nil, errors.ConnRefused(network, laddrUDP.String())
+}
+
 // doFilter checks if the network is up and applies the filter function if set.
 // It returns an error if the network is down or if the filter rejects the operation.
 // WARN: Not thread safe - caller must hold n.mu lock.
@@ -793,6 +870,16 @@ func (n *Network) getListenCfg() *net.ListenConfig {
 		return &net.ListenConfig{}
 	}
 	return n.listenCfg
+}
+
+// getListenCfgWith returns a copy of the configured listen config with fields
+// from gonnect.ListenConfig overlaid on top.
+func (n *Network) getListenCfgWith(lc *gonnect.ListenConfig) *net.ListenConfig {
+	cfg := *n.getListenCfg()
+	if lc != nil && lc.Control != nil {
+		cfg.Control = lc.Control
+	}
+	return &cfg
 }
 
 // resolveAddr resolves a network address string into an IP and port.

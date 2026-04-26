@@ -225,6 +225,12 @@ type Resolver interface {
 
 // Network defines an abstraction over network providers.
 type Network interface {
+	// IsNative reports whether Network instance provides direct access to
+	// OS network stack or emulates it/adding mutation wrappers.
+	// Simple Network middlewares like logging ones should preserve IsNative status
+	// while complex ones (e.g. encrypting/proxyng/etc) should reports false.
+	IsNative() bool
+
 	Dial(
 		ctx context.Context,
 		network, address string,

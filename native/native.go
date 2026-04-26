@@ -152,6 +152,10 @@ type Network struct {
 	closers map[uint64]io.Closer
 }
 
+func (n *Network) IsNative() bool {
+	return true
+}
+
 // Down shuts down the network by closing all tracked connections and listeners.
 // After calling Down, the network will reject new operations until Up() is called.
 func (n *Network) Down() error {

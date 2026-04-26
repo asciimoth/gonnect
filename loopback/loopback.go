@@ -81,6 +81,10 @@ func NewLoopbackNetwok() *LoopbackNetwork {
 	}
 }
 
+func (ln *LoopbackNetwork) IsNative() bool {
+	return false
+}
+
 // Interfaces returns a slice containing the loopback network interface.
 // It returns a single interface representing "lo" with index 1, MTU 65536,
 // and the net.FlagLoopback and net.FlagUp flags set.

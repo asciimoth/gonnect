@@ -23,6 +23,10 @@ var (
 // It implements gonnect.Network, gonnect.InterfaceNetwork, and gonnect.Resolver interfaces.
 type Network struct{}
 
+func (n *Network) IsNative() bool {
+	return false
+}
+
 // dialError returns an appropriate error for dial operations based on the network and address.
 // It returns net.UnknownNetworkError for unknown networks, *net.AddrError for malformed addresses,
 // and *net.DNSError for host not found errors.

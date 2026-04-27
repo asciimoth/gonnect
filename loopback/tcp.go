@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/asciimoth/gonnect"
+	ge "github.com/asciimoth/gonnect/errors"
 	"github.com/asciimoth/gonnect/helpers"
 )
 
@@ -185,11 +186,7 @@ func (l *loopbackTCPListener) NewConn(c *loopbackTCPConn) error {
 	case l.acceptQ <- c:
 		return nil
 	case <-l.closed:
-		return &net.OpError{
-			Op:  "accept",
-			Net: l.Laddr.Network(),
-			Err: errors.New("use of closed network connection"),
-		}
+		return ge.ConnClosed("accept", l.Laddr.Network(), nil, l.Laddr)
 	}
 }
 
@@ -261,11 +258,7 @@ func (l *loopbackTCPListener) AcceptTCP() (gonnect.TCPConn, error) {
 		if timer != nil {
 			timer.Stop()
 		}
-		return nil, &net.OpError{
-			Op:  "accept",
-			Net: l.Laddr.Network(),
-			Err: errors.New("use of closed network connection"),
-		}
+		return nil, ge.ConnClosed("accept", l.Laddr.Network(), nil, l.Laddr)
 	case <-deadlineCh:
 		return nil, &net.OpError{
 			Op:  "accept",

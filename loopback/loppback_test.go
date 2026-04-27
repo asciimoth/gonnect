@@ -2,6 +2,7 @@
 package loopback_test
 
 import (
+	"errors"
 	"net"
 	"testing"
 	"time"
@@ -646,6 +647,155 @@ func TestPipeUDPClose(t *testing.T) {
 	}
 
 	conn2.Close()
+}
+
+func TestLoopbackUDPGenericAddrWritePaths(t *testing.T) {
+	network := loopback.NewLoopbackNetwok()
+
+	tests := []struct {
+		name string
+		send func(t *testing.T, conn net.PacketConn, addr *net.UDPAddr)
+	}{
+		{
+			name: "WriteToUDP",
+			send: func(t *testing.T, conn net.PacketConn, addr *net.UDPAddr) {
+				udpConn, ok := conn.(interface {
+					WriteToUDP([]byte, *net.UDPAddr) (int, error)
+				})
+				if !ok {
+					t.Fatalf(
+						"packet conn does not support WriteToUDP: %T",
+						conn,
+					)
+				}
+				if _, err := udpConn.WriteToUDP(
+					[]byte("ping"),
+					addr,
+				); err != nil {
+					t.Fatalf("WriteToUDP failed: %v", err)
+				}
+			},
+		},
+		{
+			name: "WriteMsgUDP",
+			send: func(t *testing.T, conn net.PacketConn, addr *net.UDPAddr) {
+				udpConn, ok := conn.(interface {
+					WriteMsgUDP([]byte, []byte, *net.UDPAddr) (int, int, error)
+				})
+				if !ok {
+					t.Fatalf(
+						"packet conn does not support WriteMsgUDP: %T",
+						conn,
+					)
+				}
+				if _, _, err := udpConn.WriteMsgUDP(
+					[]byte("ping"),
+					nil,
+					addr,
+				); err != nil {
+					t.Fatalf("WriteMsgUDP failed: %v", err)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			receiver, err := network.ListenUDP(
+				t.Context(),
+				"udp4",
+				"127.0.0.1:0",
+			)
+			if err != nil {
+				t.Fatalf("failed to create receiver: %v", err)
+			}
+			defer receiver.Close()
+
+			sender, err := network.ListenUDP(t.Context(), "udp4", "127.0.0.1:0")
+			if err != nil {
+				t.Fatalf("failed to create sender: %v", err)
+			}
+			defer sender.Close()
+
+			dst, err := net.ResolveUDPAddr("udp", receiver.LocalAddr().String())
+			if err != nil {
+				t.Fatalf("failed to resolve generic UDP addr: %v", err)
+			}
+			if dst.Network() != "udp" {
+				t.Fatalf("expected generic udp address, got %q", dst.Network())
+			}
+
+			tt.send(t, sender, dst)
+
+			buf := make([]byte, 16)
+			n, addr, err := receiver.ReadFrom(buf)
+			if err != nil {
+				t.Fatalf("receiver ReadFrom failed: %v", err)
+			}
+			if got := string(buf[:n]); got != "ping" {
+				t.Fatalf("expected payload %q, got %q", "ping", got)
+			}
+			if addr.String() != sender.LocalAddr().String() {
+				t.Fatalf(
+					"expected src addr %q, got %q",
+					sender.LocalAddr(),
+					addr,
+				)
+			}
+		})
+	}
+}
+
+func TestLoopbackClosedErrorsMatchNetErrClosed(t *testing.T) {
+	t.Run("udp read/write", func(t *testing.T) {
+		conn1, conn2 := loopback.PipeUDP()
+		defer conn2.Close()
+
+		if err := conn1.Close(); err != nil {
+			t.Fatalf("conn1 close failed: %v", err)
+		}
+
+		buf := make([]byte, 1)
+		if _, _, err := conn1.ReadFrom(buf); !errors.Is(err, net.ErrClosed) {
+			t.Fatalf("ReadFrom error = %v, want errors.Is(net.ErrClosed)", err)
+		}
+		if _, err := conn1.WriteTo(
+			[]byte("x"),
+			conn2.LocalAddr(),
+		); !errors.Is(
+			err,
+			net.ErrClosed,
+		) {
+			t.Fatalf("WriteTo error = %v, want errors.Is(net.ErrClosed)", err)
+		}
+		if _, err := conn2.WriteTo(
+			[]byte("x"),
+			conn1.LocalAddr(),
+		); !errors.Is(
+			err,
+			net.ErrClosed,
+		) {
+			t.Fatalf(
+				"peer WriteTo error = %v, want errors.Is(net.ErrClosed)",
+				err,
+			)
+		}
+	})
+
+	t.Run("tcp accept", func(t *testing.T) {
+		network := loopback.NewLoopbackNetwok()
+		listener, err := network.ListenTCP(t.Context(), "tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("failed to create listener: %v", err)
+		}
+		if err := listener.Close(); err != nil {
+			t.Fatalf("listener close failed: %v", err)
+		}
+		_, err = listener.AcceptTCP()
+		if !errors.Is(err, net.ErrClosed) {
+			t.Fatalf("AcceptTCP error = %v, want errors.Is(net.ErrClosed)", err)
+		}
+	})
 }
 
 func TestPipeUDPDeadline(t *testing.T) {

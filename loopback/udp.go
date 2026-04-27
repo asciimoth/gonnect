@@ -96,12 +96,38 @@ func (r *loopbackUDPRegistry) unreg(conn *loopbackUDPConn) {
 // lookup finds a UDP connection by address.
 // Returns nil if the network doesn't match or if no connection is found.
 func (r *loopbackUDPRegistry) lookup(addr net.Addr) *loopbackUDPConn {
-	if addr.Network() != r.Network {
+	key, ok := r.lookupKey(addr)
+	if !ok {
 		return nil
 	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return r.conns[addr.String()]
+	return r.conns[key]
+}
+
+func (r *loopbackUDPRegistry) lookupKey(addr net.Addr) (string, bool) {
+	if addr == nil || !helpers.IsUDPNetwork(addr.Network()) {
+		return "", false
+	}
+	regFamily := helpers.FamilyFromNetwork(r.Network)
+	addrFamily := helpers.FamilyFromNetwork(addr.Network())
+	if addrFamily != "ip" && addrFamily != regFamily {
+		return "", false
+	}
+
+	host, port, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return "", false
+	}
+	host, err = normalizeLoopbackHost(r.Network, host)
+	if err != nil {
+		return "", false
+	}
+
+	return (&helpers.NetAddr{
+		Net:  r.Network,
+		Addr: net.JoinHostPort(host, port),
+	}).String(), true
 }
 
 // loopbackUDPConn is an in-memory UDP connection that communicates via buffered channels.

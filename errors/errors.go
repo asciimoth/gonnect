@@ -2,7 +2,6 @@
 package errors
 
 import (
-	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -52,7 +51,7 @@ func ConnClosed(op, network string, src, addr net.Addr) net.Error {
 		Source: src,
 		Addr:   addr,
 		Net:    network,
-		Err:    errors.New("use of closed network connection"),
+		Err:    net.ErrClosed,
 	}
 }
 

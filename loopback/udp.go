@@ -192,7 +192,6 @@ func (c *loopbackUDPConn) Close() error {
 			if c.reg != nil {
 				c.reg.unreg(c)
 			}
-			close(c.in)
 			close(c.closeCh)
 		}
 	})

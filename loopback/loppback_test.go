@@ -4,6 +4,9 @@ package loopback_test
 import (
 	"errors"
 	"net"
+	"runtime"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -825,4 +828,88 @@ func TestPipeUDPDeadline(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error on write to closed conn, got nil")
 	}
+}
+
+func TestLoopbackUDPConcurrentCloseAndWrite(t *testing.T) {
+	network := loopback.NewLoopbackNetwok()
+
+	receiver, err := network.ListenUDP(t.Context(), "udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to create receiver: %v", err)
+	}
+	sender, err := network.ListenUDP(t.Context(), "udp4", "127.0.0.1:0")
+	if err != nil {
+		receiver.Close()
+		t.Fatalf("failed to create sender: %v", err)
+	}
+	defer sender.Close()
+
+	var sawErr atomic.Bool
+	var wg sync.WaitGroup
+
+	for range runtime.GOMAXPROCS(0) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				_, err := sender.WriteTo(
+					[]byte("ping"),
+					receiver.LocalAddr(),
+				)
+				if err != nil {
+					sawErr.Store(true)
+					return
+				}
+			}
+		}()
+	}
+
+	time.Sleep(10 * time.Millisecond)
+
+	if err := receiver.Close(); err != nil {
+		t.Fatalf("receiver close failed: %v", err)
+	}
+
+	wg.Wait()
+	if !sawErr.Load() {
+		t.Fatal("expected at least one write to fail after receiver close")
+	}
+}
+
+func TestLoopbackUDPDownWhileWriting(t *testing.T) {
+	network := loopback.NewLoopbackNetwok()
+
+	receiver, err := network.ListenUDP(t.Context(), "udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to create receiver: %v", err)
+	}
+	sender, err := network.ListenUDP(t.Context(), "udp4", "127.0.0.1:0")
+	if err != nil {
+		receiver.Close()
+		t.Fatalf("failed to create sender: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	for range runtime.GOMAXPROCS(0) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				if _, err := sender.WriteTo(
+					[]byte("ping"),
+					receiver.LocalAddr(),
+				); err != nil {
+					return
+				}
+			}
+		}()
+	}
+
+	time.Sleep(10 * time.Millisecond)
+
+	if err := network.Down(); err != nil {
+		t.Fatalf("network down failed: %v", err)
+	}
+
+	wg.Wait()
 }

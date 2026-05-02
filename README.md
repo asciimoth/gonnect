@@ -24,6 +24,7 @@ You may find them useful too:
 - [socksgo](https://github.com/asciimoth/socksgo) – The most complete, compatible, feature-rich, and extensible SOCKS library for Go
 - [bufpool](https://github.com/asciimoth/bufpool) – Byte buffer pool interface and testing helpers
 - [putback](https://github.com/asciimoth/putback) – A minimal library that provides wrappers for common I/O interfaces, adding the ability to return read bytes back to the stream for subsequent reading
+- [mnlib](https://github.com/asciimoth/mnlib) - Mesh-oriented DNS names lib (`.meshname`, `.meship`, `.ygg`, `.pk.ygg`)
 
 ## License
 Files in this repository are distributed under the CC0 license.  

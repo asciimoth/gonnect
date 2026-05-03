@@ -22,6 +22,8 @@ var (
 	_ io.Closer           = &loopbackTCPConn{}
 )
 
+const loopbackTCPBufferSize = 64 * 1024
+
 // loopbackTCPRegistry manages TCP listeners and connections for a specific
 // network type (tcp4 or tcp6). It handles port allocation and tracks active
 // listeners by address.
@@ -283,7 +285,245 @@ func (l *loopbackTCPListener) SetDeadline(t time.Time) error {
 	return nil
 }
 
-// loopbackTCPConn is an in-memory TCP connection implemented using net.Pipe.
+type deadlineState struct {
+	mu       sync.Mutex
+	deadline time.Time
+	timer    *time.Timer
+}
+
+func (d *deadlineState) set(t time.Time, notify func()) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.timer != nil {
+		d.timer.Stop()
+		d.timer = nil
+	}
+	d.deadline = t
+	if t.IsZero() {
+		return
+	}
+	delay := time.Until(t)
+	if delay <= 0 {
+		go notify()
+		return
+	}
+	d.timer = time.AfterFunc(delay, notify)
+}
+
+func (d *deadlineState) get() time.Time {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.deadline
+}
+
+type loopbackTCPStream struct {
+	mu           sync.Mutex
+	readableCond *sync.Cond
+	writableCond *sync.Cond
+	buf          []byte
+	readerClosed bool
+	writerClosed bool
+}
+
+func newLoopbackTCPStream() *loopbackTCPStream {
+	s := &loopbackTCPStream{
+		buf: make([]byte, 0, loopbackTCPBufferSize),
+	}
+	s.readableCond = sync.NewCond(&s.mu)
+	s.writableCond = sync.NewCond(&s.mu)
+	return s
+}
+
+type loopbackTCPPipeConn struct {
+	localAddr  net.Addr
+	remoteAddr net.Addr
+	incoming   *loopbackTCPStream
+	outgoing   *loopbackTCPStream
+
+	closeOnce sync.Once
+	closed    chan struct{}
+
+	readDeadline  deadlineState
+	writeDeadline deadlineState
+}
+
+func newLoopbackTCPPipePair(
+	clientAddr, serverAddr net.Addr,
+) (client, server net.Conn) {
+	clientToServer := newLoopbackTCPStream()
+	serverToClient := newLoopbackTCPStream()
+
+	clientConn := &loopbackTCPPipeConn{
+		localAddr:  clientAddr,
+		remoteAddr: serverAddr,
+		incoming:   serverToClient,
+		outgoing:   clientToServer,
+		closed:     make(chan struct{}),
+	}
+	serverConn := &loopbackTCPPipeConn{
+		localAddr:  serverAddr,
+		remoteAddr: clientAddr,
+		incoming:   clientToServer,
+		outgoing:   serverToClient,
+		closed:     make(chan struct{}),
+	}
+
+	return clientConn, serverConn
+}
+
+func (c *loopbackTCPPipeConn) LocalAddr() net.Addr  { return c.localAddr }
+func (c *loopbackTCPPipeConn) RemoteAddr() net.Addr { return c.remoteAddr }
+
+func (c *loopbackTCPPipeConn) Read(b []byte) (int, error) {
+	if err := c.checkClosed("read"); err != nil {
+		return 0, err
+	}
+	s := c.incoming
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for {
+		if len(s.buf) > 0 {
+			n := copy(b, s.buf)
+			s.buf = s.buf[n:]
+			s.writableCond.Broadcast()
+			return n, nil
+		}
+		if s.readerClosed {
+			return 0, net.ErrClosed
+		}
+		if s.writerClosed {
+			return 0, io.EOF
+		}
+		if c.readDeadlineExpired() {
+			return 0, c.timeoutError("read")
+		}
+		s.readableCond.Wait()
+		if err := c.checkClosed("read"); err != nil {
+			return 0, err
+		}
+	}
+}
+
+func (c *loopbackTCPPipeConn) Write(b []byte) (int, error) {
+	if err := c.checkClosed("write"); err != nil {
+		return 0, err
+	}
+	s := c.outgoing
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	written := 0
+	for written < len(b) {
+		if s.readerClosed {
+			if written > 0 {
+				return written, io.ErrClosedPipe
+			}
+			return 0, io.ErrClosedPipe
+		}
+		if c.writeDeadlineExpired() {
+			if written > 0 {
+				return written, c.timeoutError("write")
+			}
+			return 0, c.timeoutError("write")
+		}
+		if len(s.buf) < cap(s.buf) {
+			space := cap(s.buf) - len(s.buf)
+			if remaining := len(b) - written; remaining < space {
+				space = remaining
+			}
+			s.buf = append(s.buf, b[written:written+space]...)
+			written += space
+			s.readableCond.Broadcast()
+			continue
+		}
+		s.writableCond.Wait()
+		if err := c.checkClosed("write"); err != nil {
+			if written > 0 {
+				return written, err
+			}
+			return 0, err
+		}
+	}
+	return written, nil
+}
+
+func (c *loopbackTCPPipeConn) Close() error {
+	c.closeOnce.Do(func() {
+		close(c.closed)
+
+		c.incoming.mu.Lock()
+		c.incoming.readerClosed = true
+		c.incoming.readableCond.Broadcast()
+		c.incoming.writableCond.Broadcast()
+		c.incoming.mu.Unlock()
+
+		c.outgoing.mu.Lock()
+		c.outgoing.writerClosed = true
+		c.outgoing.readableCond.Broadcast()
+		c.outgoing.writableCond.Broadcast()
+		c.outgoing.mu.Unlock()
+	})
+	return nil
+}
+
+func (c *loopbackTCPPipeConn) SetDeadline(t time.Time) error {
+	if err := c.SetReadDeadline(t); err != nil {
+		return err
+	}
+	return c.SetWriteDeadline(t)
+}
+
+func (c *loopbackTCPPipeConn) SetReadDeadline(t time.Time) error {
+	c.readDeadline.set(t, func() {
+		c.incoming.mu.Lock()
+		c.incoming.readableCond.Broadcast()
+		c.incoming.mu.Unlock()
+	})
+	return nil
+}
+
+func (c *loopbackTCPPipeConn) SetWriteDeadline(t time.Time) error {
+	c.writeDeadline.set(t, func() {
+		c.outgoing.mu.Lock()
+		c.outgoing.writableCond.Broadcast()
+		c.outgoing.mu.Unlock()
+	})
+	return nil
+}
+
+func (c *loopbackTCPPipeConn) checkClosed(op string) error {
+	select {
+	case <-c.closed:
+		return &net.OpError{
+			Op:  op,
+			Net: c.localAddr.Network(),
+			Err: net.ErrClosed,
+		}
+	default:
+		return nil
+	}
+}
+
+func (c *loopbackTCPPipeConn) readDeadlineExpired() bool {
+	deadline := c.readDeadline.get()
+	return !deadline.IsZero() && !time.Now().Before(deadline)
+}
+
+func (c *loopbackTCPPipeConn) writeDeadlineExpired() bool {
+	deadline := c.writeDeadline.get()
+	return !deadline.IsZero() && !time.Now().Before(deadline)
+}
+
+func (c *loopbackTCPPipeConn) timeoutError(op string) error {
+	return &net.OpError{
+		Op:  op,
+		Net: c.localAddr.Network(),
+		Err: errors.New("i/o timeout"),
+	}
+}
+
+// loopbackTCPConn is an in-memory TCP connection implemented using a buffered pipe.
 // It wraps a net.Conn and adds loopback-specific address and port tracking.
 type loopbackTCPConn struct {
 	net.Conn
@@ -406,14 +646,13 @@ func (ltc *loopbackTCPConn) SetDeadline(t time.Time) error {
 	return ltc.Conn.SetDeadline(t)
 }
 
-// PipeTCP creates a pair of connected loopbackTCPConn using net.Pipe.
+// PipeTCP creates a pair of connected loopbackTCPConn using a buffered
+// in-memory full-duplex transport.
 // The connections communicate directly through an in-memory pipe without
 // using actual network sockets. Both connections have their local and
 // remote addresses set to point to each other.
-// This is analogous to net.Pipe() but returns loopbackTCPConn instances.
+// This is analogous to net.Pipe() but includes per-direction buffering.
 func PipeTCP() (client, server gonnect.TCPConn) {
-	serverPipe, clientPipe := net.Pipe()
-
 	serverAddr := &helpers.NetAddr{
 		Net:  "tcp",
 		Addr: "pipe:server",
@@ -422,6 +661,8 @@ func PipeTCP() (client, server gonnect.TCPConn) {
 		Net:  "tcp",
 		Addr: "pipe:client",
 	}
+
+	clientPipe, serverPipe := newLoopbackTCPPipePair(clientAddr, serverAddr)
 
 	serverConn := &loopbackTCPConn{
 		Conn:  serverPipe,

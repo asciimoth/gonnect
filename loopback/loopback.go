@@ -37,7 +37,7 @@ var ErrNetworkDown = &net.OpError{
 
 // LoopbackNetwork is an in-memory network implementation that simulates
 // loopback network operations. It provides TCP and UDP communication using
-// net.Pipe() for TCP and buffered channels for UDP, all without creating
+// buffered in-memory transports for TCP and buffered channels for UDP, all without creating
 // actual network sockets.
 type LoopbackNetwork struct {
 	mu sync.Mutex
@@ -440,7 +440,7 @@ func (ln *LoopbackNetwork) Listen(
 // ListenTCP announces on the specified TCP network and address.
 // It accepts "tcp", "tcp4", or "tcp6" as valid network types.
 // The returned TCPListener is an in-memory listener that accepts
-// connections via net.Pipe().
+// connections via a buffered in-memory TCP transport.
 func (ln *LoopbackNetwork) ListenTCP(
 	ctx context.Context,
 	network, laddr string,
@@ -563,7 +563,8 @@ func (ln *LoopbackNetwork) ListenUDP(
 // DialTCP establishes a TCP connection to the remote address using the specified network.
 // It accepts "tcp", "tcp4", or "tcp6" as valid network types.
 // If laddr is not empty, it is used as the local address for the connection.
-// The connection is established using net.Pipe() between the client and server.
+// The connection is established using a buffered in-memory transport between
+// the client and server.
 // Returns an error if no listener is bound to the remote address.
 func (ln *LoopbackNetwork) DialTCP(
 	ctx context.Context,
@@ -601,7 +602,10 @@ func (ln *LoopbackNetwork) DialTCP(
 		return nil, ge.ConnRefused(network, raddr)
 	}
 
-	serverPipe, clientPipe := net.Pipe()
+	clientPipe, serverPipe := newLoopbackTCPPipePair(
+		&helpers.NetAddr{Net: network, Addr: "pipe:client"},
+		serverAddr,
+	)
 	serverConn := &loopbackTCPConn{
 		Conn:  serverPipe,
 		Laddr: serverAddr,

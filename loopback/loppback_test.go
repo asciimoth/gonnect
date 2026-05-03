@@ -349,6 +349,63 @@ func TestLoopbackTCPConnWriteDeadlineTimeout(t *testing.T) {
 	}
 }
 
+func TestLoopbackTCPConcurrentWriteFirst(t *testing.T) {
+	network := loopback.NewLoopbackNetwok()
+	listener, err := network.ListenTCP(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to create listener: %v", err)
+	}
+	defer listener.Close()
+
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			t.Errorf("failed to accept: %v", err)
+			return
+		}
+		accepted <- conn
+	}()
+
+	client, err := network.Dial(t.Context(), "tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatalf("failed to dial: %v", err)
+	}
+	defer client.Close()
+
+	server := <-accepted
+	defer server.Close()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		if _, err := client.Write([]byte("hello")); err != nil {
+			t.Errorf("client write failed: %v", err)
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		if _, err := server.Write([]byte("world")); err != nil {
+			t.Errorf("server write failed: %v", err)
+		}
+	}()
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("simultaneous write-first traffic blocked")
+	}
+}
+
 func TestLoopbackTCPConnSetDeadline(t *testing.T) {
 	network := loopback.NewLoopbackNetwok()
 	listener, err := network.ListenTCP(t.Context(), "tcp", "127.0.0.1:0")

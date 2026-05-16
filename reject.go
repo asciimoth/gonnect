@@ -155,6 +155,14 @@ func (n *RejectNetwork) ListenUDPConfig(
 	return n.ListenUDP(ctx, network, laddr)
 }
 
+func (n *RejectNetwork) ListenMulticastUDP(
+	ctx context.Context,
+	network, address string,
+	opts MulticastOptions,
+) (MulticastPacketConn, error) {
+	return nil, listenError(network, address)
+}
+
 // Interfaces returns an empty slice and nil error.
 func (n *RejectNetwork) Interfaces() ([]NetworkInterface, error) {
 	return []NetworkInterface{}, nil
@@ -162,6 +170,11 @@ func (n *RejectNetwork) Interfaces() ([]NetworkInterface, error) {
 
 // InterfaceAddrs returns an empty slice and nil error.
 func (n *RejectNetwork) InterfaceAddrs() ([]net.Addr, error) {
+	return []net.Addr{}, nil
+}
+
+// InterfaceMulticastAddrs returns an empty slice and nil error.
+func (n *RejectNetwork) InterfaceMulticastAddrs() ([]net.Addr, error) {
 	return []net.Addr{}, nil
 }
 

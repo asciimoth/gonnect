@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"runtime"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -42,6 +43,199 @@ func TestLoopbackNetworkUdpPingPong(t *testing.T) {
 		Addr:    "127.0.0.1:0",
 	}
 	gt.RunUdpPingPongForNetworks(t, pair, pair)
+}
+
+func TestLoopbackNetworkInterfaceMulticastAddrs(t *testing.T) {
+	t.Parallel()
+
+	network := gonnect.NewLoopbackNetwok()
+	addrs, err := network.InterfaceMulticastAddrs()
+	if err != nil {
+		t.Fatalf("InterfaceMulticastAddrs() error = %v", err)
+	}
+	want := []string{"224.0.0.1", "ff02::1"}
+	if len(addrs) != len(want) {
+		t.Fatalf(
+			"InterfaceMulticastAddrs() len = %d, want %d",
+			len(addrs),
+			len(want),
+		)
+	}
+	for i, wantAddr := range want {
+		if addrs[i].String() != wantAddr {
+			t.Fatalf(
+				"InterfaceMulticastAddrs()[%d] = %q, want %q",
+				i,
+				addrs[i],
+				wantAddr,
+			)
+		}
+		ipAddr, ok := addrs[i].(*net.IPAddr)
+		if !ok {
+			t.Fatalf(
+				"InterfaceMulticastAddrs()[%d] type = %T, want *net.IPAddr",
+				i,
+				addrs[i],
+			)
+		}
+		if !ipAddr.IP.IsMulticast() {
+			t.Fatalf(
+				"InterfaceMulticastAddrs()[%d] = %q, want multicast IP",
+				i,
+				addrs[i],
+			)
+		}
+	}
+
+	ifs, err := network.Interfaces()
+	if err != nil {
+		t.Fatalf("Interfaces() error = %v", err)
+	}
+	if len(ifs) != 1 {
+		t.Fatalf("Interfaces() len = %d, want 1", len(ifs))
+	}
+	if ifs[0].Flags()&net.FlagMulticast == 0 {
+		t.Fatal("loopback interface missing multicast flag")
+	}
+	ifaceAddrs, err := ifs[0].MulticastAddrs()
+	if err != nil {
+		t.Fatalf("lo MulticastAddrs() error = %v", err)
+	}
+	if len(ifaceAddrs) != len(addrs) {
+		t.Fatalf(
+			"lo MulticastAddrs() len = %d, want %d",
+			len(ifaceAddrs),
+			len(addrs),
+		)
+	}
+	for i := range addrs {
+		if ifaceAddrs[i].String() != addrs[i].String() {
+			t.Fatalf(
+				"lo MulticastAddrs()[%d] = %q, want %q",
+				i,
+				ifaceAddrs[i],
+				addrs[i],
+			)
+		}
+	}
+}
+
+func TestLoopbackNetworkMulticastUDP(t *testing.T) {
+	t.Parallel()
+
+	network := gonnect.NewLoopbackNetwok()
+	ifs, err := network.InterfacesByName("lo")
+	if err != nil {
+		t.Fatalf("InterfacesByName() error = %v", err)
+	}
+	if len(ifs) != 1 {
+		t.Fatalf("InterfacesByName() len = %d, want 1", len(ifs))
+	}
+	if flags := ifs[0].Flags(); flags&net.FlagUp == 0 ||
+		flags&net.FlagRunning == 0 ||
+		flags&net.FlagMulticast == 0 ||
+		flags&net.FlagPointToPoint != 0 {
+		t.Fatalf(
+			"loopback flags = %v, want up/running/multicast and not point-to-point",
+			flags,
+		)
+	}
+	addrs, err := ifs[0].Addrs()
+	if err != nil {
+		t.Fatalf("lo Addrs() error = %v", err)
+	}
+	var hasLinkLocal bool
+	for _, addr := range addrs {
+		if ipNet, ok := addr.(*net.IPNet); ok && ipNet.IP.IsLinkLocalUnicast() {
+			hasLinkLocal = true
+		}
+	}
+	if !hasLinkLocal {
+		t.Fatal("lo Addrs() missing IPv6 link-local address")
+	}
+
+	c1, err := network.ListenMulticastUDP(
+		t.Context(),
+		"udp6",
+		"[::]:0",
+		gonnect.MulticastOptions{
+			ReuseAddr:    true,
+			ReusePort:    true,
+			ControlFlags: gonnect.ControlDst | gonnect.ControlInterface,
+		},
+	)
+	if err != nil {
+		t.Fatalf("ListenMulticastUDP(c1) error = %v", err)
+	}
+	defer c1.Close()
+
+	port := c1.LocalAddr().(*net.UDPAddr).Port
+	c2, err := network.ListenMulticastUDP(
+		t.Context(),
+		"udp6",
+		net.JoinHostPort("::", strconv.Itoa(port)),
+		gonnect.MulticastOptions{
+			ReuseAddr:    true,
+			ReusePort:    true,
+			ControlFlags: gonnect.ControlDst | gonnect.ControlInterface,
+		},
+	)
+	if err != nil {
+		t.Fatalf("ListenMulticastUDP(c2) error = %v", err)
+	}
+	defer c2.Close()
+
+	group := &net.IPAddr{IP: net.ParseIP("ff02::114")}
+	if err := c1.JoinGroup(ifs[0], group); err != nil {
+		t.Fatalf("c1 JoinGroup() error = %v", err)
+	}
+	if err := c2.JoinGroup(ifs[0], group); err != nil {
+		t.Fatalf("c2 JoinGroup() error = %v", err)
+	}
+
+	msg := []byte("multicast ping")
+	dst := &net.UDPAddr{IP: group.IP, Port: port, Zone: ifs[0].Name()}
+	if _, err := c1.WriteToControl(msg, gonnect.ControlMessage{
+		IfIndex: ifs[0].Index(),
+		IfName:  ifs[0].Name(),
+	}, dst); err != nil {
+		t.Fatalf("WriteToControl() error = %v", err)
+	}
+
+	buf := make([]byte, 64)
+	if err := c2.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline() error = %v", err)
+	}
+	n, cm, from, err := c2.ReadFromControl(buf)
+	if err != nil {
+		t.Fatalf("ReadFromControl() error = %v", err)
+	}
+	if string(buf[:n]) != string(msg) {
+		t.Fatalf("ReadFromControl() payload = %q, want %q", buf[:n], msg)
+	}
+	if cm.IfIndex != ifs[0].Index() || cm.IfName != ifs[0].Name() {
+		t.Fatalf(
+			"control interface = %d/%q, want %d/%q",
+			cm.IfIndex,
+			cm.IfName,
+			ifs[0].Index(),
+			ifs[0].Name(),
+		)
+	}
+	if cm.Dst == nil || cm.Dst.String() != dst.String() {
+		t.Fatalf("control dst = %v, want %v", cm.Dst, dst)
+	}
+	fromUDP, ok := from.(*net.UDPAddr)
+	if !ok {
+		t.Fatalf("from type = %T, want *net.UDPAddr", from)
+	}
+	if !fromUDP.IP.IsLinkLocalUnicast() || fromUDP.Zone != ifs[0].Name() {
+		t.Fatalf(
+			"from = %v, want link-local source with zone %q",
+			fromUDP,
+			ifs[0].Name(),
+		)
+	}
 }
 
 func TestLoopbackNetwork_Stoppable(t *testing.T) {

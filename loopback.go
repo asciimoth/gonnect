@@ -39,6 +39,7 @@ type LoopbackNetwork struct {
 	tcp6reg *loopbackTCPRegistry
 	udp4reg *loopbackUDPRegistry
 	udp6reg *loopbackUDPRegistry
+	mcast   *loopbackMulticastRegistry
 
 	// nextID is the next ID to assign to a tracked connection.
 	nextID uint64
@@ -68,6 +69,7 @@ func NewLoopbackNetwok() *LoopbackNetwork {
 			Network: "udp6",
 			Host:    "::1",
 		},
+		mcast: &loopbackMulticastRegistry{},
 	}
 }
 
@@ -75,28 +77,54 @@ func (ln *LoopbackNetwork) IsNative() bool {
 	return false
 }
 
+func loopbackInterfaceAddrs() []net.Addr {
+	return []net.Addr{
+		&net.IPNet{
+			IP:   net.IPv4(127, 0, 0, 1),
+			Mask: net.CIDRMask(8, 32),
+		},
+		&net.IPNet{
+			IP:   net.IPv6loopback,
+			Mask: net.CIDRMask(128, 128),
+		},
+		&net.IPNet{
+			IP:   net.ParseIP("fe80::1"),
+			Mask: net.CIDRMask(64, 128),
+		},
+	}
+}
+
+func loopbackInterfaceMulticastAddrs() []net.Addr {
+	return []net.Addr{
+		&net.IPAddr{IP: net.IPv4(224, 0, 0, 1)},
+		&net.IPAddr{IP: net.ParseIP("ff02::1")},
+	}
+}
+
 // Interfaces returns a slice containing the loopback network interface.
 // It returns a single interface representing "lo" with index 1, MTU 65536,
 // and the net.FlagLoopback and net.FlagUp flags set.
 func (ln *LoopbackNetwork) Interfaces() ([]NetworkInterface, error) {
 	return []NetworkInterface{&LiteralInterface{
-		IndexVal:        1,
-		MTUVal:          65536,
-		NameVal:         "lo",
-		HardwareAddrVal: nil,
-		FlagsVal:        net.FlagLoopback | net.FlagUp,
+		IndexVal:          1,
+		MTUVal:            65536,
+		NameVal:           "lo",
+		HardwareAddrVal:   nil,
+		FlagsVal:          net.FlagLoopback | net.FlagUp | net.FlagRunning | net.FlagMulticast,
+		AddrsVal:          loopbackInterfaceAddrs(),
+		MulticastAddrsVal: loopbackInterfaceMulticastAddrs(),
 	}}, nil
 }
 
 // InterfaceAddrs returns the unicast interface addresses for the loopback interface.
-// It returns the IPv4 loopback range 127.0.0.0/8 to be permissive.
+// It returns the IPv4 loopback range 127.0.0.0/8 to be permissive and the IPv6 loopback address.
 func (ln *LoopbackNetwork) InterfaceAddrs() ([]net.Addr, error) {
-	// Use IPv4 localhost /8 to be permissive
-	ipnet := &net.IPNet{
-		IP:   net.IPv4(127, 0, 0, 1),
-		Mask: net.CIDRMask(8, 32),
-	}
-	return []net.Addr{ipnet}, nil
+	return loopbackInterfaceAddrs(), nil
+}
+
+// InterfaceMulticastAddrs returns multicast addresses for the loopback interface.
+func (ln *LoopbackNetwork) InterfaceMulticastAddrs() ([]net.Addr, error) {
+	return loopbackInterfaceMulticastAddrs(), nil
 }
 
 // InterfacesByIndex returns the network interface with the given index.

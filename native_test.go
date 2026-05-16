@@ -1,3 +1,4 @@
+// nolint
 package gonnect_test
 
 import (
@@ -38,6 +39,51 @@ func TestNativeNetworkUdpPingPong(t *testing.T) {
 		Addr:    "127.0.0.1:0",
 	}
 	gt.RunUdpPingPongForNetworks(t, pair, pair)
+}
+
+func TestNativeNetworkInterfaceMulticastAddrs(t *testing.T) {
+	t.Parallel()
+
+	n := gonnect.NativeConfig{}.Build()
+	got, err := n.InterfaceMulticastAddrs()
+	if err != nil {
+		t.Fatalf("InterfaceMulticastAddrs() error = %v", err)
+	}
+
+	ifs, err := n.Interfaces()
+	if err != nil {
+		t.Fatalf("Interfaces() error = %v", err)
+	}
+	var want []net.Addr
+	for _, iface := range ifs {
+		addrs, err := iface.MulticastAddrs()
+		if err != nil {
+			t.Fatalf(
+				"interface %q MulticastAddrs() error = %v",
+				iface.Name(),
+				err,
+			)
+		}
+		want = append(want, addrs...)
+	}
+
+	if len(got) != len(want) {
+		t.Fatalf(
+			"InterfaceMulticastAddrs() len = %d, want %d",
+			len(got),
+			len(want),
+		)
+	}
+	for i := range want {
+		if got[i].String() != want[i].String() {
+			t.Fatalf(
+				"InterfaceMulticastAddrs()[%d] = %q, want %q",
+				i,
+				got[i],
+				want[i],
+			)
+		}
+	}
 }
 
 func TestNativeNetworkListenPacketConfig_UsesCallSpecificControl(t *testing.T) {

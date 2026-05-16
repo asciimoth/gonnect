@@ -390,6 +390,27 @@ func (n *NativeNetwork) InterfaceAddrs() ([]net.Addr, error) {
 	return net.InterfaceAddrs()
 }
 
+// InterfaceMulticastAddrs returns the multicast addresses associated with the system.
+// This method delegates to each native interface's MulticastAddrs method.
+func (n *NativeNetwork) InterfaceMulticastAddrs() ([]net.Addr, error) {
+	ifs, err := net.Interfaces()
+	if err != nil {
+		return nil, err
+	}
+	var ret []net.Addr
+	for _, iface := range ifs {
+		addrs, err := iface.MulticastAddrs()
+		if err != nil {
+			return nil, err
+		}
+		ret = append(ret, addrs...)
+	}
+	if ret == nil {
+		return []net.Addr{}, nil
+	}
+	return ret, nil
+}
+
 // Interfaces returns all network interfaces available on the system.
 // This method delegates to net.Interfaces.
 func (n *NativeNetwork) Interfaces() ([]NetworkInterface, error) {

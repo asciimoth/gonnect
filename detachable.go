@@ -372,6 +372,30 @@ func (n *DetachedNetwork) ListenUDPConfig(
 	return n.trackUDPConn(gen, c)
 }
 
+func (n *DetachedNetwork) ListenMulticastUDP(
+	ctx context.Context,
+	network, address string,
+	opts MulticastOptions,
+) (MulticastPacketConn, error) {
+	ctx, cancel, gen, done, err := n.begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer cancel()
+	c, err := runDetachedOp(
+		ctx,
+		done,
+		func(ctx context.Context) (MulticastPacketConn, error) {
+			return n.wrapped.ListenMulticastUDP(ctx, network, address, opts)
+		},
+		func(c MulticastPacketConn) { _ = c.Close() },
+	)
+	if err != nil {
+		return nil, err
+	}
+	return n.trackMulticastPacketConn(gen, c)
+}
+
 func (n *DetachedNetwork) LookupIP(
 	ctx context.Context,
 	network, address string,
@@ -600,6 +624,13 @@ func (n *DetachedNetwork) InterfaceAddrs() ([]net.Addr, error) {
 	return n.wrapped.InterfaceAddrs()
 }
 
+func (n *DetachedNetwork) InterfaceMulticastAddrs() ([]net.Addr, error) {
+	if err := n.checkUp(); err != nil {
+		return nil, err
+	}
+	return n.wrapped.InterfaceMulticastAddrs()
+}
+
 func (n *DetachedNetwork) InterfacesByIndex(
 	index int,
 ) ([]NetworkInterface, error) {
@@ -767,6 +798,42 @@ func (n *DetachedNetwork) trackPacketConn(
 	n.closers[id] = c
 	n.mu.Unlock()
 	return c, nil
+}
+
+func (n *DetachedNetwork) trackMulticastPacketConn(
+	gen uint64,
+	c MulticastPacketConn,
+) (MulticastPacketConn, error) {
+	n.mu.Lock()
+	if !n.up || n.gen != gen {
+		n.mu.Unlock()
+		_ = c.Close()
+		return nil, net.ErrClosed
+	}
+	id := n.nextID
+	n.nextID++
+	c = &detachedMulticastPacketConn{
+		MulticastPacketConn: c,
+		beforeClose:         func() { n.unregister(id) },
+	}
+	n.closers[id] = c
+	n.mu.Unlock()
+	return c, nil
+}
+
+type detachedMulticastPacketConn struct {
+	MulticastPacketConn
+	closeOnce   sync.Once
+	beforeClose func()
+}
+
+func (c *detachedMulticastPacketConn) Close() error {
+	c.closeOnce.Do(func() {
+		if c.beforeClose != nil {
+			c.beforeClose()
+		}
+	})
+	return c.MulticastPacketConn.Close()
 }
 
 func (n *DetachedNetwork) trackListener(

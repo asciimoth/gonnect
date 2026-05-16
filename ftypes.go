@@ -2,12 +2,15 @@ package gonnect
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/netip"
 	"syscall"
 	"time"
 )
+
+var ErrUnsupported = errors.New("unsupported")
 
 // Static type assertions
 var (
@@ -35,6 +38,40 @@ var (
 type PacketConn interface {
 	net.PacketConn
 	net.Conn
+}
+
+type ControlFlags int
+
+const (
+	ControlDst ControlFlags = 1 << iota
+	ControlInterface
+)
+
+type ControlMessage struct {
+	Dst     net.Addr
+	IfIndex int
+	IfName  string
+}
+
+type MulticastOptions struct {
+	ReuseAddr bool
+	ReusePort bool
+	RecvAnyIf bool
+
+	ControlFlags ControlFlags
+}
+
+type MulticastPacketConn interface {
+	net.PacketConn
+
+	JoinGroup(iface NetworkInterface, group net.Addr) error
+	LeaveGroup(iface NetworkInterface, group net.Addr) error
+
+	SetControlMessage(flags ControlFlags, on bool) error
+	ReadFromControl(
+		b []byte,
+	) (n int, cm ControlMessage, from net.Addr, err error)
+	WriteToControl(b []byte, cm ControlMessage, dst net.Addr) (int, error)
 }
 
 type TCPConn interface {
@@ -285,6 +322,12 @@ type Network interface {
 		network, laddr string,
 	) (UDPConn, error)
 
+	ListenMulticastUDP(
+		ctx context.Context,
+		network, address string,
+		opts MulticastOptions,
+	) (MulticastPacketConn, error)
+
 	// Interfaces returns the list of network interfaces known to this Network.
 	// Implementations may return an empty slice when the network is virtual,
 	// even though Dial/Listen/ListenPacket may still be usable. Multiple
@@ -296,6 +339,12 @@ type Network interface {
 	// even though Dial/Listen/ListenPacket may still be usable.
 	// Duplicates are allowed.
 	InterfaceAddrs() ([]net.Addr, error)
+	// InterfaceMulticastAddrs returns the multicast addresses associated with
+	// interfaces known to this Network.
+	// Implementations may return an empty slice when the network is virtual,
+	// even though Dial/Listen/ListenPacket may still be usable.
+	// Duplicates are allowed.
+	InterfaceMulticastAddrs() ([]net.Addr, error)
 	// InterfacesByIndex returns all interfaces that match the provided index.
 	// Implementations may return an empty slice when the network is virtual,
 	// even though Dial/Listen/ListenPacket may still be usable.

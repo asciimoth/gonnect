@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/asciimoth/gonnect"
-	"github.com/asciimoth/gonnect/loopback"
 	gt "github.com/asciimoth/gonnect/testing"
 )
 
@@ -239,7 +238,7 @@ func TestDetachedNetworkCloseCancelsContextIgnoringDialAndListen(
 	t *testing.T,
 ) {
 	wrapped := &delayedLoopbackNetwork{
-		Network: loopback.NewLoopbackNetwok(),
+		Network: gonnect.NewLoopbackNetwok(),
 		delay:   time.Second,
 		entered: make(chan string, 2),
 	}

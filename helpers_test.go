@@ -1,4 +1,4 @@
-package helpers_test
+package gonnect_test
 
 import (
 	"bytes"
@@ -7,7 +7,7 @@ import (
 	"net"
 	"testing"
 
-	"github.com/asciimoth/gonnect/helpers"
+	helpers "github.com/asciimoth/gonnect"
 )
 
 func TestJointIPPort(t *testing.T) {

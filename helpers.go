@@ -1,5 +1,4 @@
-// Package helpers provides utility functions for network operations.
-package helpers
+package gonnect
 
 import (
 	"context"
@@ -14,7 +13,6 @@ import (
 	"syscall"
 
 	"github.com/asciimoth/bufpool"
-	"github.com/asciimoth/gonnect"
 )
 
 var (
@@ -123,7 +121,7 @@ func SplitHostPort(
 	port = defport
 	intPort, err := strconv.Atoi(strPort)
 	if err != nil {
-		intPort, err = gonnect.LookupPortOffline(network, strPort)
+		intPort, err = LookupPortOffline(network, strPort)
 	}
 	if err == nil && intPort <= math.MaxUint16 && intPort >= 0 {
 		port = uint16(intPort) //nolint
@@ -365,7 +363,7 @@ func MultipathTCP(c net.Conn) (bool, error) {
 	if wm, ok := c.(withMultipathTCP); ok {
 		return wm.MultipathTCP()
 	}
-	u := gonnect.GetWrapped(c)
+	u := GetWrapped(c)
 	if c, ok := u.(net.Conn); ok {
 		return MultipathTCP(c)
 	}
@@ -387,7 +385,7 @@ func SyscallConn(a any) (syscall.RawConn, error) {
 	if ws, ok := a.(withSyscall); ok {
 		return ws.SyscallConn()
 	}
-	return SyscallConn(gonnect.GetWrapped(a))
+	return SyscallConn(GetWrapped(a))
 }
 
 type withFile interface {
@@ -405,7 +403,7 @@ func File(a any) (f *os.File, err error) {
 	if wf, ok := a.(withFile); ok {
 		return wf.File()
 	}
-	return File(gonnect.GetWrapped(a))
+	return File(GetWrapped(a))
 }
 
 func joinNetErrors(a, b error) (err error) {
@@ -539,13 +537,13 @@ type NetDefIface interface {
 		ctx context.Context,
 		network, address string,
 	) (net.Conn, error)
-	Interfaces() ([]gonnect.NetworkInterface, error)
+	Interfaces() ([]NetworkInterface, error)
 }
 
 func DefaultInterface(
 	ctx context.Context,
 	n NetDefIface,
-) (gonnect.NetworkInterface, error) {
+) (NetworkInterface, error) {
 	// Dirty hack but somehow it is a de-facto standard way to do it
 	var laddr *net.UDPAddr
 	addrs := []struct {

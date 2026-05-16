@@ -1,4 +1,4 @@
-package reject_test
+package gonnect_test
 
 import (
 	// "context"
@@ -8,12 +8,12 @@ import (
 	// "syscall"
 	"testing"
 
-	"github.com/asciimoth/gonnect/reject"
+	"github.com/asciimoth/gonnect"
 	gt "github.com/asciimoth/gonnect/testing"
 )
 
-func TestNativeNetwork_Compliance(t *testing.T) {
+func TestRejectNetwork_Compliance(t *testing.T) {
 	gt.RunNetworkErrorComplianceTests(t, func() gt.Network {
-		return &reject.Network{}
+		return &gonnect.RejectNetwork{}
 	})
 }

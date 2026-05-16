@@ -1,5 +1,5 @@
 // nolint
-package loopback_test
+package gonnect_test
 
 import (
 	"errors"
@@ -10,35 +10,35 @@ import (
 	"testing"
 	"time"
 
-	"github.com/asciimoth/gonnect/loopback"
+	"github.com/asciimoth/gonnect"
 	gt "github.com/asciimoth/gonnect/testing"
 )
 
-func TestNativeNetwork_Compliance(t *testing.T) {
+func TestLoopbackNetwork_Compliance(t *testing.T) {
 	gt.RunNetworkErrorComplianceTests(t, func() gt.Network {
-		return loopback.NewLoopbackNetwok()
+		return gonnect.NewLoopbackNetwok()
 	})
 }
 
-func TestNativeNetworkTcpPingPong(t *testing.T) {
+func TestLoopbackNetworkTcpPingPong(t *testing.T) {
 	pair := gt.NetAddrPair{
-		Network: loopback.NewLoopbackNetwok(),
+		Network: gonnect.NewLoopbackNetwok(),
 		Addr:    "127.0.0.1:0",
 	}
 	gt.RunTcpPingPongForNetworks(t, pair, pair)
 }
 
-func TestNativeNetworkHTTP(t *testing.T) {
+func TestLoopbackNetworkHTTP(t *testing.T) {
 	pair := gt.NetAddrPair{
-		Network: loopback.NewLoopbackNetwok(),
+		Network: gonnect.NewLoopbackNetwok(),
 		Addr:    "127.0.0.1:0",
 	}
 	gt.RunSimpleHTTPForNetworks(t, pair, pair)
 }
 
-func TestNativeNetworkUdpPingPong(t *testing.T) {
+func TestLoopbackNetworkUdpPingPong(t *testing.T) {
 	pair := gt.NetAddrPair{
-		Network: loopback.NewLoopbackNetwok(),
+		Network: gonnect.NewLoopbackNetwok(),
 		Addr:    "127.0.0.1:0",
 	}
 	gt.RunUdpPingPongForNetworks(t, pair, pair)
@@ -46,12 +46,12 @@ func TestNativeNetworkUdpPingPong(t *testing.T) {
 
 func TestLoopbackNetwork_Stoppable(t *testing.T) {
 	gt.RunStoppableNetworkTests(t, func() gt.UpDownNetwork {
-		return loopback.NewLoopbackNetwok()
+		return gonnect.NewLoopbackNetwok()
 	}, "127.0.0.1:0")
 }
 
 func TestLoopbackTCPListenerDeadline(t *testing.T) {
-	network := loopback.NewLoopbackNetwok()
+	network := gonnect.NewLoopbackNetwok()
 	listener, err := network.ListenTCP(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("failed to create listener: %v", err)
@@ -114,7 +114,7 @@ func TestLoopbackTCPListenerDeadline(t *testing.T) {
 }
 
 func TestLoopbackTCPConnReadDeadline(t *testing.T) {
-	network := loopback.NewLoopbackNetwok()
+	network := gonnect.NewLoopbackNetwok()
 	listener, err := network.ListenTCP(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("failed to create listener: %v", err)
@@ -169,7 +169,7 @@ func TestLoopbackTCPConnReadDeadline(t *testing.T) {
 }
 
 func TestLoopbackTCPConnReadDeadlineSuccess(t *testing.T) {
-	network := loopback.NewLoopbackNetwok()
+	network := gonnect.NewLoopbackNetwok()
 	listener, err := network.ListenTCP(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("failed to create listener: %v", err)
@@ -231,7 +231,7 @@ func TestLoopbackTCPConnReadDeadlineSuccess(t *testing.T) {
 }
 
 func TestLoopbackTCPConnWriteDeadline(t *testing.T) {
-	network := loopback.NewLoopbackNetwok()
+	network := gonnect.NewLoopbackNetwok()
 	listener, err := network.ListenTCP(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("failed to create listener: %v", err)
@@ -310,7 +310,7 @@ func TestLoopbackTCPConnWriteDeadline(t *testing.T) {
 }
 
 func TestLoopbackTCPConnWriteDeadlineTimeout(t *testing.T) {
-	network := loopback.NewLoopbackNetwok()
+	network := gonnect.NewLoopbackNetwok()
 	listener, err := network.ListenTCP(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("failed to create listener: %v", err)
@@ -350,7 +350,7 @@ func TestLoopbackTCPConnWriteDeadlineTimeout(t *testing.T) {
 }
 
 func TestLoopbackTCPConcurrentWriteFirst(t *testing.T) {
-	network := loopback.NewLoopbackNetwok()
+	network := gonnect.NewLoopbackNetwok()
 	listener, err := network.ListenTCP(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("failed to create listener: %v", err)
@@ -407,7 +407,7 @@ func TestLoopbackTCPConcurrentWriteFirst(t *testing.T) {
 }
 
 func TestLoopbackTCPConnSetDeadline(t *testing.T) {
-	network := loopback.NewLoopbackNetwok()
+	network := gonnect.NewLoopbackNetwok()
 	listener, err := network.ListenTCP(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("failed to create listener: %v", err)
@@ -468,7 +468,7 @@ func TestLoopbackTCPConnSetDeadline(t *testing.T) {
 }
 
 func TestPipeTCP(t *testing.T) {
-	client, server := loopback.PipeTCP()
+	client, server := gonnect.PipeTCP()
 	defer client.Close()
 	defer server.Close()
 
@@ -573,7 +573,7 @@ func TestPipeTCP(t *testing.T) {
 }
 
 func TestPipeTCPClose(t *testing.T) {
-	client, server := loopback.PipeTCP()
+	client, server := gonnect.PipeTCP()
 
 	// Close client
 	client.Close()
@@ -589,7 +589,7 @@ func TestPipeTCPClose(t *testing.T) {
 }
 
 func TestPipeTCPDeadline(t *testing.T) {
-	client, server := loopback.PipeTCP()
+	client, server := gonnect.PipeTCP()
 	defer client.Close()
 	defer server.Close()
 
@@ -610,7 +610,7 @@ func TestPipeTCPDeadline(t *testing.T) {
 
 	// Test write deadline (write to closed pipe)
 	client.Close()
-	client2, _ := loopback.PipeTCP()
+	client2, _ := gonnect.PipeTCP()
 	client2.SetWriteDeadline(time.Now().Add(50 * time.Millisecond))
 	_, err = client2.Write(make([]byte, 1024*1024))
 	if err == nil {
@@ -620,7 +620,7 @@ func TestPipeTCPDeadline(t *testing.T) {
 }
 
 func TestPipeUDP(t *testing.T) {
-	conn1, conn2 := loopback.PipeUDP()
+	conn1, conn2 := gonnect.PipeUDP()
 	defer conn1.Close()
 	defer conn2.Close()
 
@@ -695,7 +695,7 @@ func TestPipeUDP(t *testing.T) {
 }
 
 func TestPipeUDPClose(t *testing.T) {
-	conn1, conn2 := loopback.PipeUDP()
+	conn1, conn2 := gonnect.PipeUDP()
 
 	// Close conn1
 	conn1.Close()
@@ -710,7 +710,7 @@ func TestPipeUDPClose(t *testing.T) {
 }
 
 func TestLoopbackUDPGenericAddrWritePaths(t *testing.T) {
-	network := loopback.NewLoopbackNetwok()
+	network := gonnect.NewLoopbackNetwok()
 
 	tests := []struct {
 		name string
@@ -808,7 +808,7 @@ func TestLoopbackUDPGenericAddrWritePaths(t *testing.T) {
 
 func TestLoopbackClosedErrorsMatchNetErrClosed(t *testing.T) {
 	t.Run("udp read/write", func(t *testing.T) {
-		conn1, conn2 := loopback.PipeUDP()
+		conn1, conn2 := gonnect.PipeUDP()
 		defer conn2.Close()
 
 		if err := conn1.Close(); err != nil {
@@ -843,7 +843,7 @@ func TestLoopbackClosedErrorsMatchNetErrClosed(t *testing.T) {
 	})
 
 	t.Run("tcp accept", func(t *testing.T) {
-		network := loopback.NewLoopbackNetwok()
+		network := gonnect.NewLoopbackNetwok()
 		listener, err := network.ListenTCP(t.Context(), "tcp", "127.0.0.1:0")
 		if err != nil {
 			t.Fatalf("failed to create listener: %v", err)
@@ -859,7 +859,7 @@ func TestLoopbackClosedErrorsMatchNetErrClosed(t *testing.T) {
 }
 
 func TestPipeUDPDeadline(t *testing.T) {
-	conn1, conn2 := loopback.PipeUDP()
+	conn1, conn2 := gonnect.PipeUDP()
 	defer conn1.Close()
 	defer conn2.Close()
 
@@ -888,7 +888,7 @@ func TestPipeUDPDeadline(t *testing.T) {
 }
 
 func TestLoopbackUDPConcurrentCloseAndWrite(t *testing.T) {
-	network := loopback.NewLoopbackNetwok()
+	network := gonnect.NewLoopbackNetwok()
 
 	receiver, err := network.ListenUDP(t.Context(), "udp4", "127.0.0.1:0")
 	if err != nil {
@@ -934,7 +934,7 @@ func TestLoopbackUDPConcurrentCloseAndWrite(t *testing.T) {
 }
 
 func TestLoopbackUDPDownWhileWriting(t *testing.T) {
-	network := loopback.NewLoopbackNetwok()
+	network := gonnect.NewLoopbackNetwok()
 
 	receiver, err := network.ListenUDP(t.Context(), "udp4", "127.0.0.1:0")
 	if err != nil {

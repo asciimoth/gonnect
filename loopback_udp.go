@@ -1,4 +1,4 @@
-package loopback
+package gonnect
 
 import (
 	"errors"
@@ -8,15 +8,11 @@ import (
 	"strconv"
 	"sync"
 	"time"
-
-	"github.com/asciimoth/gonnect"
-	ge "github.com/asciimoth/gonnect/errors"
-	"github.com/asciimoth/gonnect/helpers"
 )
 
 var (
-	_ gonnect.UDPConn = &loopbackUDPConn{}
-	_ io.Closer       = &loopbackUDPConn{}
+	_ UDPConn   = &loopbackUDPConn{}
+	_ io.Closer = &loopbackUDPConn{}
 )
 
 // loopbackUDPPacket represents a single UDP packet with its data and source address.
@@ -61,7 +57,7 @@ func (r *loopbackUDPRegistry) reg(
 	if err != nil {
 		return err
 	}
-	addr := &helpers.NetAddr{
+	addr := &NetAddr{
 		Net:  r.Network,
 		Addr: net.JoinHostPort(r.Host, strconv.Itoa(int(p))),
 	}
@@ -106,11 +102,11 @@ func (r *loopbackUDPRegistry) lookup(addr net.Addr) *loopbackUDPConn {
 }
 
 func (r *loopbackUDPRegistry) lookupKey(addr net.Addr) (string, bool) {
-	if addr == nil || !helpers.IsUDPNetwork(addr.Network()) {
+	if addr == nil || !IsUDPNetwork(addr.Network()) {
 		return "", false
 	}
-	regFamily := helpers.FamilyFromNetwork(r.Network)
-	addrFamily := helpers.FamilyFromNetwork(addr.Network())
+	regFamily := FamilyFromNetwork(r.Network)
+	addrFamily := FamilyFromNetwork(addr.Network())
 	if addrFamily != "ip" && addrFamily != regFamily {
 		return "", false
 	}
@@ -124,7 +120,7 @@ func (r *loopbackUDPRegistry) lookupKey(addr net.Addr) (string, bool) {
 		return "", false
 	}
 
-	return (&helpers.NetAddr{
+	return (&NetAddr{
 		Net:  r.Network,
 		Addr: net.JoinHostPort(host, port),
 	}).String(), true
@@ -166,7 +162,7 @@ func newLoopbackUDPConn(
 		closeCh: make(chan struct{}),
 	}
 	if rport != nil {
-		c.raddr = &helpers.NetAddr{
+		c.raddr = &NetAddr{
 			Net:  reg.Network,
 			Addr: net.JoinHostPort(reg.Host, strconv.Itoa(int(*rport))),
 		}
@@ -210,7 +206,7 @@ func (c *loopbackUDPConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
-		return 0, nil, ge.ConnClosed(
+		return 0, nil, ConnClosed(
 			"read",
 			c.laddr.Network(),
 			c.laddr,
@@ -229,7 +225,7 @@ func (c *loopbackUDPConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 	select {
 	case pkt, ok := <-in:
 		if !ok {
-			return 0, nil, ge.ConnClosed(
+			return 0, nil, ConnClosed(
 				"read",
 				c.laddr.Network(),
 				c.laddr,
@@ -245,7 +241,7 @@ func (c *loopbackUDPConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 			Err: errors.New("i/o timeout"),
 		}
 	case <-c.closeCh:
-		return 0, nil, ge.ConnClosed(
+		return 0, nil, ConnClosed(
 			"read",
 			c.laddr.Network(),
 			c.laddr,
@@ -323,7 +319,7 @@ func (c *loopbackUDPConn) WriteTo(b []byte, addr net.Addr) (int, error) {
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
-		return 0, ge.ConnClosed("write", c.laddr.Network(), c.laddr, c.raddr)
+		return 0, ConnClosed("write", c.laddr.Network(), c.laddr, c.raddr)
 	}
 	wd := c.writeDeadline
 	c.mu.Unlock()
@@ -371,7 +367,7 @@ func (luc *loopbackUDPConn) WriteToUDPAddrPort(
 	b []byte,
 	addr netip.AddrPort,
 ) (int, error) {
-	return luc.WriteTo(b, &helpers.NetAddr{
+	return luc.WriteTo(b, &NetAddr{
 		Net:  luc.laddr.Network(),
 		Addr: addr.String(),
 	})
@@ -435,7 +431,7 @@ func (c *loopbackUDPConn) sendTo(
 		// Check if peer is closed before attempting to send
 		select {
 		case <-c.peerCloseCh:
-			return ge.ConnClosed("write", c.laddr.Network(), c.laddr, c.raddr)
+			return ConnClosed("write", c.laddr.Network(), c.laddr, c.raddr)
 		default:
 		}
 
@@ -448,7 +444,7 @@ func (c *loopbackUDPConn) sendTo(
 		case c.directSend <- pkg:
 			return nil
 		case <-c.peerCloseCh:
-			return ge.ConnClosed("write", c.laddr.Network(), c.laddr, c.raddr)
+			return ConnClosed("write", c.laddr.Network(), c.laddr, c.raddr)
 		case <-timer:
 			return &net.OpError{
 				Op:  "write",
@@ -456,7 +452,7 @@ func (c *loopbackUDPConn) sendTo(
 				Err: errors.New("i/o timeout"),
 			}
 		case <-c.closeCh:
-			return ge.ConnClosed("write", c.laddr.Network(), c.laddr, c.raddr)
+			return ConnClosed("write", c.laddr.Network(), c.laddr, c.raddr)
 		}
 	}
 
@@ -484,9 +480,9 @@ func (c *loopbackUDPConn) sendTo(
 			Err: errors.New("i/o timeout"),
 		}
 	case <-dst.closeCh:
-		return ge.ConnClosed("write", c.laddr.Network(), c.laddr, c.raddr)
+		return ConnClosed("write", c.laddr.Network(), c.laddr, c.raddr)
 	case <-c.closeCh:
-		return ge.ConnClosed("write", c.laddr.Network(), c.laddr, c.raddr)
+		return ConnClosed("write", c.laddr.Network(), c.laddr, c.raddr)
 	}
 }
 
@@ -494,18 +490,18 @@ func (c *loopbackUDPConn) sendTo(
 // via buffered channels. The connections are set up to send packets to
 // each other directly without using actual network sockets or registry lookup.
 // This is analogous to net.Pipe() but for UDP-style packet communication.
-func PipeUDP() (conn1, conn2 gonnect.UDPConn) {
+func PipeUDP() (conn1, conn2 UDPConn) {
 	// Create two channels for bidirectional communication
 	ch1to2 := make(chan loopbackUDPPacket, 1024)
 	ch2to1 := make(chan loopbackUDPPacket, 1024)
 	closeCh1 := make(chan struct{})
 	closeCh2 := make(chan struct{})
 
-	addr1 := &helpers.NetAddr{
+	addr1 := &NetAddr{
 		Net:  "udp",
 		Addr: "pipe:conn1",
 	}
-	addr2 := &helpers.NetAddr{
+	addr2 := &NetAddr{
 		Net:  "udp",
 		Addr: "pipe:conn2",
 	}

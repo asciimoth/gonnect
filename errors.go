@@ -1,13 +1,10 @@
-// Package errors provides canonical generators for frequently used network errors.
-package errors
+package gonnect
 
 import (
 	"fmt"
 	"net"
 	"os"
 	"syscall"
-
-	"github.com/asciimoth/gonnect/helpers"
 )
 
 // NoSuchHost returns a net.Error representing a DNS lookup failure for the specified host.
@@ -63,7 +60,7 @@ func ConnRefused(n, a string) error {
 		Op:     "dial",
 		Net:    n,
 		Source: nil,
-		Addr: &helpers.NetAddr{
+		Addr: &NetAddr{
 			Net:  n,
 			Addr: a,
 		},
@@ -83,7 +80,7 @@ func ListenDeniedErr(n, a string) error {
 		Op:     "listen",
 		Net:    n,
 		Source: nil,
-		Addr: &helpers.NetAddr{
+		Addr: &NetAddr{
 			Net:  n,
 			Addr: a,
 		},

@@ -1,4 +1,4 @@
-package loopback
+package gonnect
 
 import (
 	"errors"
@@ -6,9 +6,6 @@ import (
 	"os"
 	"syscall"
 	"time"
-
-	"github.com/asciimoth/gonnect"
-	"github.com/asciimoth/gonnect/helpers"
 )
 
 // loopbackNetHostTable maps network family combinations to loopback host addresses.
@@ -180,7 +177,7 @@ func normalizeLoopbackHosts(network, lhost, rhost string) (string, error) {
 		return "", loopbackDnsReqErr(lhost)
 	}
 	// If lhost is not a loopback IP or "localhost", it's not resolvable in loopback network
-	if lhostFam == "ip" && !helpers.IsLocal(lhost) {
+	if lhostFam == "ip" && !IsLocal(lhost) {
 		return "", loopbackDnsReqErr(lhost)
 	}
 	rhostFam := loopbackHostToFamily(rhost)
@@ -188,10 +185,10 @@ func normalizeLoopbackHosts(network, lhost, rhost string) (string, error) {
 		return "", loopbackDnsReqErr(rhost)
 	}
 	// If rhost is not a loopback IP or "localhost", it's not resolvable in loopback network
-	if rhostFam == "ip" && !helpers.IsLocal(rhost) {
+	if rhostFam == "ip" && !IsLocal(rhost) {
 		return "", loopbackDnsReqErr(rhost)
 	}
-	netFam := helpers.FamilyFromNetwork(network)
+	netFam := FamilyFromNetwork(network)
 	if netFam == "ip" {
 		if lhostFam != "ip" {
 			netFam = lhostFam
@@ -218,10 +215,10 @@ func normalizeLoopbackHost(network, host string) (string, error) {
 		return "", loopbackDnsReqErr(host)
 	}
 	// If host is not a loopback IP or "localhost", it's not resolvable in loopback network
-	if hostFam == "ip" && !helpers.IsLocal(host) {
+	if hostFam == "ip" && !IsLocal(host) {
 		return "", loopbackDnsReqErr(host)
 	}
-	netFam := helpers.FamilyFromNetwork(network)
+	netFam := FamilyFromNetwork(network)
 	norm := loopbackNetHostTable[netFam+"+"+hostFam]
 	if norm == "" {
 		return "", &net.AddrError{
@@ -252,7 +249,7 @@ func loopbackListenPrep(network, laddr string) (string, *uint16, error) {
 
 	var port *uint16
 	if portStr != "" && portStr != "0" {
-		iport, err := gonnect.LookupPortOffline(network, portStr)
+		iport, err := LookupPortOffline(network, portStr)
 
 		if err != nil {
 			return "", nil, err
@@ -307,7 +304,7 @@ func loopbackDialPrep(
 
 	var lport *uint16
 	if lportStr != "" && lportStr != "0" {
-		iport, err := gonnect.LookupPortOffline(network, lportStr)
+		iport, err := LookupPortOffline(network, lportStr)
 
 		if err != nil {
 			return "", nil, 0, err
@@ -322,7 +319,7 @@ func loopbackDialPrep(
 		lport = &uport
 	}
 
-	rport, err := gonnect.LookupPortOffline(network, rportStr)
+	rport, err := LookupPortOffline(network, rportStr)
 	if err != nil {
 		return "", nil, 0, err
 	}
@@ -340,7 +337,7 @@ func loopbackListenErrWrap(err error, network, laddr string) error {
 		return &net.OpError{
 			Op:  "listen",
 			Net: network,
-			Addr: &helpers.NetAddr{
+			Addr: &NetAddr{
 				Net:  network,
 				Addr: laddr,
 			},
@@ -359,7 +356,7 @@ func loopbackDialErrWrap(err error, network, laddr, raddr string) error {
 	}
 	var addr net.Addr
 	if raddr != "" {
-		addr = &helpers.NetAddr{
+		addr = &NetAddr{
 			Net:  network,
 			Addr: raddr,
 		}
@@ -369,7 +366,7 @@ func loopbackDialErrWrap(err error, network, laddr, raddr string) error {
 		return &net.OpError{
 			Op:  "dial",
 			Net: network,
-			Source: &helpers.NetAddr{
+			Source: &NetAddr{
 				Net:  network,
 				Addr: laddr,
 			},

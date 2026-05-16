@@ -10,7 +10,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/asciimoth/gonnect/helpers"
+	helpers "github.com/asciimoth/gonnect"
 )
 
 // Well known fwmark collection.

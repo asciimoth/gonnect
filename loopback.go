@@ -1,8 +1,4 @@
-// Package loopback provides an in-memory loopback network implementation that
-// simulates network operations without using actual network sockets.
-// It implements the gonnect.Network interface, providing TCP and UDP
-// communication between clients within the same process.
-package loopback
+package gonnect
 
 import (
 	"context"
@@ -15,16 +11,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-
-	"github.com/asciimoth/gonnect"
-	ge "github.com/asciimoth/gonnect/errors"
-	"github.com/asciimoth/gonnect/helpers"
 )
 
 // Static type assertions
 var (
-	_ gonnect.Network = &LoopbackNetwork{}
-	_ gonnect.UpDown  = &LoopbackNetwork{}
+	_ Network = &LoopbackNetwork{}
+	_ UpDown  = &LoopbackNetwork{}
 )
 
 var ErrNetworkDown = &net.OpError{
@@ -86,8 +78,8 @@ func (ln *LoopbackNetwork) IsNative() bool {
 // Interfaces returns a slice containing the loopback network interface.
 // It returns a single interface representing "lo" with index 1, MTU 65536,
 // and the net.FlagLoopback and net.FlagUp flags set.
-func (ln *LoopbackNetwork) Interfaces() ([]gonnect.NetworkInterface, error) {
-	return []gonnect.NetworkInterface{&gonnect.LiteralInterface{
+func (ln *LoopbackNetwork) Interfaces() ([]NetworkInterface, error) {
+	return []NetworkInterface{&LiteralInterface{
 		IndexVal:        1,
 		MTUVal:          65536,
 		NameVal:         "lo",
@@ -112,7 +104,7 @@ func (ln *LoopbackNetwork) InterfaceAddrs() ([]net.Addr, error) {
 // an error indicating the interface was not found.
 func (ln *LoopbackNetwork) InterfacesByIndex(
 	index int,
-) ([]gonnect.NetworkInterface, error) {
+) ([]NetworkInterface, error) {
 	if index == 1 {
 		ifs, _ := ln.Interfaces()
 		return ifs, nil
@@ -125,7 +117,7 @@ func (ln *LoopbackNetwork) InterfacesByIndex(
 // an error indicating the interface was not found.
 func (ln *LoopbackNetwork) InterfacesByName(
 	name string,
-) ([]gonnect.NetworkInterface, error) {
+) ([]NetworkInterface, error) {
 	if name == "lo" {
 		ifs, _ := ln.Interfaces()
 		return ifs, nil
@@ -194,7 +186,7 @@ func (ln *LoopbackNetwork) LookupTXT(
 			IsNotFound: true,
 		}
 	}
-	if helpers.IsLocal(name) {
+	if IsLocal(name) {
 		return make([]string, 0), nil
 	}
 	// TODO: Better error?
@@ -219,7 +211,7 @@ func (ln *LoopbackNetwork) LookupAddr(
 			IsNotFound: true,
 		}
 	}
-	if helpers.IsLocal(addr) {
+	if IsLocal(addr) {
 		return []string{"localhost"}, nil
 	}
 	// TODO: Better error?
@@ -266,7 +258,7 @@ func (ln *LoopbackNetwork) LookupPort(
 			IsNotFound: true,
 		}
 	}
-	return gonnect.LookupPortOffline(network, service)
+	return LookupPortOffline(network, service)
 }
 
 // LookupHost looks up the host and returns a slice of IP address strings.
@@ -283,7 +275,7 @@ func (ln *LoopbackNetwork) LookupHost(
 			IsNotFound: true,
 		}
 	}
-	if helpers.IsLocal(host) {
+	if IsLocal(host) {
 		return []string{"127.0.0.1", "::1"}, nil
 	}
 	return nil, &net.DNSError{
@@ -309,7 +301,7 @@ func (ln *LoopbackNetwork) LookupIP(
 			IsNotFound: true,
 		}
 	}
-	if helpers.IsLocal(address) {
+	if IsLocal(address) {
 		if strings.HasSuffix(network, "4") {
 			return []net.IP{net.ParseIP("127.0.0.1").To4()}, nil
 		}
@@ -341,7 +333,7 @@ func (ln *LoopbackNetwork) LookupNetIP(
 			IsNotFound: true,
 		}
 	}
-	if helpers.IsLocal(address) {
+	if IsLocal(address) {
 		ip4, _ := netip.AddrFromSlice(net.ParseIP("127.0.0.1").To4())
 		ip6, _ := netip.AddrFromSlice(net.ParseIP("::1").To4())
 		if strings.HasSuffix(network, "4") {
@@ -400,7 +392,7 @@ func (ln *LoopbackNetwork) LookupIPAddr(
 			IsNotFound: true,
 		}
 	}
-	if helpers.IsLocal(host) {
+	if IsLocal(host) {
 		return []net.IPAddr{
 			{IP: net.ParseIP("127.0.0.1")},
 			{IP: net.ParseIP("::1")},
@@ -442,7 +434,7 @@ func (ln *LoopbackNetwork) Listen(
 func (ln *LoopbackNetwork) ListenTCP(
 	ctx context.Context,
 	network, laddr string,
-) (gonnect.TCPListener, error) {
+) (TCPListener, error) {
 	ln.mu.Lock()
 	err := ln.checkUp()
 	if err != nil {
@@ -476,7 +468,7 @@ func (ln *LoopbackNetwork) ListenTCP(
 	// Wrap with callbacks for tracking
 	ln.mu.Lock()
 	id := ln.getID()
-	wrapped := gonnect.TCPListenerWithCallbacks(listener, &gonnect.Callbacks{
+	wrapped := TCPListenerWithCallbacks(listener, &Callbacks{
 		BeforeClose: ln.buildUnregCallback(id),
 		OnAcceptTCP: ln.registerTCPConnCallback,
 	})
@@ -492,7 +484,7 @@ func (ln *LoopbackNetwork) ListenTCP(
 func (ln *LoopbackNetwork) ListenPacket(
 	ctx context.Context,
 	network, address string,
-) (gonnect.PacketConn, error) {
+) (PacketConn, error) {
 	ln.mu.Lock()
 	err := ln.checkUp()
 	if err != nil {
@@ -515,7 +507,7 @@ func (ln *LoopbackNetwork) ListenPacket(
 func (ln *LoopbackNetwork) ListenUDP(
 	ctx context.Context,
 	network, laddr string,
-) (gonnect.UDPConn, error) {
+) (UDPConn, error) {
 	ln.mu.Lock()
 	err := ln.checkUp()
 	if err != nil {
@@ -549,7 +541,7 @@ func (ln *LoopbackNetwork) ListenUDP(
 	// Wrap with callbacks for tracking
 	ln.mu.Lock()
 	id := ln.getID()
-	wrapped := gonnect.UDPConnWithCallbacks(conn, &gonnect.Callbacks{
+	wrapped := UDPConnWithCallbacks(conn, &Callbacks{
 		BeforeClose: ln.buildUnregCallback(id),
 	})
 	ln.register(id, wrapped)
@@ -563,9 +555,9 @@ func (ln *LoopbackNetwork) ListenUDP(
 // so lc is accepted for interface compatibility and otherwise ignored.
 func (ln *LoopbackNetwork) ListenPacketConfig(
 	ctx context.Context,
-	lc *gonnect.ListenConfig,
+	lc *ListenConfig,
 	network, address string,
-) (gonnect.PacketConn, error) {
+) (PacketConn, error) {
 	return ln.ListenPacket(ctx, network, address)
 }
 
@@ -574,9 +566,9 @@ func (ln *LoopbackNetwork) ListenPacketConfig(
 // compatibility and otherwise ignored.
 func (ln *LoopbackNetwork) ListenUDPConfig(
 	ctx context.Context,
-	lc *gonnect.ListenConfig,
+	lc *ListenConfig,
 	network, laddr string,
-) (gonnect.UDPConn, error) {
+) (UDPConn, error) {
 	return ln.ListenUDP(ctx, network, laddr)
 }
 
@@ -589,7 +581,7 @@ func (ln *LoopbackNetwork) ListenUDPConfig(
 func (ln *LoopbackNetwork) DialTCP(
 	ctx context.Context,
 	network, laddr, raddr string,
-) (gonnect.TCPConn, error) {
+) (TCPConn, error) {
 	ln.mu.Lock()
 	err := ln.checkUp()
 	if err != nil {
@@ -616,14 +608,14 @@ func (ln *LoopbackNetwork) DialTCP(
 	}
 
 	raddr = net.JoinHostPort(host, strconv.Itoa(rport))
-	serverAddr := &helpers.NetAddr{Net: network, Addr: raddr}
+	serverAddr := &NetAddr{Net: network, Addr: raddr}
 	listener := reg.Lookup(serverAddr)
 	if listener == nil {
-		return nil, ge.ConnRefused(network, raddr)
+		return nil, ConnRefused(network, raddr)
 	}
 
 	clientPipe, serverPipe := newLoopbackTCPPipePair(
-		&helpers.NetAddr{Net: network, Addr: "pipe:client"},
+		&NetAddr{Net: network, Addr: "pipe:client"},
 		serverAddr,
 	)
 	serverConn := &loopbackTCPConn{
@@ -651,7 +643,7 @@ func (ln *LoopbackNetwork) DialTCP(
 	// Wrap with callbacks for tracking
 	ln.mu.Lock()
 	id := ln.getID()
-	wrapped := gonnect.TCPConnWithCallbacks(clientConn, &gonnect.Callbacks{
+	wrapped := TCPConnWithCallbacks(clientConn, &Callbacks{
 		BeforeClose: ln.buildUnregCallback(id),
 	})
 	ln.register(id, wrapped)
@@ -664,7 +656,7 @@ func (ln *LoopbackNetwork) DialTCP(
 // The returned PacketConn is wrapped with callbacks for automatic tracking.
 func (ln *LoopbackNetwork) PacketDial(
 	ctx context.Context, network, address string,
-) (gonnect.PacketConn, error) {
+) (PacketConn, error) {
 	return ln.DialUDP(ctx, network, "", address)
 }
 
@@ -676,7 +668,7 @@ func (ln *LoopbackNetwork) PacketDial(
 func (ln *LoopbackNetwork) DialUDP(
 	ctx context.Context,
 	network, laddr, raddr string,
-) (gonnect.UDPConn, error) {
+) (UDPConn, error) {
 	ln.mu.Lock()
 	err := ln.checkUp()
 	if err != nil {
@@ -717,7 +709,7 @@ func (ln *LoopbackNetwork) DialUDP(
 	// Wrap with callbacks for tracking
 	ln.mu.Lock()
 	id := ln.getID()
-	wrapped := gonnect.UDPConnWithCallbacks(con, &gonnect.Callbacks{
+	wrapped := UDPConnWithCallbacks(con, &Callbacks{
 		BeforeClose: ln.buildUnregCallback(id),
 	})
 	ln.register(id, wrapped)
@@ -845,18 +837,18 @@ func (ln *LoopbackNetwork) checkUp() error {
 // registerTCPConnCallback wraps an accepted TCP connection with tracking callbacks.
 // It rejects the connection if the network is down.
 func (ln *LoopbackNetwork) registerTCPConnCallback(
-	conn gonnect.TCPConn,
-) (gonnect.TCPConn, error) {
+	conn TCPConn,
+) (TCPConn, error) {
 	ln.mu.Lock()
 	defer ln.mu.Unlock()
 	if !ln.up {
-		return nil, ge.ConnRefused(
+		return nil, ConnRefused(
 			"tcp",
 			conn.RemoteAddr().String(),
 		)
 	}
 	id := ln.getID()
-	conn = gonnect.TCPConnWithCallbacks(conn, &gonnect.Callbacks{
+	conn = TCPConnWithCallbacks(conn, &Callbacks{
 		BeforeClose: ln.buildUnregCallback(id),
 	})
 	ln.register(id, conn)

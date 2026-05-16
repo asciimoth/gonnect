@@ -1,27 +1,21 @@
-// Package reject provides a network implementation that rejects all operations
-// with canonical errors. It implements the gonnect.Network interface, returning
-// appropriate errors for all methods.
-package reject
+package gonnect
 
 import (
 	"context"
 	"net"
 	"net/netip"
-
-	"github.com/asciimoth/gonnect"
-	"github.com/asciimoth/gonnect/errors"
 )
 
 // Static type assertions
 var (
-	_ gonnect.Network = &Network{}
+	_ Network = &RejectNetwork{}
 )
 
-// Network is a network implementation that rejects all operations with canonical errors.
-// It implements gonnect.Network.
-type Network struct{}
+// RejectNetwork is a network implementation that rejects all operations with canonical errors.
+// It implements gonnect.RejectNetwork.
+type RejectNetwork struct{}
 
-func (n *Network) IsNative() bool {
+func (n *RejectNetwork) IsNative() bool {
 	return false
 }
 
@@ -44,11 +38,11 @@ func dialError(network, address string) error {
 	// Check if host is an IP address or a hostname
 	if net.ParseIP(host) != nil {
 		// It's an IP address - return connection refused
-		return errors.ConnRefused(network, address)
+		return ConnRefused(network, address)
 	}
 
 	// It's a hostname - return DNS error with just the hostname (not host:port)
-	return errors.NoSuchHost(host, "rejectdns")
+	return NoSuchHost(host, "rejectdns")
 }
 
 // listenError returns an appropriate error for listen operations based on the network and address.
@@ -67,7 +61,7 @@ func listenError(network, address string) error {
 	}
 
 	// Valid format - return listen denied
-	return errors.ListenDeniedErr(network, address)
+	return ListenDeniedErr(network, address)
 }
 
 // isKnownNetwork returns true if the network is a known network type.
@@ -81,7 +75,7 @@ func isKnownNetwork(network string) bool {
 }
 
 // Dial returns an appropriate error based on the network and address.
-func (n *Network) Dial(
+func (n *RejectNetwork) Dial(
 	ctx context.Context,
 	network, address string,
 ) (net.Conn, error) {
@@ -89,7 +83,7 @@ func (n *Network) Dial(
 }
 
 // Listen returns an appropriate error based on the network and address.
-func (n *Network) Listen(
+func (n *RejectNetwork) Listen(
 	ctx context.Context,
 	network, address string,
 ) (net.Listener, error) {
@@ -97,180 +91,180 @@ func (n *Network) Listen(
 }
 
 // ListenPacket returns an appropriate error based on the network and address.
-func (n *Network) ListenPacket(
+func (n *RejectNetwork) ListenPacket(
 	ctx context.Context,
 	network, address string,
-) (gonnect.PacketConn, error) {
+) (PacketConn, error) {
 	return nil, listenError(network, address)
 }
 
 // DialTCP returns an appropriate error based on the network and address.
-func (n *Network) DialTCP(
+func (n *RejectNetwork) DialTCP(
 	ctx context.Context,
 	network, laddr, raddr string,
-) (gonnect.TCPConn, error) {
+) (TCPConn, error) {
 	return nil, dialError(network, raddr)
 }
 
 // ListenTCP returns an appropriate error based on the network and address.
-func (n *Network) ListenTCP(
+func (n *RejectNetwork) ListenTCP(
 	ctx context.Context,
 	network, laddr string,
-) (gonnect.TCPListener, error) {
+) (TCPListener, error) {
 	return nil, listenError(network, laddr)
 }
 
 // PacketDial returns an appropriate error based on the network and address.
-func (n *Network) PacketDial(
+func (n *RejectNetwork) PacketDial(
 	ctx context.Context, network, address string,
-) (gonnect.PacketConn, error) {
+) (PacketConn, error) {
 	return nil, dialError(network, address)
 }
 
 // DialUDP returns an appropriate error based on the network and address.
-func (n *Network) DialUDP(
+func (n *RejectNetwork) DialUDP(
 	ctx context.Context,
 	network, laddr, raddr string,
-) (gonnect.UDPConn, error) {
+) (UDPConn, error) {
 	return nil, dialError(network, raddr)
 }
 
 // ListenUDP returns an appropriate error based on the network and address.
-func (n *Network) ListenUDP(
+func (n *RejectNetwork) ListenUDP(
 	ctx context.Context,
 	network, laddr string,
-) (gonnect.UDPConn, error) {
+) (UDPConn, error) {
 	return nil, listenError(network, laddr)
 }
 
 // ListenPacketConfig returns an appropriate error based on the network and address.
-func (n *Network) ListenPacketConfig(
+func (n *RejectNetwork) ListenPacketConfig(
 	ctx context.Context,
-	lc *gonnect.ListenConfig,
+	lc *ListenConfig,
 	network, address string,
-) (gonnect.PacketConn, error) {
+) (PacketConn, error) {
 	return n.ListenPacket(ctx, network, address)
 }
 
 // ListenUDPConfig returns an appropriate error based on the network and address.
-func (n *Network) ListenUDPConfig(
+func (n *RejectNetwork) ListenUDPConfig(
 	ctx context.Context,
-	lc *gonnect.ListenConfig,
+	lc *ListenConfig,
 	network, laddr string,
-) (gonnect.UDPConn, error) {
+) (UDPConn, error) {
 	return n.ListenUDP(ctx, network, laddr)
 }
 
 // Interfaces returns an empty slice and nil error.
-func (n *Network) Interfaces() ([]gonnect.NetworkInterface, error) {
-	return []gonnect.NetworkInterface{}, nil
+func (n *RejectNetwork) Interfaces() ([]NetworkInterface, error) {
+	return []NetworkInterface{}, nil
 }
 
 // InterfaceAddrs returns an empty slice and nil error.
-func (n *Network) InterfaceAddrs() ([]net.Addr, error) {
+func (n *RejectNetwork) InterfaceAddrs() ([]net.Addr, error) {
 	return []net.Addr{}, nil
 }
 
 // InterfacesByIndex returns an empty slice and "interface not found" error.
-func (n *Network) InterfacesByIndex(
+func (n *RejectNetwork) InterfacesByIndex(
 	index int,
-) ([]gonnect.NetworkInterface, error) {
+) ([]NetworkInterface, error) {
 	return nil, &net.AddrError{Err: "interface not found", Addr: ""}
 }
 
 // InterfacesByName returns an empty slice and "interface not found" error.
-func (n *Network) InterfacesByName(
+func (n *RejectNetwork) InterfacesByName(
 	name string,
-) ([]gonnect.NetworkInterface, error) {
+) ([]NetworkInterface, error) {
 	return nil, &net.AddrError{Err: "interface not found", Addr: ""}
 }
 
 // LookupIP returns a NoSuchHost error.
-func (n *Network) LookupIP(
+func (n *RejectNetwork) LookupIP(
 	ctx context.Context,
 	network, address string,
 ) ([]net.IP, error) {
-	return nil, errors.NoSuchHost(address, "rejectdns")
+	return nil, NoSuchHost(address, "rejectdns")
 }
 
 // LookupIPAddr returns a NoSuchHost error.
-func (n *Network) LookupIPAddr(
+func (n *RejectNetwork) LookupIPAddr(
 	ctx context.Context,
 	host string,
 ) ([]net.IPAddr, error) {
-	return nil, errors.NoSuchHost(host, "rejectdns")
+	return nil, NoSuchHost(host, "rejectdns")
 }
 
 // LookupNetIP returns a NoSuchHost error.
-func (n *Network) LookupNetIP(
+func (n *RejectNetwork) LookupNetIP(
 	ctx context.Context,
 	network, host string,
 ) ([]netip.Addr, error) {
-	return nil, errors.NoSuchHost(host, "rejectdns")
+	return nil, NoSuchHost(host, "rejectdns")
 }
 
 // LookupHost returns a NoSuchHost error.
-func (n *Network) LookupHost(
+func (n *RejectNetwork) LookupHost(
 	ctx context.Context,
 	host string,
 ) ([]string, error) {
-	return nil, errors.NoSuchHost(host, "rejectdns")
+	return nil, NoSuchHost(host, "rejectdns")
 }
 
 // LookupAddr returns a NoSuchHost error.
-func (n *Network) LookupAddr(
+func (n *RejectNetwork) LookupAddr(
 	ctx context.Context,
 	addr string,
 ) ([]string, error) {
-	return nil, errors.NoSuchHost(addr, "rejectdns")
+	return nil, NoSuchHost(addr, "rejectdns")
 }
 
 // LookupCNAME returns a NoSuchHost error.
-func (n *Network) LookupCNAME(
+func (n *RejectNetwork) LookupCNAME(
 	ctx context.Context,
 	host string,
 ) (string, error) {
-	return "", errors.NoSuchHost(host, "rejectdns")
+	return "", NoSuchHost(host, "rejectdns")
 }
 
 // LookupPort returns a NoSuchHost error for the service.
-func (n *Network) LookupPort(
+func (n *RejectNetwork) LookupPort(
 	ctx context.Context,
 	network, service string,
 ) (int, error) {
-	return 0, errors.NoSuchHost(service, "rejectdns")
+	return 0, NoSuchHost(service, "rejectdns")
 }
 
 // LookupTXT returns a NoSuchHost error.
-func (n *Network) LookupTXT(
+func (n *RejectNetwork) LookupTXT(
 	ctx context.Context,
 	name string,
 ) ([]string, error) {
-	return nil, errors.NoSuchHost(name, "rejectdns")
+	return nil, NoSuchHost(name, "rejectdns")
 }
 
 // LookupMX returns a NoSuchHost error.
-func (n *Network) LookupMX(
+func (n *RejectNetwork) LookupMX(
 	ctx context.Context,
 	name string,
 ) ([]*net.MX, error) {
-	return nil, errors.NoSuchHost(name, "rejectdns")
+	return nil, NoSuchHost(name, "rejectdns")
 }
 
 // LookupNS returns a NoSuchHost error.
-func (n *Network) LookupNS(
+func (n *RejectNetwork) LookupNS(
 	ctx context.Context,
 	name string,
 ) ([]*net.NS, error) {
-	return nil, errors.NoSuchHost(name, "rejectdns")
+	return nil, NoSuchHost(name, "rejectdns")
 }
 
 // LookupSRV returns a NoSuchHost error.
-func (n *Network) LookupSRV(
+func (n *RejectNetwork) LookupSRV(
 	ctx context.Context,
 	service, proto, name string,
 ) (string, []*net.SRV, error) {
-	return "", nil, errors.NoSuchHost(
+	return "", nil, NoSuchHost(
 		"_"+service+"._"+proto+"."+name,
 		"rejectdns",
 	)

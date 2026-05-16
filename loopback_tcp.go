@@ -1,4 +1,4 @@
-package loopback
+package gonnect
 
 import (
 	"errors"
@@ -8,18 +8,14 @@ import (
 	"strconv"
 	"sync"
 	"time"
-
-	"github.com/asciimoth/gonnect"
-	ge "github.com/asciimoth/gonnect/errors"
-	"github.com/asciimoth/gonnect/helpers"
 )
 
 var (
-	_ gonnect.TCPConn     = &loopbackTCPConn{}
-	_ net.Conn            = &loopbackTCPConn{}
-	_ gonnect.TCPListener = &loopbackTCPListener{}
-	_ io.Closer           = &loopbackTCPListener{}
-	_ io.Closer           = &loopbackTCPConn{}
+	_ TCPConn     = &loopbackTCPConn{}
+	_ net.Conn    = &loopbackTCPConn{}
+	_ TCPListener = &loopbackTCPListener{}
+	_ io.Closer   = &loopbackTCPListener{}
+	_ io.Closer   = &loopbackTCPConn{}
 )
 
 const loopbackTCPBufferSize = 64 * 1024
@@ -61,7 +57,7 @@ func (r *loopbackTCPRegistry) RegListener(
 	if err != nil {
 		return err
 	}
-	addr := &helpers.NetAddr{
+	addr := &NetAddr{
 		Net:  r.Network,
 		Addr: net.JoinHostPort(r.Host, strconv.Itoa(int(p))),
 	}
@@ -110,7 +106,7 @@ func (r *loopbackTCPRegistry) RegConn(
 	if err != nil {
 		return err
 	}
-	addr := &helpers.NetAddr{
+	addr := &NetAddr{
 		Net:  r.Network,
 		Addr: net.JoinHostPort(r.Host, strconv.Itoa(int(p))),
 	}
@@ -185,7 +181,7 @@ func (l *loopbackTCPListener) NewConn(c *loopbackTCPConn) error {
 	case l.acceptQ <- c:
 		return nil
 	case <-l.closed:
-		return ge.ConnClosed("accept", l.Laddr.Network(), nil, l.Laddr)
+		return ConnClosed("accept", l.Laddr.Network(), nil, l.Laddr)
 	}
 }
 
@@ -221,7 +217,7 @@ func (l *loopbackTCPListener) Addr() net.Addr {
 
 // AcceptTCP accepts the next incoming connection from the queue.
 // Returns an error if the listener has been closed.
-func (l *loopbackTCPListener) AcceptTCP() (gonnect.TCPConn, error) {
+func (l *loopbackTCPListener) AcceptTCP() (TCPConn, error) {
 	l.deadlineMu.Lock()
 	deadline := l.deadline
 	l.deadlineMu.Unlock()
@@ -245,7 +241,7 @@ func (l *loopbackTCPListener) AcceptTCP() (gonnect.TCPConn, error) {
 		if timer != nil {
 			timer.Stop()
 		}
-		return nil, ge.ConnClosed("accept", l.Laddr.Network(), nil, l.Laddr)
+		return nil, ConnClosed("accept", l.Laddr.Network(), nil, l.Laddr)
 	case <-deadlineCh:
 		return nil, &net.OpError{
 			Op:  "accept",
@@ -631,12 +627,12 @@ func (ltc *loopbackTCPConn) SetDeadline(t time.Time) error {
 // using actual network sockets. Both connections have their local and
 // remote addresses set to point to each other.
 // This is analogous to net.Pipe() but includes per-direction buffering.
-func PipeTCP() (client, server gonnect.TCPConn) {
-	serverAddr := &helpers.NetAddr{
+func PipeTCP() (client, server TCPConn) {
+	serverAddr := &NetAddr{
 		Net:  "tcp",
 		Addr: "pipe:server",
 	}
-	clientAddr := &helpers.NetAddr{
+	clientAddr := &NetAddr{
 		Net:  "tcp",
 		Addr: "pipe:client",
 	}

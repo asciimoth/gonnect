@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/asciimoth/gonnect"
-	"github.com/asciimoth/gonnect/helpers"
 	"golang.org/x/sys/unix"
 )
 
@@ -73,7 +72,7 @@ func SetBindToInterface(a any, i gonnect.NetworkInterface) error {
 	if !ok {
 		return nil
 	}
-	rc, err1 := helpers.SyscallConn(a)
+	rc, err1 := gonnect.SyscallConn(a)
 	if err1 != nil {
 		return err1
 	}

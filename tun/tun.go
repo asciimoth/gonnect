@@ -2,6 +2,20 @@
 // network devices. It defines the Tun interface, which is compatible with
 // wireguard-go and similar projects, along with utility functions for I/O
 // adaptation, testing, and bidirectional packet copying.
+//
+// Detach wraps a Tun with wrapper-local Up, Down, and Close state. Because Tun
+// has no deadline or context API, the wrapper copies packets at the boundary and
+// uses internal read/write pumps so pending wrapper Read and Write calls can
+// return without closing the wrapped device. If the wrapped Tun itself blocks
+// without cancellation support, an internal pump may remain blocked until that
+// underlying operation completes.
+//
+// Only one active detached wrapper for a Tun instance generally makes sense,
+// or one nested stack created by wrapping an existing DetachedTun. Multiple
+// parallel wrappers around the same Tun, or direct use of the wrapped Tun while
+// a wrapper is active, may split reads and writes across consumers and can cause
+// operations to hang. Nested detached Tun wrappers share the first wrapper's
+// pumps, avoiding an extra pump and packet-copy stage per nested layer.
 package tun
 
 import "os"

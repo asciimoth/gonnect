@@ -569,12 +569,9 @@ func (n *Network) DialTCP(
 	}
 
 	id := n.getID()
-	cc := &gonnect.CallbackTCPConn{
-		TCPConn: c,
-		CB: &gonnect.Callbacks{
-			BeforeClose: n.buildUnregCallback(id),
-		},
-	}
+	cc := gonnect.TCPConnWithCallbacks(c, &gonnect.Callbacks{
+		BeforeClose: n.buildUnregCallback(id),
+	})
 	n.register(id, cc)
 
 	return cc, nil
@@ -602,16 +599,13 @@ func (n *Network) ListenTCP(
 		return nil, err
 	}
 	id := n.getID()
-	listener := &gonnect.CallbackTCPListener{
-		TCPListener: &gonnect.NetTCPListener{
-			TCPListener: l,
-		},
-		CB: &gonnect.Callbacks{
-			BeforeClose: n.buildUnregCallback(id),
-			OnAccept:    n.RegisterConnCallback,
-			OnAcceptTCP: n.RegisterTCPConnCallback,
-		},
-	}
+	listener := gonnect.TCPListenerWithCallbacks(&gonnect.NetTCPListener{
+		TCPListener: l,
+	}, &gonnect.Callbacks{
+		BeforeClose: n.buildUnregCallback(id),
+		OnAccept:    n.RegisterConnCallback,
+		OnAcceptTCP: n.RegisterTCPConnCallback,
+	})
 	n.register(id, listener)
 
 	return listener, nil
@@ -783,12 +777,9 @@ func (n *Network) RegisterTCPConnCallback(
 		)
 	}
 	id := n.getID()
-	conn = &gonnect.CallbackTCPConn{
-		TCPConn: conn,
-		CB: &gonnect.Callbacks{
-			BeforeClose: n.buildUnregCallback(id),
-		},
-	}
+	conn = gonnect.TCPConnWithCallbacks(conn, &gonnect.Callbacks{
+		BeforeClose: n.buildUnregCallback(id),
+	})
 	n.register(id, conn)
 	return conn, nil
 }

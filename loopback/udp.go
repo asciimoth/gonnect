@@ -151,9 +151,6 @@ type loopbackUDPConn struct {
 	// without going through registry lookup
 	directSend  chan loopbackUDPPacket
 	peerCloseCh chan struct{}
-
-	// cb is the callback invoked on events.
-	cb *gonnect.Callbacks
 }
 
 // newLoopbackUDPConn creates a new UDP connection and registers it with the given registry.
@@ -185,9 +182,6 @@ func (c *loopbackUDPConn) Close() error {
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		if !c.closed {
-			if c.cb != nil {
-				c.cb.RunBeforeClose()
-			}
 			c.closed = true
 			if c.reg != nil {
 				c.reg.unreg(c)

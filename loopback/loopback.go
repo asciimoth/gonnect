@@ -478,14 +478,14 @@ func (ln *LoopbackNetwork) ListenTCP(
 	// Wrap with callbacks for tracking
 	ln.mu.Lock()
 	id := ln.getID()
-	listener.cb = &gonnect.Callbacks{
+	wrapped := gonnect.TCPListenerWithCallbacks(listener, &gonnect.Callbacks{
 		BeforeClose: ln.buildUnregCallback(id),
 		OnAcceptTCP: ln.registerTCPConnCallback,
-	}
-	ln.register(id, listener)
+	})
+	ln.register(id, wrapped)
 	ln.mu.Unlock()
 
-	return listener, err
+	return wrapped, err
 }
 
 // ListenPacket announces on the specified network and address for packet-oriented protocols.
@@ -551,13 +551,13 @@ func (ln *LoopbackNetwork) ListenUDP(
 	// Wrap with callbacks for tracking
 	ln.mu.Lock()
 	id := ln.getID()
-	conn.cb = &gonnect.Callbacks{
+	wrapped := gonnect.UDPConnWithCallbacks(conn, &gonnect.Callbacks{
 		BeforeClose: ln.buildUnregCallback(id),
-	}
-	ln.register(id, conn)
+	})
+	ln.register(id, wrapped)
 	ln.mu.Unlock()
 
-	return conn, err
+	return wrapped, err
 }
 
 // DialTCP establishes a TCP connection to the remote address using the specified network.
@@ -631,13 +631,13 @@ func (ln *LoopbackNetwork) DialTCP(
 	// Wrap with callbacks for tracking
 	ln.mu.Lock()
 	id := ln.getID()
-	clientConn.cb = &gonnect.Callbacks{
+	wrapped := gonnect.TCPConnWithCallbacks(clientConn, &gonnect.Callbacks{
 		BeforeClose: ln.buildUnregCallback(id),
-	}
-	ln.register(id, clientConn)
+	})
+	ln.register(id, wrapped)
 	ln.mu.Unlock()
 
-	return clientConn, nil
+	return wrapped, nil
 }
 
 // PacketDial establishes a UDP connection to the remote address using the specified network.
@@ -697,13 +697,13 @@ func (ln *LoopbackNetwork) DialUDP(
 	// Wrap with callbacks for tracking
 	ln.mu.Lock()
 	id := ln.getID()
-	con.cb = &gonnect.Callbacks{
+	wrapped := gonnect.UDPConnWithCallbacks(con, &gonnect.Callbacks{
 		BeforeClose: ln.buildUnregCallback(id),
-	}
-	ln.register(id, con)
+	})
+	ln.register(id, wrapped)
 	ln.mu.Unlock()
 
-	return con, loopbackDialErrWrap(err, network, laddr, raddr)
+	return wrapped, loopbackDialErrWrap(err, network, laddr, raddr)
 }
 
 // Dial establishes a connection to the address on the specified network.
@@ -836,12 +836,9 @@ func (ln *LoopbackNetwork) registerTCPConnCallback(
 		)
 	}
 	id := ln.getID()
-	conn = &gonnect.CallbackTCPConn{
-		TCPConn: conn,
-		CB: &gonnect.Callbacks{
-			BeforeClose: ln.buildUnregCallback(id),
-		},
-	}
+	conn = gonnect.TCPConnWithCallbacks(conn, &gonnect.Callbacks{
+		BeforeClose: ln.buildUnregCallback(id),
+	})
 	ln.register(id, conn)
 	return conn, nil
 }

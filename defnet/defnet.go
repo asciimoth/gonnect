@@ -10,7 +10,5 @@ import (
 // Network combines all major gonnect interfaces into one.
 type Network interface {
 	gonnect.Network
-	gonnect.InterfaceNetwork
-	gonnect.Resolver
 	gonnect.UpDown
 }

@@ -1,7 +1,7 @@
 // Package loopback provides an in-memory loopback network implementation that
 // simulates network operations without using actual network sockets.
-// It implements the gonnect.Network, gonnect.InterfaceNetwork, and gonnect.Resolver
-// interfaces, providing TCP and UDP communication between clients within the same process.
+// It implements the gonnect.Network interface, providing TCP and UDP
+// communication between clients within the same process.
 package loopback
 
 import (
@@ -23,10 +23,8 @@ import (
 
 // Static type assertions
 var (
-	_ gonnect.Network          = &LoopbackNetwork{}
-	_ gonnect.InterfaceNetwork = &LoopbackNetwork{}
-	_ gonnect.Resolver         = &LoopbackNetwork{}
-	_ gonnect.UpDown           = &LoopbackNetwork{}
+	_ gonnect.Network = &LoopbackNetwork{}
+	_ gonnect.UpDown  = &LoopbackNetwork{}
 )
 
 var ErrNetworkDown = &net.OpError{
@@ -558,6 +556,28 @@ func (ln *LoopbackNetwork) ListenUDP(
 	ln.mu.Unlock()
 
 	return wrapped, err
+}
+
+// ListenPacketConfig announces on the specified network and address for
+// packet-oriented protocols. Loopback networking has no socket control layer,
+// so lc is accepted for interface compatibility and otherwise ignored.
+func (ln *LoopbackNetwork) ListenPacketConfig(
+	ctx context.Context,
+	lc *gonnect.ListenConfig,
+	network, address string,
+) (gonnect.PacketConn, error) {
+	return ln.ListenPacket(ctx, network, address)
+}
+
+// ListenUDPConfig announces on the specified UDP network and address. Loopback
+// networking has no socket control layer, so lc is accepted for interface
+// compatibility and otherwise ignored.
+func (ln *LoopbackNetwork) ListenUDPConfig(
+	ctx context.Context,
+	lc *gonnect.ListenConfig,
+	network, laddr string,
+) (gonnect.UDPConn, error) {
+	return ln.ListenUDP(ctx, network, laddr)
 }
 
 // DialTCP establishes a TCP connection to the remote address using the specified network.

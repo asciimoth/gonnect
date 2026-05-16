@@ -1,6 +1,6 @@
 // Package reject provides a network implementation that rejects all operations
-// with canonical errors. It implements the gonnect.Network, gonnect.InterfaceNetwork,
-// and gonnect.Resolver interfaces, returning appropriate errors for all methods.
+// with canonical errors. It implements the gonnect.Network interface, returning
+// appropriate errors for all methods.
 package reject
 
 import (
@@ -14,13 +14,11 @@ import (
 
 // Static type assertions
 var (
-	_ gonnect.Network          = &Network{}
-	_ gonnect.InterfaceNetwork = &Network{}
-	_ gonnect.Resolver         = &Network{}
+	_ gonnect.Network = &Network{}
 )
 
 // Network is a network implementation that rejects all operations with canonical errors.
-// It implements gonnect.Network, gonnect.InterfaceNetwork, and gonnect.Resolver interfaces.
+// It implements gonnect.Network.
 type Network struct{}
 
 func (n *Network) IsNative() bool {
@@ -143,6 +141,24 @@ func (n *Network) ListenUDP(
 	network, laddr string,
 ) (gonnect.UDPConn, error) {
 	return nil, listenError(network, laddr)
+}
+
+// ListenPacketConfig returns an appropriate error based on the network and address.
+func (n *Network) ListenPacketConfig(
+	ctx context.Context,
+	lc *gonnect.ListenConfig,
+	network, address string,
+) (gonnect.PacketConn, error) {
+	return n.ListenPacket(ctx, network, address)
+}
+
+// ListenUDPConfig returns an appropriate error based on the network and address.
+func (n *Network) ListenUDPConfig(
+	ctx context.Context,
+	lc *gonnect.ListenConfig,
+	network, laddr string,
+) (gonnect.UDPConn, error) {
+	return n.ListenUDP(ctx, network, laddr)
 }
 
 // Interfaces returns an empty slice and nil error.

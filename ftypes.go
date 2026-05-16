@@ -226,6 +226,8 @@ type Resolver interface {
 
 // Network defines an abstraction over network providers.
 type Network interface {
+	Resolver
+
 	// IsNative reports whether Network instance provides direct access to
 	// OS network stack or emulates it/adding mutation wrappers.
 	// Simple Network middlewares like logging ones should preserve IsNative status
@@ -268,13 +270,7 @@ type Network interface {
 		ctx context.Context,
 		network, laddr string,
 	) (UDPConn, error)
-}
 
-type ListenConfig struct {
-	Control func(network, address string, c syscall.RawConn) error
-}
-
-type ListenConfigNetwork interface {
 	ListenPacketConfig(
 		ctx context.Context,
 		lc *ListenConfig,
@@ -286,11 +282,7 @@ type ListenConfigNetwork interface {
 		lc *ListenConfig,
 		network, laddr string,
 	) (UDPConn, error)
-}
 
-// Network defines an abstraction over network providers
-// with multiple interfaces support.
-type InterfaceNetwork interface {
 	// Interfaces returns the list of network interfaces known to this Network.
 	// Implementations may return an empty slice when the network is virtual,
 	// even though Dial/Listen/ListenPacket may still be usable. Multiple
@@ -312,4 +304,8 @@ type InterfaceNetwork interface {
 	// even though Dial/Listen/ListenPacket may still be usable.
 	// Multiple interfaces with the same name are allowed.
 	InterfacesByName(name string) ([]NetworkInterface, error)
+}
+
+type ListenConfig struct {
+	Control func(network, address string, c syscall.RawConn) error
 }

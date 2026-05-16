@@ -16,8 +16,6 @@ import (
 
 type Network interface {
 	gonnect.Network
-	gonnect.InterfaceNetwork
-	gonnect.Resolver
 }
 
 func errStr(err error) string {

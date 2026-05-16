@@ -22,11 +22,8 @@ import (
 
 // Static type assertions
 var (
-	_ gonnect.Network             = &Network{}
-	_ gonnect.ListenConfigNetwork = &Network{}
-	_ gonnect.InterfaceNetwork    = &Network{}
-	_ gonnect.Resolver            = &Network{}
-	_ gonnect.UpDown              = &Network{}
+	_ gonnect.Network = &Network{}
+	_ gonnect.UpDown  = &Network{}
 
 	_ gonnect.Dial         = (&Network{}).Dial
 	_ gonnect.Listen       = (&Network{}).Listen
@@ -125,8 +122,7 @@ func (c Config) Build() *Network {
 	return n
 }
 
-// Network is a filtered network provider that implements gonnect.Network,
-// gonnect.InterfaceNetwork, and gonnect.Resolver interfaces.
+// Network is a filtered network provider that implements gonnect.Network.
 // It wraps Go's standard net package to provide controlled dialing,
 // listening, and DNS resolution with optional filtering and connection tracking.
 type Network struct {

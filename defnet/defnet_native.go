@@ -3,17 +3,17 @@
 package defnet
 
 import (
-	"github.com/asciimoth/gonnect/native"
+	"github.com/asciimoth/gonnect"
 )
 
-// DefaultNetwork builds native.Network on compilation targets with native
+// DefaultNetwork builds gonnect.NativeNetwork on compilation targets with native
 // networking available (linux, windows, darwin, etc)
 // and loopback network for others (wasm, etc).
 // If cfg is nil, default one will be used.
 // For loopback network cfg arg is ignored.
-func DefaultNetwork(cfg *native.Config) Network {
+func DefaultNetwork(cfg *gonnect.NativeConfig) Network {
 	if cfg == nil {
-		cfg = &native.Config{}
+		cfg = &gonnect.NativeConfig{}
 	}
 	return cfg.Build()
 }

@@ -1,43 +1,34 @@
-// Package native provides a native implementation of the gonnect network
-// interfaces based Go's standard net package.
-package native
+package gonnect
 
 import (
 	"context"
 	"fmt"
-	"io"
-	"maps"
 	"net"
 	"net/netip"
-	"slices"
+	"os"
 	"strconv"
-	"sync"
+	"strings"
 	"syscall"
 	"time"
-
-	"github.com/asciimoth/gonnect"
-	"github.com/asciimoth/gonnect/errors"
-	"github.com/asciimoth/gonnect/helpers"
 )
 
 // Static type assertions
 var (
-	_ gonnect.Network = &Network{}
-	_ gonnect.UpDown  = &Network{}
+	_ Network = &NativeNetwork{}
 
-	_ gonnect.Dial         = (&Network{}).Dial
-	_ gonnect.Listen       = (&Network{}).Listen
-	_ gonnect.LookupIP     = (&Network{}).LookupIP
-	_ gonnect.LookupIPAddr = (&Network{}).LookupIPAddr
-	_ gonnect.LookupNetIP  = (&Network{}).LookupNetIP
-	_ gonnect.LookupHost   = (&Network{}).LookupHost
-	_ gonnect.LookupAddr   = (&Network{}).LookupAddr
-	_ gonnect.LookupCNAME  = (&Network{}).LookupCNAME
-	_ gonnect.LookupPort   = (&Network{}).LookupPort
-	_ gonnect.LookupTXT    = (&Network{}).LookupTXT
-	_ gonnect.LookupMX     = (&Network{}).LookupMX
-	_ gonnect.LookupNS     = (&Network{}).LookupNS
-	_ gonnect.LookupSRV    = (&Network{}).LookupSRV
+	_ Dial         = (&NativeNetwork{}).Dial
+	_ Listen       = (&NativeNetwork{}).Listen
+	_ LookupIP     = (&NativeNetwork{}).LookupIP
+	_ LookupIPAddr = (&NativeNetwork{}).LookupIPAddr
+	_ LookupNetIP  = (&NativeNetwork{}).LookupNetIP
+	_ LookupHost   = (&NativeNetwork{}).LookupHost
+	_ LookupAddr   = (&NativeNetwork{}).LookupAddr
+	_ LookupCNAME  = (&NativeNetwork{}).LookupCNAME
+	_ LookupPort   = (&NativeNetwork{}).LookupPort
+	_ LookupTXT    = (&NativeNetwork{}).LookupTXT
+	_ LookupMX     = (&NativeNetwork{}).LookupMX
+	_ LookupNS     = (&NativeNetwork{}).LookupNS
+	_ LookupSRV    = (&NativeNetwork{}).LookupSRV
 )
 
 const (
@@ -51,26 +42,112 @@ const (
 // a ListenDeniedErr; and for dial actions, a ConnRefused error.
 func errForAction(action int, network, address string) error {
 	if action == actionLookup {
-		err := errors.NoSuchHost(address, "rejectdns")
+		err := nativeNoSuchHost(address, "rejectdns")
 		err.UnwrapErr = fmt.Errorf("rejected by filter")
 		return err
 	}
 	if action == actionListen {
-		return errors.ListenDeniedErr(network, address)
+		return nativeListenDeniedErr(network, address)
 	}
-	return errors.ConnRefused(network, address)
+	return nativeConnRefused(network, address)
 }
 
-// Config holds configuration options for building a Network.
-type Config struct {
+type nativeAddr struct {
+	network string
+	address string
+}
+
+func (a nativeAddr) Network() string { return a.network }
+func (a nativeAddr) String() string  { return a.address }
+
+func nativeNoSuchHost(host, srv string) *net.DNSError {
+	return &net.DNSError{
+		Err:         "no such host",
+		Name:        host,
+		Server:      srv,
+		IsTemporary: true,
+		IsNotFound:  true,
+	}
+}
+
+func nativeConnRefused(network, address string) error {
+	return &net.OpError{
+		Op:     "dial",
+		Net:    network,
+		Source: nil,
+		Addr: nativeAddr{
+			network: network,
+			address: address,
+		},
+		Err: &os.SyscallError{
+			Syscall: "connect",
+			Err:     syscall.ECONNREFUSED,
+		},
+	}
+}
+
+func nativeListenDeniedErr(network, address string) error {
+	return &net.OpError{
+		Op:     "listen",
+		Net:    network,
+		Source: nil,
+		Addr: nativeAddr{
+			network: network,
+			address: address,
+		},
+		Err: &os.SyscallError{
+			Syscall: "bind",
+			Err:     syscall.EACCES,
+		},
+	}
+}
+
+func nativeJoinIPPort(ip net.IP, port int) string {
+	return net.JoinHostPort(ip.String(), strconv.Itoa(port))
+}
+
+func nativeFamilyFromNetwork(network string) string {
+	if strings.HasPrefix(network, "ip4") ||
+		strings.HasPrefix(network, "tcp4") ||
+		strings.HasPrefix(network, "udp4") {
+		return "ip4"
+	}
+	if strings.HasPrefix(network, "ip6") ||
+		strings.HasPrefix(network, "tcp6") ||
+		strings.HasPrefix(network, "udp6") {
+		return "ip6"
+	}
+	return "ip"
+}
+
+func nativePickIP(ips []net.IP, prefer int) net.IP {
+	if len(ips) == 0 {
+		return nil
+	}
+	if prefer != 4 && prefer != 6 {
+		return ips[0]
+	}
+	for _, ip := range ips {
+		if prefer == 4 && ip.To4() != nil {
+			return ip
+		}
+		if prefer == 6 && ip.To4() == nil {
+			return ip
+		}
+	}
+	return ips[0]
+}
+
+// NativeConfig holds configuration options for building a Network.
+type NativeConfig struct {
 	// Filter is an optional filter function that can reject network operations.
 	// It should return true to reject the operation.
 	//
 	// NOTE: filtering works only for connections establishing, unbinded DNS sockset can be used to bypass it
-	Filter gonnect.Filter
+	Filter Filter
 	// ResolverCfg configures the DNS resolver used by the Network.
 	// If nil, new one will be built.
-	ResolverCfg *gonnect.ResolverCfg
+	ResolverCfg *ResolverCfg
 
 	// PreferIP specifies IP version preference:
 	// 4 for IPv4, 6 for IPv6, or 0 for no preference.
@@ -90,16 +167,15 @@ type Config struct {
 	ControlContext  func(ctx context.Context, network, address string, c syscall.RawConn) error
 }
 
-// Build creates and returns a new Network instance from the configuration.
-func (c Config) Build() *Network {
-	n := &Network{
-		up:        true,
+// Build creates and returns a new NativeNetwork instance from the configuration.
+func (c NativeConfig) Build() *NativeNetwork {
+	n := &NativeNetwork{
 		filter:    c.Filter,
 		preferIP:  c.PreferIP,
 		listenCfg: c.ListenCfg,
 	}
 
-	rc := gonnect.ResolverCfg{}
+	rc := ResolverCfg{}
 	if c.ResolverCfg != nil {
 		rc = *c.ResolverCfg
 	}
@@ -122,17 +198,17 @@ func (c Config) Build() *Network {
 	return n
 }
 
-// Network is a filtered network provider that implements gonnect.Network.
+// NativeNetwork is a filtered network provider that implements Network.
 // It wraps Go's standard net package to provide controlled dialing,
-// listening, and DNS resolution with optional filtering and connection tracking.
-type Network struct {
-	mu sync.Mutex
-
-	// up indicates whether the network is currently active.
-	up bool
-
+// listening, and DNS resolution with optional filtering.
+//
+// NativeNetwork does not implement UpDown. Wrap it with DetachNetwork when an
+// independently stoppable native network is needed:
+//
+//	n := DetachNetwork(NativeConfig{}.Build())
+type NativeNetwork struct {
 	// filter is an optional function to reject network operations.
-	filter gonnect.Filter
+	filter Filter
 	// resolver is the DNS resolver used for lookups.
 	resolver *net.Resolver
 	// dialer is used for establishing connections.
@@ -142,49 +218,19 @@ type Network struct {
 
 	// preferIP specifies IP version preference (4, 6, or 0).
 	preferIP int
-
-	// nextID is the next ID to assign to a tracked connection.
-	nextID uint64
-	// closers tracks all open connections and listeners by ID.
-	closers map[uint64]io.Closer
 }
 
-func (n *Network) IsNative() bool {
+func (n *NativeNetwork) IsNative() bool {
 	return true
-}
-
-// Down shuts down the network by closing all tracked connections and listeners.
-// After calling Down, the network will reject new operations until Up() is called.
-func (n *Network) Down() error {
-	closers := n.downPrep()
-	helpers.CloseAll(closers)
-	return nil
-}
-
-// Up re-enables the network after it has been shut down with Down().
-func (n *Network) Up() error {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	n.up = true
-	return nil
-}
-
-// IsUp returns whether the network is currently active.
-func (n *Network) IsUp() (bool, error) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	return n.up, nil
 }
 
 // LookupIP looks up the host and returns a slice of its IPv4 and IPv6 addresses.
 // The network parameter specifies the network type ("ip", "ip4", or "ip6").
 // This method applies filtering before performing the lookup.
-func (n *Network) LookupIP(
+func (n *NativeNetwork) LookupIP(
 	ctx context.Context,
 	network, address string,
 ) ([]net.IP, error) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
 	err := n.doFilter(network, address, actionLookup)
 	if err != nil {
 		return nil, err
@@ -194,12 +240,10 @@ func (n *Network) LookupIP(
 
 // LookupIPAddr looks up the host and returns a slice of IPAddr structures.
 // This method applies filtering before performing the lookup.
-func (n *Network) LookupIPAddr(
+func (n *NativeNetwork) LookupIPAddr(
 	ctx context.Context,
 	host string,
 ) ([]net.IPAddr, error) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
 	err := n.doFilter("", host, actionLookup)
 	if err != nil {
 		return nil, err
@@ -210,12 +254,10 @@ func (n *Network) LookupIPAddr(
 // LookupNetIP looks up the host and returns a slice of netip.Addr values.
 // The network parameter specifies the network type ("ip", "ip4", or "ip6").
 // This method applies filtering before performing the lookup.
-func (n *Network) LookupNetIP(
+func (n *NativeNetwork) LookupNetIP(
 	ctx context.Context,
 	network, host string,
 ) ([]netip.Addr, error) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
 	err := n.doFilter(network, host, actionLookup)
 	if err != nil {
 		return nil, err
@@ -225,12 +267,10 @@ func (n *Network) LookupNetIP(
 
 // LookupHost looks up the host and returns a slice of IP address strings.
 // This method applies filtering before performing the lookup.
-func (n *Network) LookupHost(
+func (n *NativeNetwork) LookupHost(
 	ctx context.Context,
 	host string,
 ) ([]string, error) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
 	err := n.doFilter("", host, actionLookup)
 	if err != nil {
 		return nil, err
@@ -241,12 +281,10 @@ func (n *Network) LookupHost(
 // LookupAddr performs a reverse lookup for the given address,
 // returning a slice of names mapping to that address.
 // This method applies filtering before performing the lookup.
-func (n *Network) LookupAddr(
+func (n *NativeNetwork) LookupAddr(
 	ctx context.Context,
 	addr string,
 ) ([]string, error) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
 	err := n.doFilter("", addr, actionLookup)
 	if err != nil {
 		return nil, err
@@ -256,12 +294,10 @@ func (n *Network) LookupAddr(
 
 // LookupCNAME returns the canonical name for the given host.
 // This method applies filtering before performing the lookup.
-func (n *Network) LookupCNAME(
+func (n *NativeNetwork) LookupCNAME(
 	ctx context.Context,
 	host string,
 ) (string, error) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
 	err := n.doFilter("", host, actionLookup)
 	if err != nil {
 		return "", err
@@ -271,12 +307,10 @@ func (n *Network) LookupCNAME(
 
 // LookupPort looks up the port number for the given network and service.
 // This method applies filtering before performing the lookup.
-func (n *Network) LookupPort(
+func (n *NativeNetwork) LookupPort(
 	ctx context.Context,
 	network, service string,
 ) (int, error) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
 	err := n.doFilter("", service, actionLookup)
 	if err != nil {
 		return 0, err
@@ -286,12 +320,10 @@ func (n *Network) LookupPort(
 
 // LookupTXT returns the DNS TXT records for the given domain name.
 // This method applies filtering before performing the lookup.
-func (n *Network) LookupTXT(
+func (n *NativeNetwork) LookupTXT(
 	ctx context.Context,
 	name string,
 ) ([]string, error) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
 	err := n.doFilter("", name, actionLookup)
 	if err != nil {
 		return nil, err
@@ -302,12 +334,10 @@ func (n *Network) LookupTXT(
 // LookupMX returns the DNS MX records for the given domain name,
 // sorted by preference.
 // This method applies filtering before performing the lookup.
-func (n *Network) LookupMX(
+func (n *NativeNetwork) LookupMX(
 	ctx context.Context,
 	name string,
 ) ([]*net.MX, error) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
 	err := n.doFilter("", name, actionLookup)
 	if err != nil {
 		return nil, err
@@ -317,12 +347,10 @@ func (n *Network) LookupMX(
 
 // LookupNS returns the DNS NS records for the given domain name.
 // This method applies filtering before performing the lookup.
-func (n *Network) LookupNS(
+func (n *NativeNetwork) LookupNS(
 	ctx context.Context,
 	name string,
 ) ([]*net.NS, error) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
 	err := n.doFilter("", name, actionLookup)
 	if err != nil {
 		return nil, err
@@ -334,12 +362,10 @@ func (n *Network) LookupNS(
 // The proto parameter is "tcp" or "udp".
 // Returns the canonical host name and a slice of SRV records.
 // This method applies filtering before performing the lookup.
-func (n *Network) LookupSRV(
+func (n *NativeNetwork) LookupSRV(
 	ctx context.Context,
 	service, proto, name string,
 ) (string, []*net.SRV, error) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
 	err := n.doFilter(proto, name, actionLookup)
 	if err != nil {
 		return "", nil, err
@@ -351,199 +377,140 @@ func (n *Network) LookupSRV(
 // into an IP address and port number.
 // The network parameter specifies the network type (e.g., "tcp4", "udp6", "tcp").
 // This method applies filtering before performing the resolution.
-func (n *Network) LookupNetAddr(
+func (n *NativeNetwork) LookupNetAddr(
 	ctx context.Context,
 	network, addr string,
 ) (net.IP, int, error) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
 	return n.resolveAddr(ctx, network, addr, actionLookup)
 }
 
 // InterfaceAddrs returns the unicast interface addresses associated with the system.
 // This method delegates to net.InterfaceAddrs.
-func (n *Network) InterfaceAddrs() ([]net.Addr, error) {
+func (n *NativeNetwork) InterfaceAddrs() ([]net.Addr, error) {
 	return net.InterfaceAddrs()
 }
 
 // Interfaces returns all network interfaces available on the system.
 // This method delegates to net.Interfaces.
-func (n *Network) Interfaces() ([]gonnect.NetworkInterface, error) {
+func (n *NativeNetwork) Interfaces() ([]NetworkInterface, error) {
 	ifs, err := net.Interfaces()
 	if err != nil {
 		return nil, err
 	}
-	return gonnect.WrapNativeInterfaces(ifs), nil
+	return WrapNativeInterfaces(ifs), nil
 }
 
 // InterfacesByIndex returns the network interface with the given index.
 // This method delegates to net.InterfaceByIndex.
-func (n *Network) InterfacesByIndex(
+func (n *NativeNetwork) InterfacesByIndex(
 	index int,
-) ([]gonnect.NetworkInterface, error) {
+) ([]NetworkInterface, error) {
 	i, err := net.InterfaceByIndex(index)
 	if err != nil {
 		return nil, err
 	}
-	return []gonnect.NetworkInterface{&gonnect.NativeInterface{Iface: *i}}, nil
+	return []NetworkInterface{&NativeInterface{Iface: *i}}, nil
 }
 
 // InterfacesByName returns the network interface with the given name.
 // This method delegates to net.InterfaceByName.
-func (n *Network) InterfacesByName(
+func (n *NativeNetwork) InterfacesByName(
 	name string,
-) ([]gonnect.NetworkInterface, error) {
+) ([]NetworkInterface, error) {
 	i, err := net.InterfaceByName(name)
 	if err != nil {
 		return nil, err
 	}
-	return []gonnect.NetworkInterface{&gonnect.NativeInterface{Iface: *i}}, nil
+	return []NetworkInterface{&NativeInterface{Iface: *i}}, nil
 }
 
 // Dial establishes a connection to the address on the specified network.
-// It applies filtering before dialing and tracks the connection for cleanup.
-// The returned connection is wrapped with callbacks for automatic tracking.
-func (n *Network) Dial(
+// It applies filtering before dialing.
+func (n *NativeNetwork) Dial(
 	ctx context.Context,
 	network, address string,
 ) (net.Conn, error) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
 	err := n.doFilter(network, address, actionDial)
 	if err != nil {
 		return nil, err
 	}
-
-	c, err := n.dialer.DialContext(ctx, network, address)
-	if err != nil {
-		return nil, err
-	}
-
-	id := n.getID()
-	c = gonnect.ConnWithCallbacks(c, &gonnect.Callbacks{
-		BeforeClose: n.buildUnregCallback(id),
-	})
-	n.register(id, c)
-
-	return c, nil
+	return n.dialer.DialContext(ctx, network, address)
 }
 
 // Listen announces on the specified network and address.
 // It resolves the address, applies filtering, and creates a listener.
-// The returned listener is wrapped with callbacks for automatic connection tracking.
-func (n *Network) Listen(
+func (n *NativeNetwork) Listen(
 	ctx context.Context,
 	network, address string,
 ) (net.Listener, error) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-
 	ip, port, err := n.resolveAddr(ctx, network, address, actionListen)
 	if err != nil {
 		return nil, err
 	}
-	address = helpers.JointIPPort(ip, port)
-
-	listener, err := n.getListenCfg().Listen(ctx, network, address)
-	if err != nil {
-		return nil, err
-	}
-
-	id := n.getID()
-	listener = gonnect.ListenerWithCallbacks(listener, &gonnect.Callbacks{
-		BeforeClose: n.buildUnregCallback(id),
-		OnAccept:    n.RegisterConnCallback,
-		OnAcceptTCP: n.RegisterTCPConnCallback,
-	})
-	n.register(id, listener)
-
-	return listener, nil
+	address = nativeJoinIPPort(ip, port)
+	return n.getListenCfg().Listen(ctx, network, address)
 }
 
 // ListenPacket announces on the specified network and address for packet-oriented protocols.
 // It resolves the address, applies filtering, and creates a packet connection.
-// The returned PacketConn is wrapped with callbacks for automatic tracking.
-func (n *Network) ListenPacket(
+func (n *NativeNetwork) ListenPacket(
 	ctx context.Context,
 	network, address string,
-) (gonnect.PacketConn, error) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-
+) (PacketConn, error) {
 	ip, port, err := n.resolveAddr(ctx, network, address, actionListen)
-	address = helpers.JointIPPort(ip, port)
 	if err != nil {
 		return nil, err
 	}
+	address = nativeJoinIPPort(ip, port)
 
 	c, err := n.getListenCfg().ListenPacket(ctx, network, address)
 	if err != nil {
 		return nil, err
 	}
 
-	pc, ok := c.(gonnect.PacketConn)
+	pc, ok := c.(PacketConn)
 	if ok {
-		id := n.getID()
-		c = gonnect.PacketConnWithCallbacks(pc, &gonnect.Callbacks{
-			BeforeClose: n.buildUnregCallback(id),
-		})
-		n.register(id, c)
-
 		return pc, nil
 	}
 
 	_ = c.Close()
-	return nil, errors.ConnRefused(network, address)
+	return nil, nativeConnRefused(network, address)
 }
 
 // ListenPacketConfig announces on the specified network and address for
 // packet-oriented protocols using the provided listen configuration.
 // It resolves the address, applies filtering, and creates a packet connection.
-// The returned PacketConn is wrapped with callbacks for automatic tracking.
-func (n *Network) ListenPacketConfig(
+func (n *NativeNetwork) ListenPacketConfig(
 	ctx context.Context,
-	lc *gonnect.ListenConfig,
+	lc *ListenConfig,
 	network, address string,
-) (gonnect.PacketConn, error) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-
+) (PacketConn, error) {
 	ip, port, err := n.resolveAddr(ctx, network, address, actionListen)
 	if err != nil {
 		return nil, err
 	}
-	address = helpers.JointIPPort(ip, port)
+	address = nativeJoinIPPort(ip, port)
 
 	c, err := n.getListenCfgWith(lc).ListenPacket(ctx, network, address)
 	if err != nil {
 		return nil, err
 	}
 
-	pc, ok := c.(gonnect.PacketConn)
+	pc, ok := c.(PacketConn)
 	if ok {
-		id := n.getID()
-		pc = gonnect.PacketConnWithCallbacks(pc, &gonnect.Callbacks{
-			BeforeClose: n.buildUnregCallback(id),
-		})
-		n.register(id, pc)
-
 		return pc, nil
 	}
 
 	_ = c.Close()
-	return nil, errors.ConnRefused(network, address)
+	return nil, nativeConnRefused(network, address)
 }
 
 // DialTCP establishes a TCP connection to the remote address using the specified network.
 // If laddr is not empty, it is used as the local address for the connection.
-// The returned TCPConn is wrapped with callbacks for automatic tracking.
-func (n *Network) DialTCP(
+func (n *NativeNetwork) DialTCP(
 	ctx context.Context,
 	network, laddr, raddr string,
-) (gonnect.TCPConn, error) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-
+) (TCPConn, error) {
 	var laddrTCP *net.TCPAddr
 	var err error
 	if laddr != "" {
@@ -563,26 +530,15 @@ func (n *Network) DialTCP(
 	if err != nil {
 		return nil, err
 	}
-
-	id := n.getID()
-	cc := gonnect.TCPConnWithCallbacks(c, &gonnect.Callbacks{
-		BeforeClose: n.buildUnregCallback(id),
-	})
-	n.register(id, cc)
-
-	return cc, nil
+	return c, nil
 }
 
 // ListenTCP announces on the specified network and address for TCP connections.
 // It resolves the address, applies filtering, and creates a TCP listener.
-// The returned TCPListener is wrapped with callbacks for automatic connection tracking.
-func (n *Network) ListenTCP(
+func (n *NativeNetwork) ListenTCP(
 	ctx context.Context,
 	network, laddr string,
-) (gonnect.TCPListener, error) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-
+) (TCPListener, error) {
 	laddrTCP, err := n.resolveTCPAddr(ctx, network, laddr, actionListen)
 	if err != nil {
 		return nil, err
@@ -594,37 +550,24 @@ func (n *Network) ListenTCP(
 	if err != nil {
 		return nil, err
 	}
-	id := n.getID()
-	listener := gonnect.TCPListenerWithCallbacks(&gonnect.NetTCPListener{
+	return &NetTCPListener{
 		TCPListener: l,
-	}, &gonnect.Callbacks{
-		BeforeClose: n.buildUnregCallback(id),
-		OnAccept:    n.RegisterConnCallback,
-		OnAcceptTCP: n.RegisterTCPConnCallback,
-	})
-	n.register(id, listener)
-
-	return listener, nil
+	}, nil
 }
 
 // PacketDial establishes a UDP connection to the remote address using the specified network.
-// The returned PacketConn is wrapped with callbacks for automatic tracking.
-func (n *Network) PacketDial(
+func (n *NativeNetwork) PacketDial(
 	ctx context.Context, network, address string,
-) (gonnect.PacketConn, error) {
+) (PacketConn, error) {
 	return n.DialUDP(ctx, network, "", address)
 }
 
 // DialUDP establishes a UDP connection to the remote address using the specified network.
 // If laddr is not empty, it is used as the local address for the connection.
-// The returned UDPConn is wrapped with callbacks for automatic tracking.
-func (n *Network) DialUDP(
+func (n *NativeNetwork) DialUDP(
 	ctx context.Context,
 	network, laddr, raddr string,
-) (gonnect.UDPConn, error) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-
+) (UDPConn, error) {
 	var laddrUDP *net.UDPAddr
 	var err error
 	if laddr != "" {
@@ -644,26 +587,15 @@ func (n *Network) DialUDP(
 	if err != nil {
 		return nil, err
 	}
-
-	id := n.getID()
-	cc := gonnect.UDPConnWithCallbacks(c, &gonnect.Callbacks{
-		BeforeClose: n.buildUnregCallback(id),
-	})
-	n.register(id, cc)
-
-	return cc, err
+	return c, nil
 }
 
 // ListenUDP announces on the specified network and address for UDP connections.
 // It resolves the address, applies filtering, and creates a UDP connection.
-// The returned UDPConn is wrapped with callbacks for automatic tracking.
-func (n *Network) ListenUDP(
+func (n *NativeNetwork) ListenUDP(
 	ctx context.Context,
 	network, laddr string,
-) (gonnect.UDPConn, error) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-
+) (UDPConn, error) {
 	laddrUDP, err := n.resolveUDPAddr(ctx, network, laddr, actionListen)
 	if err != nil {
 		return nil, err
@@ -675,28 +607,18 @@ func (n *Network) ListenUDP(
 	if err != nil {
 		return nil, err
 	}
-
-	id := n.getID()
-	cc := gonnect.UDPConnWithCallbacks(c, &gonnect.Callbacks{
-		BeforeClose: n.buildUnregCallback(id),
-	})
-	n.register(id, cc)
-
-	return cc, err
+	return c, nil
 }
 
 // ListenUDPConfig announces on the specified network and address for UDP
 // connections using the provided listen configuration. Since net.ListenConfig
 // does not expose ListenUDP, this is implemented via ListenPacket and narrowed
 // back to UDPConn.
-func (n *Network) ListenUDPConfig(
+func (n *NativeNetwork) ListenUDPConfig(
 	ctx context.Context,
-	lc *gonnect.ListenConfig,
+	lc *ListenConfig,
 	network, laddr string,
-) (gonnect.UDPConn, error) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-
+) (UDPConn, error) {
 	laddrUDP, err := n.resolveUDPAddr(ctx, network, laddr, actionListen)
 	if err != nil {
 		return nil, err
@@ -708,85 +630,18 @@ func (n *Network) ListenUDPConfig(
 		return nil, err
 	}
 
-	uc, ok := c.(gonnect.UDPConn)
+	uc, ok := c.(UDPConn)
 	if ok {
-		id := n.getID()
-		uc = gonnect.UDPConnWithCallbacks(uc, &gonnect.Callbacks{
-			BeforeClose: n.buildUnregCallback(id),
-		})
-		n.register(id, uc)
-
 		return uc, nil
 	}
 
 	_ = c.Close()
-	return nil, errors.ConnRefused(network, laddrUDP.String())
+	return nil, nativeConnRefused(network, laddrUDP.String())
 }
 
-func (n *Network) Register(id uint64, c io.Closer) error {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	if !n.up {
-		return fmt.Errorf("network down")
-	}
-	n.register(id, c)
-	return nil
-}
-
-// Unregister removes a connection or listener from tracking by ID.
-func (n *Network) Unregister(id uint64) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	delete(n.closers, id)
-}
-
-// RegisterConnCallback wraps an accepted connection with tracking callbacks.
-// It rejects the connection if the network is down.
-func (n *Network) RegisterConnCallback(conn net.Conn) (net.Conn, error) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	if !n.up {
-		return nil, errors.ConnRefused(
-			helpers.NetworkFromConn(conn),
-			conn.RemoteAddr().String(),
-		)
-	}
-	id := n.getID()
-	conn = gonnect.ConnWithCallbacks(conn, &gonnect.Callbacks{
-		BeforeClose: n.buildUnregCallback(id),
-	})
-	n.register(id, conn)
-	return conn, nil
-}
-
-// RegisterTCPConnCallback wraps an accepted TCP connection with tracking callbacks.
-// It rejects the connection if the network is down.
-func (n *Network) RegisterTCPConnCallback(
-	conn gonnect.TCPConn,
-) (gonnect.TCPConn, error) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	if !n.up {
-		return nil, errors.ConnRefused(
-			helpers.NetworkFromConn(conn),
-			conn.RemoteAddr().String(),
-		)
-	}
-	id := n.getID()
-	conn = gonnect.TCPConnWithCallbacks(conn, &gonnect.Callbacks{
-		BeforeClose: n.buildUnregCallback(id),
-	})
-	n.register(id, conn)
-	return conn, nil
-}
-
-// doFilter checks if the network is up and applies the filter function if set.
-// It returns an error if the network is down or if the filter rejects the operation.
-// WARN: Not thread safe - caller must hold n.mu lock.
-func (n *Network) doFilter(network, address string, action int) error {
-	if !n.up {
-		return errForAction(action, network, address)
-	}
+// doFilter applies the filter function if set.
+// It returns an error if the filter rejects the operation.
+func (n *NativeNetwork) doFilter(network, address string, action int) error {
 	if n.filter == nil {
 		return nil
 	}
@@ -798,8 +653,7 @@ func (n *Network) doFilter(network, address string, action int) error {
 
 // dialInternal is the internal dial function used by the resolver.
 // It applies filtering before establishing the connection.
-// WARN: Not thread safe - caller must hold n.mu lock.
-func (n *Network) dialInternal(
+func (n *NativeNetwork) dialInternal(
 	ctx context.Context,
 	network, address string,
 ) (net.Conn, error) {
@@ -810,51 +664,8 @@ func (n *Network) dialInternal(
 	return n.dialer.DialContext(ctx, network, address)
 }
 
-// getID returns the next unique ID for tracking connections.
-// WARN: NOT thread safe - caller must hold n.mu lock.
-func (n *Network) getID() uint64 {
-	id := n.nextID
-	n.nextID += 1
-	return id
-}
-
-// register stores a connection or listener with the given ID for tracking.
-// WARN: NOT thread safe - caller must hold n.mu lock.
-func (n *Network) register(id uint64, c io.Closer) {
-	if n.closers == nil {
-		n.closers = make(map[uint64]io.Closer)
-	}
-	n.closers[id] = c
-}
-
-// buildUnregCallback returns a callback function that unregisters a connection
-// by ID when called. This is used as the BeforeClose callback for tracked connections.
-func (n *Network) buildUnregCallback(id uint64) func() {
-	return func() {
-		n.Unregister(id)
-	}
-}
-
-// downPrep prepares the network for shutdown by marking it as down
-// and collecting all tracked closers for cleanup.
-// It returns the closers that should be closed after releasing the lock.
-func (n *Network) downPrep() (closers []io.Closer) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	if !n.up {
-		return
-	}
-	n.up = false
-	closers = make([]io.Closer, len(n.closers))
-	if n.closers == nil {
-		return
-	}
-	closers = slices.Collect(maps.Values(n.closers))
-	return
-}
-
 // getResolver returns the configured resolver or net.DefaultResolver if none is set.
-func (n *Network) getResolver() *net.Resolver {
+func (n *NativeNetwork) getResolver() *net.Resolver {
 	if n.resolver == nil {
 		return net.DefaultResolver
 	}
@@ -862,7 +673,7 @@ func (n *Network) getResolver() *net.Resolver {
 }
 
 // getListenCfg returns the configured listen config or a default one if none is set.
-func (n *Network) getListenCfg() *net.ListenConfig {
+func (n *NativeNetwork) getListenCfg() *net.ListenConfig {
 	if n.listenCfg == nil {
 		return &net.ListenConfig{}
 	}
@@ -870,8 +681,8 @@ func (n *Network) getListenCfg() *net.ListenConfig {
 }
 
 // getListenCfgWith returns a copy of the configured listen config with fields
-// from gonnect.ListenConfig overlaid on top.
-func (n *Network) getListenCfgWith(lc *gonnect.ListenConfig) *net.ListenConfig {
+// from ListenConfig overlaid on top.
+func (n *NativeNetwork) getListenCfgWith(lc *ListenConfig) *net.ListenConfig {
 	cfg := *n.getListenCfg()
 	if lc != nil && lc.Control != nil {
 		cfg.Control = lc.Control
@@ -881,8 +692,7 @@ func (n *Network) getListenCfgWith(lc *gonnect.ListenConfig) *net.ListenConfig {
 
 // resolveAddr resolves a network address string into an IP and port.
 // It applies filtering before and after resolution (if port lookup is needed).
-// WARN: NOT thread safe - caller must hold n.mu lock.
-func (n *Network) resolveAddr(
+func (n *NativeNetwork) resolveAddr(
 	ctx context.Context, network, addr string, action int,
 ) (net.IP, int, error) {
 	err := n.doFilter(network, addr, action)
@@ -895,14 +705,14 @@ func (n *Network) resolveAddr(
 		return nil, 0, err
 	}
 	resolver := n.getResolver()
-	ipNet := helpers.FamilyFromNetwork(network) // "ip","ip4" or "ip6"
+	ipNet := nativeFamilyFromNetwork(network) // "ip","ip4" or "ip6"
 
 	ips, err := resolver.LookupIP(ctx, ipNet, host)
 	if err != nil {
 		return nil, 0, err
 	}
 
-	ip := helpers.PickIP(ips, n.preferIP)
+	ip := nativePickIP(ips, n.preferIP)
 
 	port, err := strconv.Atoi(serv)
 	if err != nil {
@@ -928,8 +738,7 @@ func (n *Network) resolveAddr(
 
 // resolveTCPAddr resolves a network address string into a TCPAddr.
 // It applies filtering through resolveAddr before constructing the result.
-// WARN: NOT thread safe - caller must hold n.mu lock.
-func (n *Network) resolveTCPAddr(
+func (n *NativeNetwork) resolveTCPAddr(
 	ctx context.Context,
 	network, addr string,
 	action int,
@@ -947,8 +756,7 @@ func (n *Network) resolveTCPAddr(
 
 // resolveUDPAddr resolves a network address string into a UDPAddr.
 // It applies filtering through resolveAddr before constructing the result.
-// WARN: NOT thread safe - caller must hold n.mu lock.
-func (n *Network) resolveUDPAddr(
+func (n *NativeNetwork) resolveUDPAddr(
 	ctx context.Context,
 	network, addr string,
 	action int,

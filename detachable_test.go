@@ -11,24 +11,23 @@ import (
 
 	"github.com/asciimoth/gonnect"
 	"github.com/asciimoth/gonnect/loopback"
-	"github.com/asciimoth/gonnect/native"
 	gt "github.com/asciimoth/gonnect/testing"
 )
 
 func TestDetachedNetwork_Compliance(t *testing.T) {
 	gt.RunNetworkErrorComplianceTests(t, func() gt.Network {
-		return gonnect.DetachNetwork(native.Config{}.Build())
+		return gonnect.DetachNetwork(gonnect.NativeConfig{}.Build())
 	})
 }
 
 func TestDetachedNetwork_Stoppable(t *testing.T) {
 	gt.RunStoppableNetworkTests(t, func() gt.UpDownNetwork {
-		return gonnect.DetachNetwork(native.Config{}.Build())
+		return gonnect.DetachNetwork(gonnect.NativeConfig{}.Build())
 	}, "127.0.0.1:0")
 }
 
 func TestDetachedNetworkTcpPingPong(t *testing.T) {
-	base := native.Config{}.Build()
+	base := gonnect.NativeConfig{}.Build()
 	pair := gt.NetAddrPair{
 		Network: gonnect.DetachNetwork(base),
 		Addr:    "127.0.0.1:0",
@@ -37,7 +36,7 @@ func TestDetachedNetworkTcpPingPong(t *testing.T) {
 }
 
 func TestDetachedNetworkHTTP(t *testing.T) {
-	base := native.Config{}.Build()
+	base := gonnect.NativeConfig{}.Build()
 	pair := gt.NetAddrPair{
 		Network: gonnect.DetachNetwork(base),
 		Addr:    "127.0.0.1:0",
@@ -46,7 +45,7 @@ func TestDetachedNetworkHTTP(t *testing.T) {
 }
 
 func TestDetachedNetworkUdpPingPong(t *testing.T) {
-	base := native.Config{}.Build()
+	base := gonnect.NativeConfig{}.Build()
 	pair := gt.NetAddrPair{
 		Network: gonnect.DetachNetwork(base),
 		Addr:    "127.0.0.1:0",
@@ -55,7 +54,7 @@ func TestDetachedNetworkUdpPingPong(t *testing.T) {
 }
 
 func TestDetachedNetworkDownDoesNotStopWrappedNetwork(t *testing.T) {
-	base := native.Config{}.Build()
+	base := gonnect.NativeConfig{}.Build()
 	wrapper := gonnect.DetachNetwork(base)
 
 	if err := wrapper.Down(); err != nil {
@@ -70,7 +69,7 @@ func TestDetachedNetworkDownDoesNotStopWrappedNetwork(t *testing.T) {
 }
 
 func TestDetachedNetworkWrappersAreIndependent(t *testing.T) {
-	base := native.Config{}.Build()
+	base := gonnect.NativeConfig{}.Build()
 	a := gonnect.DetachNetwork(base)
 	b := gonnect.DetachNetwork(base)
 
@@ -99,7 +98,7 @@ func (c *testCloser) closes() int32 {
 }
 
 func TestDetachedNetworkSubscribeCloser(t *testing.T) {
-	wrapper := gonnect.DetachNetwork(native.Config{}.Build())
+	wrapper := gonnect.DetachNetwork(gonnect.NativeConfig{}.Build())
 	kept := &testCloser{}
 	removed := &testCloser{}
 
@@ -132,7 +131,7 @@ func TestDetachedNetworkSubscribeCloser(t *testing.T) {
 }
 
 func TestDetachedNetworkSubscribeCloserWhenDown(t *testing.T) {
-	wrapper := gonnect.DetachNetwork(native.Config{}.Build())
+	wrapper := gonnect.DetachNetwork(gonnect.NativeConfig{}.Build())
 	if err := wrapper.Down(); err != nil {
 		t.Fatalf("Down() error = %v", err)
 	}
@@ -166,7 +165,7 @@ func (n *blockingDialNetwork) Dial(
 
 func TestDetachedNetworkDownCancelsParallelBlockedDials(t *testing.T) {
 	wrapped := &blockingDialNetwork{
-		Network: native.Config{}.Build(),
+		Network: gonnect.NativeConfig{}.Build(),
 		entered: make(chan struct{}, 2),
 	}
 	wrapper := gonnect.DetachNetwork(wrapped)

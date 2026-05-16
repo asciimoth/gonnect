@@ -7,8 +7,8 @@ import (
 	"github.com/asciimoth/gonnect"
 )
 
-// Network combines all major gonnect interfaces into one.
+// Network is the default network interface returned by this package.
+// Use gonnect.DetachNetwork when independent UpDown state is required.
 type Network interface {
 	gonnect.Network
-	gonnect.UpDown
 }

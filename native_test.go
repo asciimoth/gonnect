@@ -1,4 +1,4 @@
-package native_test
+package gonnect_test
 
 import (
 	"context"
@@ -8,18 +8,17 @@ import (
 	"testing"
 
 	"github.com/asciimoth/gonnect"
-	"github.com/asciimoth/gonnect/native"
 	gt "github.com/asciimoth/gonnect/testing"
 )
 
 func TestNativeNetwork_Compliance(t *testing.T) {
 	gt.RunNetworkErrorComplianceTests(t, func() gt.Network {
-		return native.Config{}.Build()
+		return gonnect.NativeConfig{}.Build()
 	})
 }
 func TestNativeNetworkTcpPingPong(t *testing.T) {
 	pair := gt.NetAddrPair{
-		Network: native.Config{}.Build(),
+		Network: gonnect.NativeConfig{}.Build(),
 		Addr:    "127.0.0.1:0",
 	}
 	gt.RunTcpPingPongForNetworks(t, pair, pair)
@@ -27,7 +26,7 @@ func TestNativeNetworkTcpPingPong(t *testing.T) {
 
 func TestNativeNetworkHTTP(t *testing.T) {
 	pair := gt.NetAddrPair{
-		Network: native.Config{}.Build(),
+		Network: gonnect.NativeConfig{}.Build(),
 		Addr:    "127.0.0.1:0",
 	}
 	gt.RunSimpleHTTPForNetworks(t, pair, pair)
@@ -35,16 +34,10 @@ func TestNativeNetworkHTTP(t *testing.T) {
 
 func TestNativeNetworkUdpPingPong(t *testing.T) {
 	pair := gt.NetAddrPair{
-		Network: native.Config{}.Build(),
+		Network: gonnect.NativeConfig{}.Build(),
 		Addr:    "127.0.0.1:0",
 	}
 	gt.RunUdpPingPongForNetworks(t, pair, pair)
-}
-
-func TestNativeNetwork_Stoppable(t *testing.T) {
-	gt.RunStoppableNetworkTests(t, func() gt.UpDownNetwork {
-		return native.Config{}.Build()
-	}, "127.0.0.1:0")
 }
 
 func TestNativeNetworkListenPacketConfig_UsesCallSpecificControl(t *testing.T) {
@@ -53,7 +46,7 @@ func TestNativeNetworkListenPacketConfig_UsesCallSpecificControl(t *testing.T) {
 	var defaultCalls atomic.Int32
 	var listenCalls atomic.Int32
 
-	n := native.Config{
+	n := gonnect.NativeConfig{
 		ListenCfg: &net.ListenConfig{
 			Control: func(network, address string, c syscall.RawConn) error {
 				defaultCalls.Add(1)
@@ -100,7 +93,7 @@ func TestNativeNetworkListenUDPConfig_UsesCallSpecificControl(t *testing.T) {
 	var defaultCalls atomic.Int32
 	var listenCalls atomic.Int32
 
-	n := native.Config{
+	n := gonnect.NativeConfig{
 		ListenCfg: &net.ListenConfig{
 			Control: func(network, address string, c syscall.RawConn) error {
 				defaultCalls.Add(1)

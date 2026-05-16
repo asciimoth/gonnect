@@ -2,8 +2,10 @@ package gonnect_test
 
 import (
 	"context"
+	"errors"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -81,6 +83,71 @@ func TestDetachedNetworkWrappersAreIndependent(t *testing.T) {
 		t.Fatalf("second wrapper affected by first wrapper Down(): %v", err)
 	}
 	_ = ln.Close()
+}
+
+type testCloser struct {
+	count atomic.Int32
+}
+
+func (c *testCloser) Close() error {
+	c.count.Add(1)
+	return nil
+}
+
+func (c *testCloser) closes() int32 {
+	return c.count.Load()
+}
+
+func TestDetachedNetworkSubscribeCloser(t *testing.T) {
+	wrapper := gonnect.DetachNetwork(native.Config{}.Build())
+	kept := &testCloser{}
+	removed := &testCloser{}
+
+	unsubscribeKept, err := wrapper.SubscribeCloser(kept)
+	if err != nil {
+		t.Fatalf("SubscribeCloser() error = %v", err)
+	}
+	defer unsubscribeKept()
+
+	unsubscribeRemoved, err := wrapper.SubscribeCloser(removed)
+	if err != nil {
+		t.Fatalf("SubscribeCloser() error = %v", err)
+	}
+	unsubscribeRemoved()
+	unsubscribeRemoved()
+
+	if err := wrapper.Down(); err != nil {
+		t.Fatalf("Down() error = %v", err)
+	}
+
+	if kept.closes() != 1 {
+		t.Fatalf("subscribed closer Close() calls = %d, want 1", kept.closes())
+	}
+	if removed.closes() != 0 {
+		t.Fatalf(
+			"unsubscribed closer Close() calls = %d, want 0",
+			removed.closes(),
+		)
+	}
+}
+
+func TestDetachedNetworkSubscribeCloserWhenDown(t *testing.T) {
+	wrapper := gonnect.DetachNetwork(native.Config{}.Build())
+	if err := wrapper.Down(); err != nil {
+		t.Fatalf("Down() error = %v", err)
+	}
+
+	closer := &testCloser{}
+	unsubscribe, err := wrapper.SubscribeCloser(closer)
+	if !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("SubscribeCloser() error = %v, want net.ErrClosed", err)
+	}
+	if unsubscribe != nil {
+		t.Fatal("SubscribeCloser() returned unsubscribe after error")
+	}
+	if closer.closes() != 1 {
+		t.Fatalf("closer Close() calls = %d, want 1", closer.closes())
+	}
 }
 
 type blockingDialNetwork struct {

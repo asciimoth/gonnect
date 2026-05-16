@@ -84,13 +84,18 @@ func TestListenerWithCallbacksRunsMultipleAcceptCallbacks(t *testing.T) {
 	again := ListenerWithCallbacks(wrapped, &Callbacks{
 		OnAccept: func(conn net.Conn) (net.Conn, error) {
 			if _, ok := conn.(*callbackTestConn); !ok {
-				t.Fatalf("second callback received %T, want *callbackTestConn", conn)
+				t.Fatalf(
+					"second callback received %T, want *callbackTestConn",
+					conn,
+				)
 			}
 			return conn, nil
 		},
 	})
 	if wrapped != again {
-		t.Fatal("ListenerWithCallbacks wrapped an existing callback listener again")
+		t.Fatal(
+			"ListenerWithCallbacks wrapped an existing callback listener again",
+		)
 	}
 
 	ln.accept <- c1
@@ -125,7 +130,10 @@ func TestListenerWithCallbacksClosesAcceptedConnAfterStop(t *testing.T) {
 		t.Fatalf("Accept() conn = %v, want nil", got)
 	}
 	if conn.closeCount.Load() != 1 {
-		t.Fatalf("accepted conn close count = %d, want 1", conn.closeCount.Load())
+		t.Fatalf(
+			"accepted conn close count = %d, want 1",
+			conn.closeCount.Load(),
+		)
 	}
 }
 
@@ -150,7 +158,10 @@ func TestTCPListenerWithCallbacksClosesAcceptedTCPConnAfterStop(t *testing.T) {
 		t.Fatalf("AcceptTCP() conn = %v, want nil", got)
 	}
 	if conn.closeCount.Load() != 1 {
-		t.Fatalf("accepted TCP conn close count = %d, want 1", conn.closeCount.Load())
+		t.Fatalf(
+			"accepted TCP conn close count = %d, want 1",
+			conn.closeCount.Load(),
+		)
 	}
 }
 

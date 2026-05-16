@@ -232,6 +232,8 @@ type Network interface {
 	// OS network stack or emulates it/adding mutation wrappers.
 	// Simple Network middlewares like logging ones should preserve IsNative status
 	// while complex ones (e.g. encrypting/proxyng/etc) should reports false.
+	// Some Network consumers may directly run low-level optimised dial/listen
+	// operations bypassing Network's methods calls if IsNative reports true.
 	IsNative() bool
 
 	Dial(
@@ -307,5 +309,7 @@ type Network interface {
 }
 
 type ListenConfig struct {
+	// Some virtual Network implementations may ignore Control function or
+	// call it with nil syscall.RawConn if they are not wrapping real syscalls.
 	Control func(network, address string, c syscall.RawConn) error
 }

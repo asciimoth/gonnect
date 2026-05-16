@@ -94,6 +94,31 @@ func (n *DetachedNetwork) Down() error {
 // Close is equivalent to Down.
 func (n *DetachedNetwork) Close() error { return n.Down() }
 
+// SubscribeCloser registers c to be closed when this wrapper is stopped.
+//
+// It is intended for callers that bypass this Network's Dial or Listen methods
+// but still want their externally-created connections
+// to be closed by Down or Close. The returned unsubscribe function removes c
+// from this wrapper without closing it. If this Network is already down, c is
+// closed before SubscribeCloser returns net.ErrClosed.
+func (n *DetachedNetwork) SubscribeCloser(c io.Closer) (func(), error) {
+	n.mu.Lock()
+	if !n.up {
+		n.mu.Unlock()
+		_ = c.Close()
+		return nil, net.ErrClosed
+	}
+	id := n.nextID
+	n.nextID++
+	n.closers[id] = c
+	n.mu.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() { n.unregister(id) })
+	}, nil
+}
+
 // IsUp reports whether this wrapper is currently up.
 func (n *DetachedNetwork) IsUp() (bool, error) {
 	n.mu.Lock()

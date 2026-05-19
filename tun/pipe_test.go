@@ -101,15 +101,21 @@ func TestPipeCloseSemantics(t *testing.T) {
 		t.Fatalf("Read() after Close() error = %v, want os.ErrClosed", err)
 	}
 	if !errors.Is(err, tun.ErrReadOnClosedPipe) {
-		t.Fatalf("Read() after Close() error = %v, want ErrReadOnClosedPipe", err)
+		t.Fatalf(
+			"Read() after Close() error = %v, want ErrReadOnClosedPipe",
+			err,
+		)
 	}
 
-	_, err = tun1.Write([][]byte{[]byte{1}}, 0)
+	_, err = tun1.Write([][]byte{{1}}, 0)
 	if !errors.Is(err, os.ErrClosed) {
 		t.Fatalf("Write() after Close() error = %v, want os.ErrClosed", err)
 	}
 	if !errors.Is(err, tun.ErrWriteOnClosedPipe) {
-		t.Fatalf("Write() after Close() error = %v, want ErrWriteOnClosedPipe", err)
+		t.Fatalf(
+			"Write() after Close() error = %v, want ErrWriteOnClosedPipe",
+			err,
+		)
 	}
 
 	_, err = tun2.Read([][]byte{make([]byte, 1500)}, sizes, 0)

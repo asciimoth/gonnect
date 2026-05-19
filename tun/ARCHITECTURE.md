@@ -105,6 +105,20 @@ joiner's own read, write, and done channels so `Detach(NewJoiner())` can add
 wrapper-local down/close state without adding another packet-copy pump around
 the joiner.
 
+`Splitter` is the inverse shape for one backend `Tun` and up to sixteen virtual
+frontend `Tun` values. It owns one backend read goroutine, one backend event
+goroutine, and one backend write pump. Backend read batches are routed under the
+current `SplitRouter` lock, then delivered to the selected frontend read
+channel; packets routed to invalid, down, closed, or never-created frontends are
+dropped. Frontend writes all share the splitter write pump and are forwarded to
+the current backend, or dropped successfully when no backend is attached.
+Detaching or replacing the backend closes it to unblock backend I/O, including
+terminal-error auto-detaches. Closing or taking down a frontend only closes that
+frontend's local done channel and does not affect the splitter or backend.
+`SplitFrontend.sourceSnapshot` exposes the frontend read channel, splitter write
+channel, and frontend effective done channel so `Detach(splitter.Get(n))` can
+reuse the existing data path instead of adding another pump layer.
+
 The reusable internal surface is the combination of:
 
 - a receive-only channel carrying already-copied read batches;
@@ -149,6 +163,7 @@ ordering problems as concurrent direct calls to `Tun.Read` or `Tun.Write`.
 - `DetachedTun`, `Detach`, `ErrDetachedTunDown`, `ErrDetachedTunClosed`:
   `detachable.go`
 - `Joiner`, `NewJoiner`: `joiner.go`
+- `Splitter`, `SplitFrontend`, `SplitRouter`, `NewSplitter`: `splitter.go`
 - `IO`, `NewIO`: `io.go`
 - `Forwarder`, `NewForwarder`: `forwarder.go`
 - `Point2Point`, `NewP2P`: `p2p.go`

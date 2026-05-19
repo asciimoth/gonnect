@@ -87,6 +87,24 @@ instead of:
 child pumps -> parent public Read/Write -> parent pumps -> wrapped Tun
 ```
 
+`Joiner` also implements the private channel source pattern, but it is not just
+a stoppable wrapper. It owns one read goroutine per attached nested `Tun`, plus
+a single write pump for consumers that attach to it through `Detach`. Nested
+reads are copied into `detachedTunRead` values tagged with their
+`joinerNested` owner; `Joiner.Read` buffers those packets, drops packets whose
+owner has since been detached, and learns IPv4/IPv6 source addresses for later
+routing. `Joiner.Write` uses the learned destination route when available and
+falls back to the current default nested `Tun`; malformed or unrouted packets
+are dropped when no default exists.
+
+Because `Joiner` must unblock goroutines blocked inside arbitrary nested
+`Tun.Read` and `Tun.Write` calls, detaching a nested `Tun` closes that nested
+`Tun`. This differs from `DetachedTun`, whose `Down` and `Close` only affect the
+wrapper and leave the wrapped `Tun` open. `Joiner.sourceSnapshot` exposes the
+joiner's own read, write, and done channels so `Detach(NewJoiner())` can add
+wrapper-local down/close state without adding another packet-copy pump around
+the joiner.
+
 The reusable internal surface is the combination of:
 
 - a receive-only channel carrying already-copied read batches;
@@ -130,6 +148,7 @@ ordering problems as concurrent direct calls to `Tun.Read` or `Tun.Write`.
 - `Pipe`, `ErrReadOnClosedPipe`, `ErrWriteOnClosedPipe`: `pipe.go`
 - `DetachedTun`, `Detach`, `ErrDetachedTunDown`, `ErrDetachedTunClosed`:
   `detachable.go`
+- `Joiner`, `NewJoiner`: `joiner.go`
 - `IO`, `NewIO`: `io.go`
 - `Forwarder`, `NewForwarder`: `forwarder.go`
 - `Point2Point`, `NewP2P`: `p2p.go`

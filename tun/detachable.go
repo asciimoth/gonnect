@@ -30,6 +30,7 @@ var (
 type detachedTunRead struct {
 	bufs  [][]byte
 	sizes []int
+	owner *joinerNested
 	err   error
 }
 
@@ -42,6 +43,15 @@ type detachedTunWrite struct {
 type detachedTunWriteResult struct {
 	n   int
 	err error
+}
+
+type tunChannelSource interface {
+	sourceSnapshot() (
+		<-chan detachedTunRead,
+		chan<- detachedTunWrite,
+		<-chan struct{},
+		error,
+	)
 }
 
 // DetachedTun is an independently stoppable wrapper around a Tun.
@@ -65,6 +75,7 @@ type detachedTunWriteResult struct {
 type DetachedTun struct {
 	wrapped Tun
 	parent  *DetachedTun
+	source  tunChannelSource
 
 	mu            sync.RWMutex
 	up            bool
@@ -97,6 +108,9 @@ func Detach(t Tun) *DetachedTun {
 	if parent, ok := t.(*DetachedTun); ok {
 		return detachNested(parent)
 	}
+	if source, ok := t.(tunChannelSource); ok {
+		return detachSource(t, source)
+	}
 	mtu, err := t.MTU()
 	if err != nil || mtu < 0 {
 		mtu = 64 << 10
@@ -106,6 +120,36 @@ func Detach(t Tun) *DetachedTun {
 		up:        true,
 		gen:       1,
 		ownsPumps: true,
+		events:    make(chan Event, 8),
+		eventSubs: make(map[chan Event]struct{}),
+		mtu:       mtu,
+		mro:       t.MRO(),
+		mwo:       t.MWO(),
+		batch:     t.BatchSize(),
+	}
+	if d.batch <= 0 {
+		d.batch = 1
+	}
+	d.readLen = d.mro + d.mtu
+	if d.readLen < d.mro {
+		d.readLen = d.mro
+	}
+	d.startLocked()
+	d.startEventPump(t.Events())
+	d.sendEvent(EventUp)
+	return d
+}
+
+func detachSource(t Tun, source tunChannelSource) *DetachedTun {
+	mtu, err := t.MTU()
+	if err != nil || mtu < 0 {
+		mtu = 64 << 10
+	}
+	d := &DetachedTun{
+		wrapped:   t,
+		source:    source,
+		up:        true,
+		gen:       1,
 		events:    make(chan Event, 8),
 		eventSubs: make(map[chan Event]struct{}),
 		mtu:       mtu,
@@ -311,7 +355,11 @@ func (d *DetachedTun) startLocked() {
 }
 
 func (d *DetachedTun) refreshNestedLocked() error {
-	readSrc, writeSrc, parentDone, err := d.parent.sourceSnapshot()
+	source := d.source
+	if source == nil {
+		source = d.parent
+	}
+	readSrc, writeSrc, parentDone, err := source.sourceSnapshot()
 	if err != nil {
 		return err
 	}
@@ -390,6 +438,9 @@ func (d *DetachedTun) stateErr() error {
 		return ErrDetachedTunDown
 	}
 	if !d.ownsPumps {
+		if d.parent == nil {
+			return nil
+		}
 		return d.parent.stateErr()
 	}
 	return nil
@@ -429,10 +480,10 @@ func (d *DetachedTun) readPump(
 	}
 	for {
 		n, err := d.wrapped.Read(bufs, sizes, d.mro)
-		if !d.generationActive(gen) {
-			return
-		}
 		if err != nil {
+			if !d.generationActive(gen) {
+				return
+			}
 			select {
 			case <-done:
 			case reads <- detachedTunRead{err: err}:
@@ -447,11 +498,31 @@ func (d *DetachedTun) readPump(
 			}
 			packets[i] = append([]byte(nil), bufs[i][d.mro:d.mro+size]...)
 		}
+		if !d.generationActive(gen) {
+			d.forwardStaleRead(packets)
+			return
+		}
 		select {
 		case <-done:
 			return
 		case reads <- detachedTunRead{bufs: packets, sizes: sizes[:n]}:
 		}
+	}
+}
+
+func (d *DetachedTun) forwardStaleRead(packets [][]byte) {
+	d.mu.RLock()
+	if !d.up || d.closed || !d.ownsPumps {
+		d.mu.RUnlock()
+		return
+	}
+	reads := d.reads
+	done := d.done
+	d.mu.RUnlock()
+
+	select {
+	case <-done:
+	case reads <- detachedTunRead{bufs: packets}:
 	}
 }
 

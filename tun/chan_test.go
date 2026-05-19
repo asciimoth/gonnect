@@ -2,7 +2,6 @@
 package tun_test
 
 import (
-	"fmt"
 	"sync"
 	"testing"
 
@@ -37,21 +36,16 @@ func chanTextWriter(ch *tun.Channel, text string, batchSize, bufSize int) {
 	for written < len(data) {
 		// Filling batch up
 		var count int
-		str := ""
 		for i := range len(batch) {
 			buf := buffs[i]
 			w := copy(buf[offset:offset+bufSize], data[written:])
 			batch[i] = buf[:offset+w]
-			str += "'" + string(data[written:written+w]) + "' " // nolint
 			written += w
 			count += 1
 			if written >= len(data) {
 				break
 			}
 		}
-
-		// Logging
-		fmt.Println("writing ", str)
 
 		// Writing
 		err := chWriteBatch(ch, batch[:count], offset)
@@ -82,13 +76,10 @@ func chanTextReader(
 		}
 		n, err := ch.Read(batch, sizes, offset)
 		if n > 0 {
-			str := ""
 			for i := range n {
 				buf := batch[i][offset : offset+sizes[i]]
-				str += "'" + string(buf) + "' " //nolint
 				data = append(data, buf...)
 			}
-			fmt.Println("reading ", str)
 		}
 		if err != nil {
 			return string(data)

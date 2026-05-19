@@ -115,6 +115,129 @@ func TestJoinerRoutesByLearnedIPSource(t *testing.T) {
 	}
 }
 
+func TestJoinerWritesLargeBatchToSameRoute(t *testing.T) {
+	j := NewJoiner()
+	defer j.Close()
+
+	def := newMockTun(64, 1500, 0, 0)
+	sec := newMockTun(64, 1500, 0, 0)
+	if err := j.AttachDefault(def); err != nil {
+		t.Fatalf("AttachDefault() error = %v", err)
+	}
+	if err := j.AttachSecondary(sec); err != nil {
+		t.Fatalf("AttachSecondary() error = %v", err)
+	}
+
+	learnedIP := [4]byte{10, 40, 0, 2}
+	peerIP := [4]byte{10, 40, 0, 1}
+	learned := ipv4Packet(learnedIP, peerIP)
+	sec.enqueueRead(mockReadResult{packets: [][]byte{learned}})
+	if got := readJoinerPacket(t, j); !reflect.DeepEqual(got, learned) {
+		t.Fatalf("Read() packet = %v, want %v", got, learned)
+	}
+
+	packets := ipv4PacketBatch(j.MWO(), 24, peerIP, learnedIP)
+	if n, err := j.Write(packets, j.MWO()); err != nil || n != len(packets) {
+		t.Fatalf("Write() = %d, %v; want %d, nil", n, err, len(packets))
+	}
+	want := stripOffset(packets, j.MWO())
+	if got := sec.waitForWrittenPackets(
+		len(want),
+		time.Second,
+	); !reflect.DeepEqual(
+		got,
+		want,
+	) {
+		t.Fatalf("secondary written packets = %v, want %v", got, want)
+	}
+	if got := def.waitForWrittenPackets(1, 50*time.Millisecond); len(got) != 0 {
+		t.Fatalf("default written packets = %d, want 0", len(got))
+	}
+	if got := sec.recordedWriteCalls(); !reflect.DeepEqual(got, []int{24}) {
+		t.Fatalf("secondary write calls = %v, want [24]", got)
+	}
+}
+
+func TestJoinerWritesLargeBatchToMultipleRoutes(t *testing.T) {
+	j := NewJoiner()
+	defer j.Close()
+
+	def := newMockTun(64, 1500, 0, 0)
+	sec1 := newMockTun(64, 1500, 0, 0)
+	sec2 := newMockTun(64, 1500, 0, 0)
+	if err := j.AttachDefault(def); err != nil {
+		t.Fatalf("AttachDefault() error = %v", err)
+	}
+	if err := j.AttachSecondary(sec1); err != nil {
+		t.Fatalf("AttachSecondary(sec1) error = %v", err)
+	}
+	if err := j.AttachSecondary(sec2); err != nil {
+		t.Fatalf("AttachSecondary(sec2) error = %v", err)
+	}
+
+	peerIP := [4]byte{10, 50, 0, 1}
+	sec1IP := [4]byte{10, 50, 0, 2}
+	sec2IP := [4]byte{10, 50, 0, 3}
+	unknownIP := [4]byte{10, 50, 0, 99}
+	learn1 := ipv4Packet(sec1IP, peerIP)
+	learn2 := ipv4Packet(sec2IP, peerIP)
+	sec1.enqueueRead(mockReadResult{packets: [][]byte{learn1}})
+	sec2.enqueueRead(mockReadResult{packets: [][]byte{learn2}})
+	readJoinerPacketsUnordered(t, j, [][]byte{learn1, learn2})
+
+	packets := make([][]byte, 0, 24)
+	var wantSec1, wantSec2, wantDef [][]byte
+	for i := range 8 {
+		sec1Packet := withOffset(
+			j.MWO(),
+			ipv4Packet(withHost(peerIP, byte(i+10)), sec1IP),
+		)
+		sec2Packet := withOffset(
+			j.MWO(),
+			ipv4Packet(withHost(peerIP, byte(i+30)), sec2IP),
+		)
+		defPacket := withOffset(
+			j.MWO(),
+			ipv4Packet(withHost(peerIP, byte(i+50)), unknownIP),
+		)
+		packets = append(packets, sec1Packet, sec2Packet, defPacket)
+		wantSec1 = append(wantSec1, sec1Packet[j.MWO():])
+		wantSec2 = append(wantSec2, sec2Packet[j.MWO():])
+		wantDef = append(wantDef, defPacket[j.MWO():])
+	}
+
+	if n, err := j.Write(packets, j.MWO()); err != nil || n != len(packets) {
+		t.Fatalf("Write() = %d, %v; want %d, nil", n, err, len(packets))
+	}
+	if got := sec1.waitForWrittenPackets(
+		len(wantSec1),
+		time.Second,
+	); !reflect.DeepEqual(
+		got,
+		wantSec1,
+	) {
+		t.Fatalf("sec1 written packets = %v, want %v", got, wantSec1)
+	}
+	if got := sec2.waitForWrittenPackets(
+		len(wantSec2),
+		time.Second,
+	); !reflect.DeepEqual(
+		got,
+		wantSec2,
+	) {
+		t.Fatalf("sec2 written packets = %v, want %v", got, wantSec2)
+	}
+	if got := def.waitForWrittenPackets(
+		len(wantDef),
+		time.Second,
+	); !reflect.DeepEqual(
+		got,
+		wantDef,
+	) {
+		t.Fatalf("default written packets = %v, want %v", got, wantDef)
+	}
+}
+
 func TestJoinerReadBuffersRemainingPackets(t *testing.T) {
 	j := NewJoiner()
 	defer j.Close()
@@ -268,6 +391,55 @@ func TestDetachJoinerUsesJoinerDataPath(t *testing.T) {
 	if got := sec.waitForWrittenPackets(1, time.Second); len(got) != 1 {
 		t.Fatalf("secondary written packets = %d, want 1", len(got))
 	}
+}
+
+func TestJoinerSwitchesBetweenPipeAndDetachedNestedTuns(t *testing.T) {
+	j := NewJoiner()
+	defer j.Close()
+
+	pipeNested1, peer1 := Pipe(2, 1400, 5, 7)
+	if err := j.AttachDefault(pipeNested1); err != nil {
+		t.Fatalf("AttachDefault(pipe 1) error = %v", err)
+	}
+	assertTunShape(t, "pipe 1 joiner shape", j, 256, 256, 1400, 2)
+	assertJoinerPipeFlow(
+		t,
+		"pipe 1",
+		j,
+		peer1,
+		[4]byte{10, 10, 0, 1},
+		[4]byte{10, 10, 0, 2},
+	)
+
+	detachedNested, detachedPeer := Pipe(3, 1300, 4, 6)
+	detached := Detach(detachedNested)
+	defer detached.Close()
+	if err := j.AttachDefault(detached); err != nil {
+		t.Fatalf("AttachDefault(detached) error = %v", err)
+	}
+	assertTunShape(t, "detached joiner shape", j, 256, 256, 1300, 3)
+	assertJoinerPipeFlow(
+		t,
+		"detached",
+		j,
+		detachedPeer,
+		[4]byte{10, 20, 0, 1},
+		[4]byte{10, 20, 0, 2},
+	)
+
+	pipeNested2, peer2 := Pipe(4, 1200, 8, 9)
+	if err := j.AttachDefault(pipeNested2); err != nil {
+		t.Fatalf("AttachDefault(pipe 2) error = %v", err)
+	}
+	assertTunShape(t, "pipe 2 joiner shape", j, 256, 256, 1200, 4)
+	assertJoinerPipeFlow(
+		t,
+		"pipe 2",
+		j,
+		peer2,
+		[4]byte{10, 30, 0, 1},
+		[4]byte{10, 30, 0, 2},
+	)
 }
 
 func TestJoinerDetachedTunComplexTopologyStateEventsAndFlow(t *testing.T) {
@@ -525,6 +697,21 @@ func readJoinerPackets(t *testing.T, j *Joiner, count int) [][]byte {
 	return nil
 }
 
+func readJoinerPacketsUnordered(
+	t *testing.T,
+	j *Joiner,
+	want [][]byte,
+) {
+	t.Helper()
+	got := make([][]byte, 0, len(want))
+	for len(got) < len(want) {
+		got = append(got, readJoinerPackets(t, j, len(want)-len(got))...)
+	}
+	if !packetMultisetEqual(got, want) {
+		t.Fatalf("Read() packets = %v, want unordered %v", got, want)
+	}
+}
+
 func assertJoinerEvent(t *testing.T, j *Joiner, want Event) {
 	t.Helper()
 	select {
@@ -688,6 +875,61 @@ func assertWriteDeliveredTo(
 	}
 }
 
+func assertJoinerPipeFlow(
+	t *testing.T,
+	label string,
+	j *Joiner,
+	peer Tun,
+	src [4]byte,
+	dst [4]byte,
+) {
+	t.Helper()
+	packet := ipv4Packet(src, dst)
+	assertTunPacketDelivery(t, label+" peer to joiner", peer, j, packet)
+	reply := ipv4Packet(dst, src)
+	assertTunPacketDelivery(t, label+" joiner to peer", j, peer, reply)
+}
+
+func assertTunPacketDelivery(
+	t *testing.T,
+	label string,
+	writer Tun,
+	reader Tun,
+	packet []byte,
+) {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() {
+		n, err := writer.Write(
+			[][]byte{withOffset(writer.MWO(), packet)},
+			writer.MWO(),
+		)
+		if err != nil {
+			done <- err
+			return
+		}
+		if n != 1 {
+			done <- errors.New("tun: test write returned unexpected count")
+			return
+		}
+		done <- nil
+	}()
+
+	got := readTunPacket(t, label, reader)
+	if !reflect.DeepEqual(got, packet) {
+		t.Fatalf("%s: Read() packet = %v, want %v", label, got, packet)
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("%s: Write() error = %v", label, err)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("%s: Write() timed out", label)
+	}
+}
+
 func assertRoutedWriteDropped(
 	t *testing.T,
 	label string,
@@ -740,12 +982,6 @@ func assertUnknownRoutesToDefault(
 
 func readTunPacket(t *testing.T, label string, tun Tun) []byte {
 	t.Helper()
-	type result struct {
-		packet []byte
-		err    error
-		n      int
-		size   int
-	}
 	ch := make(chan result, 1)
 	go func() {
 		buf := make([]byte, tun.MRO()+128)
@@ -779,6 +1015,64 @@ func readTunPacket(t *testing.T, label string, tun Tun) []byte {
 	return nil
 }
 
+type result struct {
+	packet []byte
+	err    error
+	n      int
+	size   int
+}
+
+type tunPacketsResult struct {
+	packets [][]byte
+	err     error
+}
+
+func readTunPacketsAsync(tun Tun, count int) <-chan tunPacketsResult {
+	ch := make(chan tunPacketsResult, 1)
+	go func() {
+		out := make([][]byte, 0, count)
+		for len(out) < count {
+			batch := min(tun.BatchSize(), count-len(out))
+			bufs := make([][]byte, batch)
+			sizes := make([]int, batch)
+			for i := range bufs {
+				bufs[i] = make([]byte, tun.MRO()+64)
+			}
+			n, err := tun.Read(bufs, sizes, tun.MRO())
+			if err != nil {
+				ch <- tunPacketsResult{packets: out, err: err}
+				return
+			}
+			for i := range n {
+				out = append(
+					out,
+					append([]byte(nil), bufs[i][tun.MRO():tun.MRO()+sizes[i]]...),
+				)
+			}
+		}
+		ch <- tunPacketsResult{packets: out}
+	}()
+	return ch
+}
+
+func awaitTunPackets(
+	t *testing.T,
+	label string,
+	ch <-chan tunPacketsResult,
+) [][]byte {
+	t.Helper()
+	select {
+	case res := <-ch:
+		if res.err != nil {
+			t.Fatalf("%s: Read() error = %v", label, res.err)
+		}
+		return res.packets
+	case <-time.After(time.Second):
+		t.Fatalf("%s: Read() timed out", label)
+	}
+	return nil
+}
+
 func mockWrittenCount(tun *mockTun) int {
 	tun.mu.Lock()
 	defer tun.mu.Unlock()
@@ -801,6 +1095,61 @@ func ipv4Packet(src, dst [4]byte) []byte {
 	copy(p[12:16], src[:])
 	copy(p[16:20], dst[:])
 	return p
+}
+
+func ipv4PacketBatch(
+	offset int,
+	count int,
+	src [4]byte,
+	dst [4]byte,
+) [][]byte {
+	packets := make([][]byte, count)
+	for i := range packets {
+		packets[i] = withOffset(
+			offset,
+			ipv4Packet(withHost(src, byte(i+1)), dst),
+		)
+	}
+	return packets
+}
+
+func sequentialPackets(prefix string, count int) [][]byte {
+	packets := make([][]byte, count)
+	for i := range packets {
+		packets[i] = []byte(prefix + "-" + string(rune('a'+i)))
+	}
+	return packets
+}
+
+func stripOffset(packets [][]byte, offset int) [][]byte {
+	out := make([][]byte, len(packets))
+	for i := range packets {
+		out[i] = append([]byte(nil), packets[i][offset:]...)
+	}
+	return out
+}
+
+func packetMultisetEqual(a, b [][]byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	counts := make(map[string]int, len(a))
+	for _, packet := range a {
+		counts[string(packet)]++
+	}
+	for _, packet := range b {
+		key := string(packet)
+		if counts[key] == 0 {
+			return false
+		}
+		counts[key]--
+	}
+	return true
+}
+
+func withHost(ip [4]byte, host byte) [4]byte {
+	ip[3] = host
+	return ip
 }
 
 func withOffset(offset int, packet []byte) []byte {

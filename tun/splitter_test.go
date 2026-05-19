@@ -172,6 +172,76 @@ func TestSplitterRoutesBackendReadsToFrontends(t *testing.T) {
 	}
 }
 
+func TestSplitterRoutesLargeBatchToSameFrontend(t *testing.T) {
+	s := NewSplitter()
+	defer s.Close()
+
+	router := &staticSplitRouter{targets: []int{2}}
+	s.SetRouter(router)
+	backend := newMockTun(32, 1500, 0, 0)
+	if err := s.Attach(backend); err != nil {
+		t.Fatalf("Attach() error = %v", err)
+	}
+	_ = s.Get(1)
+	f2 := s.Get(2)
+
+	packets := sequentialPackets("same", 24)
+	backend.enqueueRead(mockReadResult{packets: packets})
+	got := readSplitFrontendPackets(t, f2, len(packets))
+	if !reflect.DeepEqual(got, packets) {
+		t.Fatalf("frontend 2 packets = %q, want %q", got, packets)
+	}
+	if router.locks != 1 || router.unlocks != 1 {
+		t.Fatalf(
+			"router lock/unlock = %d/%d, want 1/1",
+			router.locks,
+			router.unlocks,
+		)
+	}
+}
+
+func TestSplitterRoutesLargeBatchToMultipleFrontends(t *testing.T) {
+	s := NewSplitter()
+	defer s.Close()
+
+	router := &staticSplitRouter{targets: []int{1, 2, 3, 2}}
+	s.SetRouter(router)
+	backend := newMockTun(32, 1500, 0, 0)
+	if err := s.Attach(backend); err != nil {
+		t.Fatalf("Attach() error = %v", err)
+	}
+	f1 := s.Get(1)
+	f2 := s.Get(2)
+	f3 := s.Get(3)
+
+	packets := sequentialPackets("mixed", 24)
+	want1, want2, want3 := routedSplitterPackets(
+		packets,
+		[]int{1, 2, 3, 2},
+	)
+	read1 := readTunPacketsAsync(f1, len(want1))
+	read2 := readTunPacketsAsync(f2, len(want2))
+	read3 := readTunPacketsAsync(f3, len(want3))
+	backend.enqueueRead(mockReadResult{packets: packets})
+
+	if got := awaitTunPackets(t, "frontend 1", read1); !reflect.DeepEqual(got, want1) {
+		t.Fatalf("frontend 1 packets = %q, want %q", got, want1)
+	}
+	if got := awaitTunPackets(t, "frontend 2", read2); !reflect.DeepEqual(got, want2) {
+		t.Fatalf("frontend 2 packets = %q, want %q", got, want2)
+	}
+	if got := awaitTunPackets(t, "frontend 3", read3); !reflect.DeepEqual(got, want3) {
+		t.Fatalf("frontend 3 packets = %q, want %q", got, want3)
+	}
+	if router.locks != 1 || router.unlocks != 1 {
+		t.Fatalf(
+			"router lock/unlock = %d/%d, want 1/1",
+			router.locks,
+			router.unlocks,
+		)
+	}
+}
+
 func TestSplitterDropsInvalidDownAndMissingFrontends(t *testing.T) {
 	s := NewSplitter()
 	defer s.Close()
@@ -328,6 +398,78 @@ func TestDetachSplitFrontendUsesFrontendChannelPath(t *testing.T) {
 	}
 }
 
+func TestSplitterSwitchesBetweenPipeAndDetachedBackends(t *testing.T) {
+	s := NewSplitter()
+	defer s.Close()
+
+	f := s.Get(1)
+	if f == nil {
+		t.Fatal("Get(1) = nil")
+	}
+
+	pipeBackend1, peer1 := Pipe(2, 1400, 5, 7)
+	if err := s.Attach(pipeBackend1); err != nil {
+		t.Fatalf("Attach(pipe 1) error = %v", err)
+	}
+	assertTunShape(t, "pipe 1 frontend shape", f, 7, 5, 1400, 2)
+	assertTunPacketDelivery(
+		t,
+		"pipe 1 peer to frontend",
+		peer1,
+		f,
+		[]byte("pipe-1-out"),
+	)
+	assertTunPacketDelivery(
+		t,
+		"pipe 1 frontend to peer",
+		f,
+		peer1,
+		[]byte("pipe-1-in"),
+	)
+
+	detachedBackend, detachedPeer := Pipe(3, 1300, 4, 6)
+	detached := Detach(detachedBackend)
+	defer detached.Close()
+	if err := s.Attach(detached); err != nil {
+		t.Fatalf("Attach(detached) error = %v", err)
+	}
+	assertTunShape(t, "detached frontend shape", f, 6, 4, 1300, 3)
+	assertTunPacketDelivery(
+		t,
+		"detached peer to frontend",
+		detachedPeer,
+		f,
+		[]byte("detached-out"),
+	)
+	assertTunPacketDelivery(
+		t,
+		"detached frontend to peer",
+		f,
+		detachedPeer,
+		[]byte("detached-in"),
+	)
+
+	pipeBackend2, peer2 := Pipe(4, 1200, 8, 9)
+	if err := s.Attach(pipeBackend2); err != nil {
+		t.Fatalf("Attach(pipe 2) error = %v", err)
+	}
+	assertTunShape(t, "pipe 2 frontend shape", f, 9, 8, 1200, 4)
+	assertTunPacketDelivery(
+		t,
+		"pipe 2 peer to frontend",
+		peer2,
+		f,
+		[]byte("pipe-2-out"),
+	)
+	assertTunPacketDelivery(
+		t,
+		"pipe 2 frontend to peer",
+		f,
+		peer2,
+		[]byte("pipe-2-in"),
+	)
+}
+
 func readSplitFrontendPackets(
 	t *testing.T,
 	f Tun,
@@ -404,6 +546,24 @@ func assertSplitFrontendEvent(t *testing.T, f *SplitFrontend, want Event) {
 			t.Fatalf("timed out waiting for event %v", want)
 		}
 	}
+}
+
+func routedSplitterPackets(
+	packets [][]byte,
+	targets []int,
+) ([][]byte, [][]byte, [][]byte) {
+	var out1, out2, out3 [][]byte
+	for i, packet := range packets {
+		switch targets[i%len(targets)] {
+		case 1:
+			out1 = append(out1, packet)
+		case 2:
+			out2 = append(out2, packet)
+		case 3:
+			out3 = append(out3, packet)
+		}
+	}
+	return out1, out2, out3
 }
 
 func eventuallySplitFrontendMTU(t *testing.T, f *SplitFrontend, want int) {

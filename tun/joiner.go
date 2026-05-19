@@ -5,6 +5,8 @@ import (
 	"io"
 	"os"
 	"sync"
+
+	"github.com/asciimoth/bufpool"
 )
 
 var (
@@ -50,6 +52,7 @@ type joinerNested struct {
 type joinerPending struct {
 	packet []byte
 	owner  *joinerNested
+	pool   bufpool.Pool
 }
 
 // Joiner combines several nested Tuns into one virtual Tun.
@@ -81,10 +84,13 @@ type Joiner struct {
 	mtu         int
 	batch       int
 	once        sync.Once
+	pool        bufpool.Pool
+	wg          sync.WaitGroup
 }
 
 // NewJoiner creates an empty Joiner.
-func NewJoiner() *Joiner {
+func NewJoiner(pools ...bufpool.Pool) *Joiner {
+	pool := optionalPool(pools)
 	j := &Joiner{
 		done:        make(chan struct{}),
 		events:      make(chan Event, 8),
@@ -95,8 +101,9 @@ func NewJoiner() *Joiner {
 		routes:      make(map[string]*joinerNested),
 		mtu:         joinerDefaultMTU,
 		batch:       joinerDefaultBatch,
+		pool:        pool,
 	}
-	go j.writePump()
+	j.wg.Go(j.writePump)
 	return j
 }
 
@@ -269,8 +276,11 @@ func (j *Joiner) Read(bufs [][]byte, sizes []int, offset int) (int, error) {
 					j.pending = append(j.pending, joinerPending{
 						packet: packet,
 						owner:  r.owner,
+						pool:   r.pool,
 					})
 				}
+			} else {
+				putBuffers(r.pool, r.bufs)
 			}
 			j.mu.Unlock()
 		}
@@ -323,6 +333,8 @@ func (j *Joiner) Close() error {
 		j.secondaries = make(map[Tun]*joinerNested)
 		j.nested = make(map[Tun]*joinerNested)
 		j.routes = make(map[string]*joinerNested)
+		putJoinerPendingLocked(j.pending)
+		j.pending = nil
 		j.recalculateLocked()
 		close(j.done)
 		j.closeEvents()
@@ -330,6 +342,7 @@ func (j *Joiner) Close() error {
 		for _, n := range nested {
 			_ = n.t.Close()
 		}
+		j.wg.Wait()
 	})
 	return nil
 }
@@ -366,14 +379,17 @@ func (j *Joiner) readPending(
 		if offset > len(bufs[i]) {
 			return i, errors.New("tun: joiner read offset beyond buffer")
 		}
+	}
+	for i := range n {
 		sizes[i] = copy(bufs[i][offset:], j.pending[i].packet)
 	}
+	putJoinerPendingLocked(j.pending[:n])
 	j.pending = j.pending[n:]
 	return n, nil
 }
 
 func (j *Joiner) startNested(n *joinerNested) {
-	go j.readNested(n)
+	j.wg.Go(func() { j.readNested(n) })
 	go j.watchNestedEvents(n)
 }
 
@@ -390,8 +406,9 @@ func (j *Joiner) readNested(n *joinerNested) {
 	bufs := make([][]byte, batch)
 	sizes := make([]int, batch)
 	for i := range bufs {
-		bufs[i] = make([]byte, readLen)
+		bufs[i] = bufpool.GetBuffer(j.pool, readLen)
 	}
+	defer putBuffers(j.pool, bufs)
 	for {
 		n.waitUp()
 		if n.isClosed() {
@@ -415,13 +432,21 @@ func (j *Joiner) readNested(n *joinerNested) {
 			if len(bufs[i]) > offset {
 				size = min(sizes[i], len(bufs[i])-offset)
 			}
-			packets[i] = append([]byte(nil), bufs[i][offset:offset+size]...)
+			packets[i] = clonePacketBuffer(
+				j.pool,
+				bufs[i][offset:offset+size],
+			)
 			j.rememberRoute(packets[i], n)
 		}
 		select {
 		case <-j.done:
+			putBuffers(j.pool, packets)
 			return
-		case j.reads <- detachedTunRead{bufs: packets, owner: n}:
+		case j.reads <- detachedTunRead{
+			bufs:  packets,
+			owner: n,
+			pool:  j.pool,
+		}:
 		}
 	}
 }
@@ -470,6 +495,7 @@ func (j *Joiner) writePump() {
 			return
 		case req := <-j.writes:
 			n, err := j.Write(req.bufs, req.offset)
+			putBuffers(req.pool, req.bufs)
 			req.resp <- detachedTunWriteResult{n: n, err: err}
 		}
 	}
@@ -507,7 +533,13 @@ func (j *Joiner) writeToNested(
 	if n == nil || !n.acceptsWrites() {
 		return nil
 	}
-	writeBufs, writeOffset := alignWriteOffset(bufs, offset, n.t.MWO())
+	writeBufs, writeOffset, release := alignWriteOffset(
+		j.pool,
+		bufs,
+		offset,
+		n.t.MWO(),
+	)
+	defer release()
 	for written := 0; written < len(writeBufs); {
 		end := min(written+batchSizeOf(n.t), len(writeBufs))
 		count, err := n.t.Write(writeBufs[written:end], writeOffset)
@@ -536,12 +568,13 @@ func (n *joinerNested) acceptsWrites() bool {
 }
 
 func alignWriteOffset(
+	pool bufpool.Pool,
 	bufs [][]byte,
 	offset int,
 	nestedOffset int,
-) ([][]byte, int) {
+) ([][]byte, int, func()) {
 	if nestedOffset <= offset {
-		return bufs, offset
+		return bufs, offset, func() {}
 	}
 	out := make([][]byte, len(bufs))
 	for i := range bufs {
@@ -549,12 +582,12 @@ func alignWriteOffset(
 		if offset < len(bufs[i]) {
 			size = len(bufs[i]) - offset
 		}
-		out[i] = make([]byte, nestedOffset+size)
+		out[i] = bufpool.GetBuffer(pool, nestedOffset+size)
 		if size > 0 {
 			copy(out[i][nestedOffset:], bufs[i][offset:])
 		}
 	}
-	return out, nestedOffset
+	return out, nestedOffset, func() { putBuffers(pool, out) }
 }
 
 func (j *Joiner) detachNested(n *joinerNested, closeTun bool) {
@@ -586,10 +619,18 @@ func (j *Joiner) removeNestedLocked(n *joinerNested) {
 	for _, packet := range j.pending {
 		if packet.owner != n {
 			pending = append(pending, packet)
+		} else {
+			bufpool.PutBuffer(packet.pool, packet.packet)
 		}
 	}
 	j.pending = pending
 	j.closeNestedLocked(n)
+}
+
+func putJoinerPendingLocked(pending []joinerPending) {
+	for _, packet := range pending {
+		bufpool.PutBuffer(packet.pool, packet.packet)
+	}
 }
 
 func (j *Joiner) closeNestedLocked(n *joinerNested) {

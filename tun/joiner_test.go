@@ -10,7 +10,7 @@ import (
 )
 
 func TestJoinerMetadataAndMTUEvents(t *testing.T) {
-	j := NewJoiner()
+	j := NewJoiner(testDebugPool(t))
 	defer j.Close()
 
 	if got := j.MRO(); got != 256 {
@@ -71,7 +71,7 @@ func TestJoinerMetadataAndMTUEvents(t *testing.T) {
 }
 
 func TestJoinerRoutesByLearnedIPSource(t *testing.T) {
-	j := NewJoiner()
+	j := NewJoiner(testDebugPool(t))
 	defer j.Close()
 
 	def := newMockTun(4, 1500, 0, 0)
@@ -116,7 +116,7 @@ func TestJoinerRoutesByLearnedIPSource(t *testing.T) {
 }
 
 func TestJoinerWritesLargeBatchToSameRoute(t *testing.T) {
-	j := NewJoiner()
+	j := NewJoiner(testDebugPool(t))
 	defer j.Close()
 
 	def := newMockTun(64, 1500, 0, 0)
@@ -159,7 +159,7 @@ func TestJoinerWritesLargeBatchToSameRoute(t *testing.T) {
 }
 
 func TestJoinerWritesLargeBatchToMultipleRoutes(t *testing.T) {
-	j := NewJoiner()
+	j := NewJoiner(testDebugPool(t))
 	defer j.Close()
 
 	def := newMockTun(64, 1500, 0, 0)
@@ -239,7 +239,7 @@ func TestJoinerWritesLargeBatchToMultipleRoutes(t *testing.T) {
 }
 
 func TestJoinerReadBuffersRemainingPackets(t *testing.T) {
-	j := NewJoiner()
+	j := NewJoiner(testDebugPool(t))
 	defer j.Close()
 
 	sec := newMockTun(4, 1500, 0, 0)
@@ -264,7 +264,7 @@ func TestJoinerReadBuffersRemainingPackets(t *testing.T) {
 }
 
 func TestJoinerRejectsSmallOffsets(t *testing.T) {
-	j := NewJoiner()
+	j := NewJoiner(testDebugPool(t))
 	defer j.Close()
 
 	buf := make([]byte, j.MRO()+64)
@@ -291,7 +291,7 @@ func TestJoinerRejectsSmallOffsets(t *testing.T) {
 }
 
 func TestJoinerDetachClosesTunAndForgetsRoutes(t *testing.T) {
-	j := NewJoiner()
+	j := NewJoiner(testDebugPool(t))
 	defer j.Close()
 
 	def := newMockTun(4, 1500, 0, 0)
@@ -330,7 +330,7 @@ func TestJoinerDetachClosesTunAndForgetsRoutes(t *testing.T) {
 }
 
 func TestJoinerAutoDetachesTerminalReadError(t *testing.T) {
-	j := NewJoiner()
+	j := NewJoiner(testDebugPool(t))
 	defer j.Close()
 
 	sec := newMockTun(4, 1200, 0, 0)
@@ -356,7 +356,7 @@ func TestJoinerAutoDetachesTerminalReadError(t *testing.T) {
 }
 
 func TestDetachJoinerUsesJoinerDataPath(t *testing.T) {
-	j := NewJoiner()
+	j := NewJoiner(testDebugPool(t))
 	defer j.Close()
 
 	sec := newMockTun(4, 1500, 0, 0)
@@ -394,7 +394,7 @@ func TestDetachJoinerUsesJoinerDataPath(t *testing.T) {
 }
 
 func TestJoinerSwitchesBetweenPipeAndDetachedNestedTuns(t *testing.T) {
-	j := NewJoiner()
+	j := NewJoiner(testDebugPool(t))
 	defer j.Close()
 
 	pipeNested1, peer1 := Pipe(2, 1400, 5, 7)
@@ -443,9 +443,9 @@ func TestJoinerSwitchesBetweenPipeAndDetachedNestedTuns(t *testing.T) {
 }
 
 func TestJoinerDetachedTunComplexTopologyStateEventsAndFlow(t *testing.T) {
-	inner := NewJoiner()
+	inner := NewJoiner(testDebugPool(t))
 	defer inner.Close()
-	outer := NewJoiner()
+	outer := NewJoiner(testDebugPool(t))
 	defer outer.Close()
 
 	innerDefault := newMockTun(3, 1400, 0, 0)

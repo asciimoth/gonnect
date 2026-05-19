@@ -1,3 +1,4 @@
+// nolint
 package tun_test
 
 import (

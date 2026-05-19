@@ -38,7 +38,7 @@ func (r *staticSplitRouter) Route(_ []byte, _ int, _ bool) int {
 }
 
 func TestSplitterMetadataMTUEventsAndOffsets(t *testing.T) {
-	s := NewSplitter()
+	s := NewSplitter(testDebugPool(t))
 	defer s.Close()
 
 	f := s.Get(1)
@@ -132,7 +132,7 @@ func TestSplitterMetadataMTUEventsAndOffsets(t *testing.T) {
 }
 
 func TestSplitterRoutesBackendReadsToFrontends(t *testing.T) {
-	s := NewSplitter()
+	s := NewSplitter(testDebugPool(t))
 	defer s.Close()
 
 	router := &staticSplitRouter{targets: []int{2}}
@@ -173,7 +173,7 @@ func TestSplitterRoutesBackendReadsToFrontends(t *testing.T) {
 }
 
 func TestSplitterRoutesLargeBatchToSameFrontend(t *testing.T) {
-	s := NewSplitter()
+	s := NewSplitter(testDebugPool(t))
 	defer s.Close()
 
 	router := &staticSplitRouter{targets: []int{2}}
@@ -201,7 +201,7 @@ func TestSplitterRoutesLargeBatchToSameFrontend(t *testing.T) {
 }
 
 func TestSplitterRoutesLargeBatchToMultipleFrontends(t *testing.T) {
-	s := NewSplitter()
+	s := NewSplitter(testDebugPool(t))
 	defer s.Close()
 
 	router := &staticSplitRouter{targets: []int{1, 2, 3, 2}}
@@ -243,7 +243,7 @@ func TestSplitterRoutesLargeBatchToMultipleFrontends(t *testing.T) {
 }
 
 func TestSplitterDropsInvalidDownAndMissingFrontends(t *testing.T) {
-	s := NewSplitter()
+	s := NewSplitter(testDebugPool(t))
 	defer s.Close()
 
 	backend := newMockTun(4, 1500, 0, 0)
@@ -263,7 +263,7 @@ func TestSplitterDropsInvalidDownAndMissingFrontends(t *testing.T) {
 }
 
 func TestSplitterDetachDropsBlockedBackendDelivery(t *testing.T) {
-	s := NewSplitter()
+	s := NewSplitter(testDebugPool(t))
 	defer s.Close()
 
 	backend := newMockTun(1, 1500, 0, 0)
@@ -282,7 +282,7 @@ func TestSplitterDetachDropsBlockedBackendDelivery(t *testing.T) {
 }
 
 func TestSplitterGetReplacesAndClosesOldFrontend(t *testing.T) {
-	s := NewSplitter()
+	s := NewSplitter(testDebugPool(t))
 	defer s.Close()
 
 	old := s.Get(3)
@@ -312,7 +312,7 @@ func TestSplitterGetReplacesAndClosesOldFrontend(t *testing.T) {
 }
 
 func TestSplitterFrontendWritesToBackendAndDropsWhenDetached(t *testing.T) {
-	s := NewSplitter()
+	s := NewSplitter(testDebugPool(t))
 	defer s.Close()
 
 	backend := newMockTun(2, 1500, 3, 4)
@@ -344,7 +344,7 @@ func TestSplitterFrontendWritesToBackendAndDropsWhenDetached(t *testing.T) {
 }
 
 func TestSplitterAutoDetachesTerminalBackendReadError(t *testing.T) {
-	s := NewSplitter()
+	s := NewSplitter(testDebugPool(t))
 	defer s.Close()
 
 	backend := newMockTun(1, 1400, 0, 0)
@@ -359,7 +359,7 @@ func TestSplitterAutoDetachesTerminalBackendReadError(t *testing.T) {
 }
 
 func TestDetachSplitFrontendUsesFrontendChannelPath(t *testing.T) {
-	s := NewSplitter()
+	s := NewSplitter(testDebugPool(t))
 	defer s.Close()
 
 	backend := newMockTun(2, 1500, 0, 0)
@@ -399,7 +399,7 @@ func TestDetachSplitFrontendUsesFrontendChannelPath(t *testing.T) {
 }
 
 func TestSplitterSwitchesBetweenPipeAndDetachedBackends(t *testing.T) {
-	s := NewSplitter()
+	s := NewSplitter(testDebugPool(t))
 	defer s.Close()
 
 	f := s.Get(1)

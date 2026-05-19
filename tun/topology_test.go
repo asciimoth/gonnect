@@ -8,13 +8,13 @@ import (
 )
 
 func TestJoinerSplitterDetachedTunComplexTopologyChanges(t *testing.T) {
-	root := NewJoiner()
+	root := NewJoiner(testDebugPool(t))
 	defer root.Close()
-	left := NewSplitter()
+	left := NewSplitter(testDebugPool(t))
 	defer left.Close()
-	right := NewSplitter()
+	right := NewSplitter(testDebugPool(t))
 	defer right.Close()
-	branch := NewJoiner()
+	branch := NewJoiner(testDebugPool(t))
 	defer branch.Close()
 
 	rootDefault := newMockTun(2, 1450, 0, 0)

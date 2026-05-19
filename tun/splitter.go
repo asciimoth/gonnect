@@ -5,6 +5,8 @@ import (
 	"io"
 	"os"
 	"sync"
+
+	"github.com/asciimoth/bufpool"
 )
 
 var (
@@ -95,6 +97,8 @@ type Splitter struct {
 	batch       int
 	eventSerial uint64
 	once        sync.Once
+	pool        bufpool.Pool
+	wg          sync.WaitGroup
 }
 
 // SplitFrontend is one virtual Tun produced by Splitter.Get.
@@ -119,7 +123,8 @@ type SplitFrontend struct {
 }
 
 // NewSplitter creates a Splitter with no attached backend.
-func NewSplitter() *Splitter {
+func NewSplitter(pools ...bufpool.Pool) *Splitter {
+	pool := optionalPool(pools)
 	s := &Splitter{
 		done:   make(chan struct{}),
 		writes: make(chan detachedTunWrite),
@@ -127,8 +132,9 @@ func NewSplitter() *Splitter {
 		mwo:    splitterDefaultOffset,
 		mtu:    splitterDefaultMTU,
 		batch:  splitterDefaultBatch,
+		pool:   pool,
 	}
-	go s.writePump()
+	s.wg.Go(s.writePump)
 	return s
 }
 
@@ -254,6 +260,7 @@ func (s *Splitter) Close() error {
 		if backend != nil {
 			_ = backend.t.Close()
 		}
+		s.wg.Wait()
 	})
 	return nil
 }
@@ -265,7 +272,7 @@ func newSplitterBackend(t Tun) *splitterBackend {
 }
 
 func (s *Splitter) startBackend(n *splitterBackend) {
-	go s.readBackend(n)
+	s.wg.Go(func() { s.readBackend(n) })
 	go s.watchBackendEvents(n)
 }
 
@@ -279,8 +286,9 @@ func (s *Splitter) readBackend(n *splitterBackend) {
 	bufs := make([][]byte, batch)
 	sizes := make([]int, batch)
 	for i := range bufs {
-		bufs[i] = make([]byte, readLen)
+		bufs[i] = bufpool.GetBuffer(s.pool, readLen)
 	}
+	defer putBuffers(s.pool, bufs)
 	for {
 		n.waitUp()
 		if n.isClosed() {
@@ -351,14 +359,23 @@ func (s *Splitter) deliverBatch(
 	}
 	if same {
 		if f := s.frontendForRoute(targets[0]); f != nil {
-			f.deliver(cloneBackendPackets(bufs, sizes, count, offset), n.done)
+			f.deliver(
+				cloneBackendPackets(s.pool, bufs, sizes, count, offset),
+				n.done,
+			)
 		}
 		return
 	}
 	for i := range count {
 		if f := s.frontendForRoute(targets[i]); f != nil {
 			f.deliver(
-				cloneBackendPackets(bufs[i:i+1], sizes[i:i+1], 1, offset),
+				cloneBackendPackets(
+					s.pool,
+					bufs[i:i+1],
+					sizes[i:i+1],
+					1,
+					offset,
+				),
 				n.done,
 			)
 		}
@@ -449,6 +466,7 @@ func (s *Splitter) writePump() {
 			return
 		case req := <-s.writes:
 			n, err := s.writeToBackend(req.bufs, req.offset)
+			putBuffers(req.pool, req.bufs)
 			req.resp <- detachedTunWriteResult{n: n, err: err}
 		}
 	}
@@ -459,7 +477,13 @@ func (s *Splitter) writeToBackend(bufs [][]byte, offset int) (int, error) {
 	if n == nil {
 		return len(bufs), nil
 	}
-	writeBufs, writeOffset := alignWriteOffset(bufs, offset, n.t.MWO())
+	writeBufs, writeOffset, release := alignWriteOffset(
+		s.pool,
+		bufs,
+		offset,
+		n.t.MWO(),
+	)
+	defer release()
 	written := 0
 	for written < len(writeBufs) {
 		end := min(written+batchSizeOf(n.t), len(writeBufs))
@@ -556,6 +580,7 @@ func (n *splitterBackend) acceptsWrites() bool {
 }
 
 func cloneBackendPackets(
+	pool bufpool.Pool,
 	bufs [][]byte,
 	sizes []int,
 	count int,
@@ -567,7 +592,7 @@ func cloneBackendPackets(
 		if offset < len(bufs[i]) {
 			size = min(sizes[i], len(bufs[i])-offset)
 		}
-		packets[i] = append([]byte(nil), bufs[i][offset:offset+size]...)
+		packets[i] = clonePacketBuffer(pool, bufs[i][offset:offset+size])
 	}
 	return packets
 }
@@ -692,6 +717,7 @@ func (f *SplitFrontend) Read(
 			return 0, r.err
 		}
 		n := min(len(bufs), len(sizes), len(r.bufs))
+		defer putBuffers(r.pool, r.bufs)
 		for i := range n {
 			if offset > len(bufs[i]) {
 				return i, errors.New(
@@ -713,12 +739,14 @@ func (f *SplitFrontend) Write(bufs [][]byte, offset int) (int, error) {
 		return 0, err
 	}
 	req := detachedTunWrite{
-		bufs:   cloneWriteBufs(bufs, offset),
+		bufs:   cloneWriteBufs(f.s.pool, bufs, offset),
 		offset: offset,
+		pool:   f.s.pool,
 		resp:   make(chan detachedTunWriteResult, 1),
 	}
 	select {
 	case <-done:
+		putBuffers(req.pool, req.bufs)
 		return 0, ErrSplitterFrontendDown
 	case writes <- req:
 	}
@@ -829,6 +857,7 @@ func (f *SplitFrontend) deliver(packets [][]byte, backendDone <-chan struct{}) {
 	f.mu.Lock()
 	if f.closed || !f.up {
 		f.mu.Unlock()
+		putBuffers(f.s.pool, packets)
 		return
 	}
 	reads := f.reads
@@ -837,8 +866,10 @@ func (f *SplitFrontend) deliver(packets [][]byte, backendDone <-chan struct{}) {
 
 	select {
 	case <-backendDone:
+		putBuffers(f.s.pool, packets)
 	case <-done:
-	case reads <- detachedTunRead{bufs: packets}:
+		putBuffers(f.s.pool, packets)
+	case reads <- detachedTunRead{bufs: packets, pool: f.s.pool}:
 	}
 }
 

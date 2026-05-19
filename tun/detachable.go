@@ -5,6 +5,8 @@ import (
 	"io"
 	"os"
 	"sync"
+
+	"github.com/asciimoth/bufpool"
 )
 
 var (
@@ -31,12 +33,14 @@ type detachedTunRead struct {
 	bufs  [][]byte
 	sizes []int
 	owner *joinerNested
+	pool  bufpool.Pool
 	err   error
 }
 
 type detachedTunWrite struct {
 	bufs   [][]byte
 	offset int
+	pool   bufpool.Pool
 	resp   chan detachedTunWriteResult
 }
 
@@ -99,17 +103,19 @@ type DetachedTun struct {
 	mwo           int
 	batch         int
 	readLen       int
+	pool          bufpool.Pool
 }
 
 // Detach creates an independently stoppable wrapper around t. If t is already a
 // DetachedTun, the new wrapper shares t's underlying pumps instead of wrapping
 // the public Read and Write methods again.
-func Detach(t Tun) *DetachedTun {
+func Detach(t Tun, pools ...bufpool.Pool) *DetachedTun {
+	pool := optionalPool(pools)
 	if parent, ok := t.(*DetachedTun); ok {
-		return detachNested(parent)
+		return detachNested(parent, pool)
 	}
 	if source, ok := t.(tunChannelSource); ok {
-		return detachSource(t, source)
+		return detachSource(t, source, pool)
 	}
 	mtu, err := t.MTU()
 	if err != nil || mtu < 0 {
@@ -126,6 +132,7 @@ func Detach(t Tun) *DetachedTun {
 		mro:       t.MRO(),
 		mwo:       t.MWO(),
 		batch:     t.BatchSize(),
+		pool:      pool,
 	}
 	if d.batch <= 0 {
 		d.batch = 1
@@ -140,7 +147,11 @@ func Detach(t Tun) *DetachedTun {
 	return d
 }
 
-func detachSource(t Tun, source tunChannelSource) *DetachedTun {
+func detachSource(
+	t Tun,
+	source tunChannelSource,
+	pool bufpool.Pool,
+) *DetachedTun {
 	mtu, err := t.MTU()
 	if err != nil || mtu < 0 {
 		mtu = 64 << 10
@@ -156,6 +167,7 @@ func detachSource(t Tun, source tunChannelSource) *DetachedTun {
 		mro:       t.MRO(),
 		mwo:       t.MWO(),
 		batch:     t.BatchSize(),
+		pool:      pool,
 	}
 	if d.batch <= 0 {
 		d.batch = 1
@@ -170,7 +182,7 @@ func detachSource(t Tun, source tunChannelSource) *DetachedTun {
 	return d
 }
 
-func detachNested(parent *DetachedTun) *DetachedTun {
+func detachNested(parent *DetachedTun, pool bufpool.Pool) *DetachedTun {
 	d := &DetachedTun{
 		wrapped:   parent.wrapped,
 		parent:    parent,
@@ -183,6 +195,7 @@ func detachNested(parent *DetachedTun) *DetachedTun {
 		mwo:       parent.mwo,
 		batch:     parent.batch,
 		readLen:   parent.readLen,
+		pool:      pool,
 	}
 	d.startLocked()
 	d.startEventPump(parent.subscribeEvents())
@@ -299,6 +312,7 @@ func (d *DetachedTun) Read(
 			return 0, r.err
 		}
 		n := min(len(bufs), len(sizes), len(r.bufs))
+		defer putBuffers(r.pool, r.bufs)
 		for i := range n {
 			if offset > len(bufs[i]) {
 				return i, errors.New("tun: read offset beyond buffer")
@@ -318,12 +332,14 @@ func (d *DetachedTun) Write(bufs [][]byte, offset int) (int, error) {
 		return 0, err
 	}
 	req := detachedTunWrite{
-		bufs:   cloneWriteBufs(bufs, offset),
+		bufs:   cloneWriteBufs(d.pool, bufs, offset),
 		offset: offset,
+		pool:   d.pool,
 		resp:   make(chan detachedTunWriteResult, 1),
 	}
 	select {
 	case <-done:
+		putBuffers(req.pool, req.bufs)
 		return 0, ErrDetachedTunDown
 	case writes <- req:
 	}
@@ -476,8 +492,9 @@ func (d *DetachedTun) readPump(
 	bufs := make([][]byte, d.batch)
 	sizes := make([]int, d.batch)
 	for i := range bufs {
-		bufs[i] = make([]byte, d.readLen)
+		bufs[i] = bufpool.GetBuffer(d.pool, d.readLen)
 	}
+	defer putBuffers(d.pool, bufs)
 	for {
 		n, err := d.wrapped.Read(bufs, sizes, d.mro)
 		if err != nil {
@@ -496,7 +513,10 @@ func (d *DetachedTun) readPump(
 			if len(bufs[i]) > d.mro {
 				size = min(sizes[i], len(bufs[i])-d.mro)
 			}
-			packets[i] = append([]byte(nil), bufs[i][d.mro:d.mro+size]...)
+			packets[i] = clonePacketBuffer(
+				d.pool,
+				bufs[i][d.mro:d.mro+size],
+			)
 		}
 		if !d.generationActive(gen) {
 			d.forwardStaleRead(packets)
@@ -504,8 +524,13 @@ func (d *DetachedTun) readPump(
 		}
 		select {
 		case <-done:
+			putBuffers(d.pool, packets)
 			return
-		case reads <- detachedTunRead{bufs: packets, sizes: sizes[:n]}:
+		case reads <- detachedTunRead{
+			bufs:  packets,
+			sizes: sizes[:n],
+			pool:  d.pool,
+		}:
 		}
 	}
 }
@@ -514,6 +539,7 @@ func (d *DetachedTun) forwardStaleRead(packets [][]byte) {
 	d.mu.RLock()
 	if !d.up || d.closed || !d.ownsPumps {
 		d.mu.RUnlock()
+		putBuffers(d.pool, packets)
 		return
 	}
 	reads := d.reads
@@ -522,7 +548,8 @@ func (d *DetachedTun) forwardStaleRead(packets [][]byte) {
 
 	select {
 	case <-done:
-	case reads <- detachedTunRead{bufs: packets}:
+		putBuffers(d.pool, packets)
+	case reads <- detachedTunRead{bufs: packets, pool: d.pool}:
 	}
 }
 
@@ -537,6 +564,7 @@ func (d *DetachedTun) writePump(
 			return
 		case req := <-writes:
 			n, err := d.wrapped.Write(req.bufs, req.offset)
+			putBuffers(req.pool, req.bufs)
 			if !d.generationActive(gen) {
 				req.resp <- detachedTunWriteResult{err: ErrDetachedTunDown}
 				return
@@ -647,14 +675,33 @@ func (d *DetachedTun) closeEvents() {
 	}
 }
 
-func cloneWriteBufs(bufs [][]byte, offset int) [][]byte {
+func optionalPool(pools []bufpool.Pool) bufpool.Pool {
+	if len(pools) == 0 {
+		return nil
+	}
+	return pools[0]
+}
+
+func clonePacketBuffer(pool bufpool.Pool, packet []byte) []byte {
+	buf := bufpool.GetBuffer(pool, len(packet))
+	copy(buf, packet)
+	return buf[:len(packet)]
+}
+
+func putBuffers(pool bufpool.Pool, bufs [][]byte) {
+	for _, buf := range bufs {
+		bufpool.PutBuffer(pool, buf)
+	}
+}
+
+func cloneWriteBufs(pool bufpool.Pool, bufs [][]byte, offset int) [][]byte {
 	out := make([][]byte, len(bufs))
 	for i := range bufs {
 		if offset >= len(bufs[i]) {
-			out[i] = make([]byte, offset)
+			out[i] = bufpool.GetBuffer(pool, offset)
 			continue
 		}
-		out[i] = make([]byte, len(bufs[i]))
+		out[i] = bufpool.GetBuffer(pool, len(bufs[i]))
 		copy(out[i][offset:], bufs[i][offset:])
 	}
 	return out

@@ -204,6 +204,8 @@ func (d *DetachedTun) Close() error {
 
 func (d *DetachedTun) File() *os.File { return d.wrapped.File() }
 
+func (d *DetachedTun) IsNative() bool { return false }
+
 func (d *DetachedTun) MWO() int { return d.mwo }
 
 func (d *DetachedTun) MRO() int { return d.mro }

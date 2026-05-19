@@ -32,6 +32,14 @@ const (
 // There is multiple projects that use same or similar interfaces so it is
 // a good choice for a de-facto standard role.
 //
+// A native Tun provides direct access to an OS TUN device. Native Tuns may
+// expose an OS file descriptor through File, may reserve MRO/MWO space for
+// platform headers, and may be used by consumers that intentionally bypass
+// Tun methods for low-level optimized operations. A virtual Tun emulates or
+// wraps packet transport in user space and must report IsNative as false.
+// Simple wrappers around a native Tun may preserve native status only when
+// bypassing their Tun methods would not bypass required wrapper behavior.
+//
 // Implementations should distinguish a down interface from a closed Tun. A
 // down interface is reported with EventDown and may later report EventUp; the
 // Tun remains open, and Read or Write calls may keep blocking or may keep
@@ -50,6 +58,11 @@ type Tun interface {
 	// File returns the file descriptor of the tun device.
 	// It may be nil for virtual/mock/etc implementations.
 	File() *os.File
+
+	// IsNative reports whether this Tun provides direct access to an OS TUN
+	// device. Consumers may use low-level optimized operations bypassing Tun's
+	// methods only when IsNative returns true.
+	IsNative() bool
 
 	// Read a batch of packets from Tun.
 	// If original source (e.g. linux tun interface) ruturn additional headers,
@@ -105,6 +118,4 @@ type Tun interface {
 	// sized from the source Tun, and writes should be chunked for the
 	// destination Tun.
 	BatchSize() int
-
-	// TODO: Add getter for gonnect.NetworkInterface?
 }

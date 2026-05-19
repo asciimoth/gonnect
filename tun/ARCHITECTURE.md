@@ -8,6 +8,15 @@ batches of complete packets, with implementation-specific read and write
 offsets (`MRO` and `MWO`) reserved for platform headers or caller-owned scratch
 space.
 
+`Tun.IsNative()` reports whether a `Tun` provides direct access to an OS TUN
+device. Native Tuns may expose an OS file descriptor through `File()`, may
+reserve offset space for platform headers, and may be consumed by code that
+intentionally performs low-level optimized operations outside the ordinary
+`Tun` methods. Virtual Tuns emulate or wrap packet transport in user space and
+must report `false`; bypassing their methods would skip the emulation or wrapper
+behavior. Every implementation currently provided by this package is virtual
+and reports `IsNative() == false`.
+
 Callers should size read batches from the source `Tun.BatchSize()` and chunk
 writes for the destination `Tun.BatchSize()`. Batch sizes are not assumed to be
 symmetric across implementations.

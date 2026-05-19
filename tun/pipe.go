@@ -80,6 +80,8 @@ func (p *pipeTun) MRO() int { return p.mro }
 
 func (p *pipeTun) File() *os.File { return nil }
 
+func (p *pipeTun) IsNative() bool { return false }
+
 func (p *pipeTun) Read(
 	bufs [][]byte,
 	sizes []int,

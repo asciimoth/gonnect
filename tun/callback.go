@@ -7,6 +7,8 @@ type CallbackTUN struct {
 	OnWrite func(n int, err error)
 }
 
+func (t *CallbackTUN) IsNative() bool { return false }
+
 func (t *CallbackTUN) Read(
 	bufs [][]byte,
 	sizes []int,

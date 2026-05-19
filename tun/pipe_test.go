@@ -30,6 +30,10 @@ func TestPipeBasic(t *testing.T) {
 					t.Error("File() should return nil for virtual Tun")
 				}
 
+				if tun1.IsNative() || tun2.IsNative() {
+					t.Error("IsNative() should report false for virtual Tun")
+				}
+
 				// Verify names are different
 				name1, err := tun1.Name()
 				if err != nil {

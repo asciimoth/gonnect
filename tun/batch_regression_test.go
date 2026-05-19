@@ -55,6 +55,7 @@ func newMockTun(batchSize, mtu, mwo, mro int) *mockTun {
 }
 
 func (t *mockTun) File() *os.File { return nil }
+func (t *mockTun) IsNative() bool { return false }
 func (t *mockTun) MWO() int       { return t.mwo }
 func (t *mockTun) MRO() int       { return t.mro }
 func (t *mockTun) MTU() (int, error) {

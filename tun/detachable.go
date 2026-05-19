@@ -79,6 +79,9 @@ type DetachedTun struct {
 	readSrc       <-chan detachedTunRead
 	writeSrc      chan<- detachedTunWrite
 	events        chan Event
+	eventMu       sync.RWMutex
+	eventClosed   bool
+	eventSubs     map[chan Event]struct{}
 	once          sync.Once
 	mtu           int
 	mro           int
@@ -104,6 +107,7 @@ func Detach(t Tun) *DetachedTun {
 		gen:       1,
 		ownsPumps: true,
 		events:    make(chan Event, 8),
+		eventSubs: make(map[chan Event]struct{}),
 		mtu:       mtu,
 		mro:       t.MRO(),
 		mwo:       t.MWO(),
@@ -117,24 +121,27 @@ func Detach(t Tun) *DetachedTun {
 		d.readLen = d.mro
 	}
 	d.startLocked()
+	d.startEventPump(t.Events())
 	d.sendEvent(EventUp)
 	return d
 }
 
 func detachNested(parent *DetachedTun) *DetachedTun {
 	d := &DetachedTun{
-		wrapped: parent.wrapped,
-		parent:  parent,
-		up:      true,
-		gen:     1,
-		events:  make(chan Event, 8),
-		mtu:     parent.mtu,
-		mro:     parent.mro,
-		mwo:     parent.mwo,
-		batch:   parent.batch,
-		readLen: parent.readLen,
+		wrapped:   parent.wrapped,
+		parent:    parent,
+		up:        true,
+		gen:       1,
+		events:    make(chan Event, 8),
+		eventSubs: make(map[chan Event]struct{}),
+		mtu:       parent.mtu,
+		mro:       parent.mro,
+		mwo:       parent.mwo,
+		batch:     parent.batch,
+		readLen:   parent.readLen,
 	}
 	d.startLocked()
+	d.startEventPump(parent.subscribeEvents())
 	d.sendEvent(EventUp)
 	return d
 }
@@ -197,7 +204,7 @@ func (d *DetachedTun) Close() error {
 		if wasUp {
 			d.sendEvent(EventDown)
 		}
-		close(d.events)
+		d.closeEvents()
 	})
 	return nil
 }
@@ -308,7 +315,9 @@ func (d *DetachedTun) refreshNestedLocked() error {
 	if err != nil {
 		return err
 	}
-	if d.effectiveDone != nil && d.parentDone == parentDone {
+	if d.effectiveDone != nil &&
+		d.parentDone == parentDone &&
+		!closedChan(d.effectiveDone) {
 		d.readSrc = readSrc
 		d.writeSrc = writeSrc
 		return nil
@@ -475,13 +484,95 @@ func (d *DetachedTun) generationActive(gen uint64) bool {
 	return d.up && !d.closed && d.gen == gen
 }
 
-func (d *DetachedTun) sendEvent(event Event) {
-	defer func() {
-		_ = recover()
+func closedChan(ch <-chan struct{}) bool {
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
+	}
+}
+
+func (d *DetachedTun) startEventPump(events <-chan Event) {
+	go func() {
+		down := false
+		for event := range events {
+			switch event {
+			case EventDown:
+				down = true
+			case EventUp:
+				if !down {
+					continue
+				}
+				down = false
+			}
+			d.sendEvent(event)
+		}
+		d.closeFromWrapped(down)
 	}()
+}
+
+func (d *DetachedTun) closeFromWrapped(down bool) {
+	d.once.Do(func() {
+		d.mu.Lock()
+		wasUp := d.up
+		if wasUp {
+			d.up = false
+			d.gen++
+			if d.done != nil {
+				close(d.done)
+			}
+		}
+		d.closed = true
+		d.mu.Unlock()
+		if wasUp && !down {
+			d.sendEvent(EventDown)
+		}
+		d.closeEvents()
+	})
+}
+
+func (d *DetachedTun) subscribeEvents() <-chan Event {
+	ch := make(chan Event, 8)
+	d.eventMu.Lock()
+	defer d.eventMu.Unlock()
+	if d.eventClosed {
+		close(ch)
+		return ch
+	}
+	d.eventSubs[ch] = struct{}{}
+	return ch
+}
+
+func (d *DetachedTun) sendEvent(event Event) {
+	d.eventMu.RLock()
+	defer d.eventMu.RUnlock()
+	if d.eventClosed {
+		return
+	}
 	select {
 	case d.events <- event:
 	default:
+	}
+	for sub := range d.eventSubs {
+		select {
+		case sub <- event:
+		default:
+		}
+	}
+}
+
+func (d *DetachedTun) closeEvents() {
+	d.eventMu.Lock()
+	defer d.eventMu.Unlock()
+	if d.eventClosed {
+		return
+	}
+	d.eventClosed = true
+	close(d.events)
+	for sub := range d.eventSubs {
+		close(sub)
+		delete(d.eventSubs, sub)
 	}
 }
 

@@ -127,7 +127,7 @@ func NewSplitter(pools ...bufpool.Pool) *Splitter {
 	pool := optionalPool(pools)
 	s := &Splitter{
 		done:   make(chan struct{}),
-		writes: make(chan detachedTunWrite),
+		writes: make(chan detachedTunWrite, channelBufferSize()),
 		mro:    splitterDefaultOffset,
 		mwo:    splitterDefaultOffset,
 		mtu:    splitterDefaultMTU,

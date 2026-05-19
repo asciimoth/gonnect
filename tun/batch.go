@@ -3,6 +3,7 @@ package tun
 import (
 	"errors"
 	"os"
+	"runtime"
 	"strings"
 )
 
@@ -11,6 +12,13 @@ var errWriteNoProgress = errors.New("tun: write made no progress")
 func batchSizeOf(t Tun) int {
 	if batchSize := t.BatchSize(); batchSize > 0 {
 		return batchSize
+	}
+	return 1
+}
+
+func channelBufferSize() int {
+	if n := runtime.NumCPU(); n > 0 {
+		return n
 	}
 	return 1
 }

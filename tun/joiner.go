@@ -94,8 +94,8 @@ func NewJoiner(pools ...bufpool.Pool) *Joiner {
 	j := &Joiner{
 		done:        make(chan struct{}),
 		events:      make(chan Event, 8),
-		reads:       make(chan detachedTunRead),
-		writes:      make(chan detachedTunWrite),
+		reads:       make(chan detachedTunRead, channelBufferSize()),
+		writes:      make(chan detachedTunWrite, channelBufferSize()),
 		secondaries: make(map[Tun]*joinerNested),
 		nested:      make(map[Tun]*joinerNested),
 		routes:      make(map[string]*joinerNested),

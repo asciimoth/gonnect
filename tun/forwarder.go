@@ -52,7 +52,7 @@ func NewForwarder(pool bufpool.Pool) *Forwarder {
 		chCfgRead:  make(chan *frwCfg, 2),
 		chCfgWrite: make(chan *frwCfg, 2),
 
-		sendCh: make(chan frwPkg),
+		sendCh: make(chan frwPkg, channelBufferSize()),
 	}
 	frw.wg.Go(func() {
 		frwReader(frw.chCfgRead, frw.sendCh, pool)

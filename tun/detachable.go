@@ -355,8 +355,8 @@ func (d *DetachedTun) startLocked() {
 	d.done = make(chan struct{})
 	if d.ownsPumps {
 		d.effectiveDone = d.done
-		d.reads = make(chan detachedTunRead)
-		d.writes = make(chan detachedTunWrite)
+		d.reads = make(chan detachedTunRead, channelBufferSize())
+		d.writes = make(chan detachedTunWrite, channelBufferSize())
 		d.readSrc = d.reads
 		d.writeSrc = d.writes
 		gen := d.gen

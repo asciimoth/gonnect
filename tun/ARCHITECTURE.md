@@ -39,6 +39,88 @@ It returns `true` for all other errors, including closed-device errors. Copying
 and forwarding loops use this function to decide whether to retry a read or
 tear down the current path.
 
+## Internal channel paths
+
+The public package contract is method based: `Tun.Read`, `Tun.Write`,
+`Tun.Events`, and the metadata methods are the only API consumers need to know.
+Some wrappers, however, need detach/attach behavior while still being able to
+unblock their own pending reads and writes. For an arbitrary `Tun`, that cannot
+be done only with the public methods because `Tun` has no context or deadline
+parameter. The current solution is to put a private channel based data path
+behind such wrappers.
+
+`DetachedTun` is the first implementation of this pattern. A root
+`DetachedTun`, created by `Detach` around a non-detached `Tun`, owns two pump
+goroutines:
+
+- `readPump` reads from the wrapped `Tun`, copies packet payloads out of the
+  pump-owned buffers, and sends `detachedTunRead` values on the wrapper's read
+  channel.
+- `writePump` receives `detachedTunWrite` requests, writes copied packet data
+  to the wrapped `Tun`, and replies through the request's response channel.
+
+The public `DetachedTun.Read` and `DetachedTun.Write` methods wait on those
+private channels plus the wrapper's current `done` channel. `Down` closes the
+current `done` channel, which releases pending public I/O with
+`ErrDetachedTunDown` without closing the wrapped `Tun`. `Close` does the same
+permanently and closes events. If the wrapped `Tun` is blocked internally, a
+pump may stay blocked until the underlying operation returns, but caller buffers
+are not retained by that pump because packet data is copied at the wrapper
+boundary.
+
+Nested detached wrappers do not create another pair of pumps. When `Detach`
+receives an existing `*DetachedTun`, it creates a child with `parent` set and
+`ownsPumps == false`. The child obtains a snapshot of the parent's active
+channel path through `sourceSnapshot`: read channel, write channel, and the
+parent's effective done channel. The child then creates its own
+`effectiveDone`, which closes when either the child is taken down/closed or the
+parent path stops. This preserves independent `Up`, `Down`, and `Close` state
+for each wrapper while keeping the packet path flat:
+
+```text
+public child Read/Write -> root read/write channels -> root pumps -> wrapped Tun
+```
+
+instead of:
+
+```text
+child pumps -> parent public Read/Write -> parent pumps -> wrapped Tun
+```
+
+The reusable internal surface is the combination of:
+
+- a receive-only channel carrying already-copied read batches;
+- a send-only channel accepting write requests with per-request responses;
+- a done channel that describes when the currently usable path is no longer
+  valid;
+- wrapper-local state and events layered outside that data path.
+
+Future `Tun` based wrappers that also need channels internally can share this
+kind of path with nested implementations instead of wrapping only the public
+`Read` and `Write` methods. The usual shape is:
+
+1. Keep the public type implementing `Tun`; do not expose the channel interface
+   outside the package.
+2. Give the type an unexported method that returns a snapshot of its current
+   internal read channel, write channel, and done channel, or an appropriate
+   closed/down error.
+3. In constructors, detect wrapped values that support that private snapshot
+   method. If present, use the returned channels as the child data path. If not,
+   create root pumps around the public `Tun` methods.
+4. Combine parent and child lifetimes with a child-local effective done channel
+   so parent detach/close and child detach/close both unblock child I/O.
+5. Copy packet data at every boundary where caller-owned buffers could outlive
+   the call. A shared channel path must not retain user buffers from public
+   `Read` or `Write`.
+6. Keep metadata and events wrapper-local unless they are intentionally
+   delegated. `DetachedTun` forwards wrapped events to subscribers while adding
+   its own `EventUp`/`EventDown` transitions for wrapper state.
+
+This pattern is useful only when a wrapper can safely share the same packet
+stream as its parent. It must not be used to create multiple independent active
+consumers of the same underlying `Tun`: that has the same packet stealing and
+ordering problems as concurrent direct calls to `Tun.Read` or `Tun.Write`.
+
 ## Public API map
 
 - `Tun`, `Event`, `EventUp`, `EventDown`, `EventMTUUpdate`: `tun.go`

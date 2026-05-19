@@ -3,6 +3,7 @@ package tun
 import (
 	"errors"
 	"os"
+	"sync"
 )
 
 var ErrReadOnClosedPipe = errors.Join(
@@ -20,9 +21,12 @@ type pipeTun struct {
 	name                     string
 	mtu, mwo, mro, batchSize int
 	events                   chan Event
+	peerEvents               chan Event
 
 	writer Channel
 	reader Channel
+
+	closeOnce *sync.Once
 }
 
 // Pipe creates two connected Tun implementations that are bound together
@@ -36,6 +40,7 @@ func Pipe(batch int, mtu, mwo, mro int) (Tun, Tun) {
 
 	a2b := NewChan()
 	b2a := NewChan()
+	closeOnce := &sync.Once{}
 
 	tunA := &pipeTun{
 		name:      "pipe-tun-0",
@@ -44,10 +49,12 @@ func Pipe(batch int, mtu, mwo, mro int) (Tun, Tun) {
 		mwo:       mwo,
 		mro:       mro,
 
-		events: events1,
+		events:     events1,
+		peerEvents: events2,
 
-		writer: *a2b,
-		reader: *b2a,
+		writer:    *a2b,
+		reader:    *b2a,
+		closeOnce: closeOnce,
 	}
 
 	tunB := &pipeTun{
@@ -57,10 +64,12 @@ func Pipe(batch int, mtu, mwo, mro int) (Tun, Tun) {
 		mwo:       mwo,
 		mro:       mro,
 
-		events: events2,
+		events:     events2,
+		peerEvents: events1,
 
-		writer: *b2a,
-		reader: *a2b,
+		writer:    *b2a,
+		reader:    *a2b,
+		closeOnce: closeOnce,
 	}
 
 	return tunA, tunB
@@ -80,7 +89,11 @@ func (p *pipeTun) Read(
 		return 0, errors.New("too small read offset")
 	}
 
-	return p.reader.Read(bufs, sizes, offset)
+	n, err = p.reader.Read(bufs, sizes, offset)
+	if errors.Is(err, os.ErrClosed) {
+		err = ErrReadOnClosedPipe
+	}
+	return n, err
 }
 
 func (p *pipeTun) Write(bufs [][]byte, offset int) (int, error) {
@@ -88,7 +101,11 @@ func (p *pipeTun) Write(bufs [][]byte, offset int) (int, error) {
 		return 0, errors.New("too small write offset")
 	}
 
-	return p.writer.Write(bufs, offset)
+	n, err := p.writer.Write(bufs, offset)
+	if errors.Is(err, os.ErrClosed) {
+		err = ErrWriteOnClosedPipe
+	}
+	return n, err
 }
 
 func (p *pipeTun) MTU() (int, error) {
@@ -108,7 +125,11 @@ func (p *pipeTun) Events() <-chan Event {
 }
 
 func (p *pipeTun) Close() error {
-	_ = p.reader.Close()
-	_ = p.writer.Close()
+	p.closeOnce.Do(func() {
+		_ = p.reader.Close()
+		_ = p.writer.Close()
+		close(p.events)
+		close(p.peerEvents)
+	})
 	return nil
 }

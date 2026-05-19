@@ -31,6 +31,21 @@ const (
 // Tun interface is borrowed from wireguard-go.
 // There is multiple projects that use same or similar interfaces so it is
 // a good choice for a de-facto standard role.
+//
+// Implementations should distinguish a down interface from a closed Tun. A
+// down interface is reported with EventDown and may later report EventUp; the
+// Tun remains open, and Read or Write calls may keep blocking or may keep
+// returning packets according to the underlying implementation. Close is
+// permanent: implementations should unblock pending Read and Write calls when
+// possible, close the Events channel, and make future I/O fail with an error
+// that matches os.ErrClosed.
+//
+// Read can also return non-terminal errors after which the same Tun can still
+// be used. Known examples from native and third-party implementations include
+// temporary errors and capacity errors such as "too many segments" or "need
+// more buffers" when the caller supplied too few read buffers. IsTunTermError
+// classifies errors for callers that need to decide whether to stop using a
+// Tun after a Read error.
 type Tun interface {
 	// File returns the file descriptor of the tun device.
 	// It may be nil for virtual/mock/etc implementations.
@@ -46,6 +61,9 @@ type Tun interface {
 	// can require multiple buffers even for one inbound frame.
 	// A nonzero offset can be used to instruct the Tun on where to begin
 	// reading into each element of the bufs slice.
+	// If Read returns a non-terminal error, callers may retry using the same
+	// Tun. If it returns a terminal error as reported by IsTunTermError,
+	// callers should stop using this Tun instance for the current data path.
 	Read(bufs [][]byte, sizes []int, offset int) (n int, err error)
 
 	// Write one or more packets to the tun (without any additional headers).
@@ -53,6 +71,7 @@ type Tun interface {
 	// offset can be used to instruct the Device on where to begin writing from
 	// each packet contained within the bufs slice. Callers must chunk writes
 	// using the destination Tun's BatchSize() and handle partial writes.
+	// After Close, Write should return an error matching os.ErrClosed.
 	Write(bufs [][]byte, offset int) (int, error)
 
 	// MWO stands for Minimal Write Offset.
@@ -71,9 +90,12 @@ type Tun interface {
 	Name() (string, error)
 
 	// Events returns a channel of type Event, which is fed Device events.
+	// EventDown means the interface is down, not that the Tun is closed. The
+	// channel is closed when the Tun is closed.
 	Events() <-chan Event
 
-	// Close stops the Device and closes the Event channel.
+	// Close permanently stops the Device and closes the Event channel. After
+	// Close, Read and Write should return errors matching os.ErrClosed.
 	Close() error
 
 	// BatchSize returns the preferred/max number of packets that this Tun can

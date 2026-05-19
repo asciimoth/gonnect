@@ -60,10 +60,10 @@ func copyOneWay(src, dst Tun, offset int) error {
 	for {
 		n, err := src.Read(bufs, sizes, offset)
 		if err != nil {
-			if isRetryableReadError(err) {
-				continue
+			if IsTunTermError(err) {
+				return err
 			}
-			return err
+			continue
 		}
 		if n == 0 {
 			continue

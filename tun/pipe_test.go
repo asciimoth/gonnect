@@ -2,6 +2,8 @@
 package tun_test
 
 import (
+	"errors"
+	"os"
 	"sync"
 	"testing"
 
@@ -61,6 +63,54 @@ func TestPipeBasic(t *testing.T) {
 				}
 			}()
 		}
+	}
+}
+
+func TestPipeCloseSemantics(t *testing.T) {
+	t.Parallel()
+
+	tun1, tun2 := tun.Pipe(1, 1500, 0, 0)
+	defer tun2.Close()
+
+	events := tun1.Events()
+	peerEvents := tun2.Events()
+	if err := tun1.Close(); err != nil {
+		t.Fatalf("Close() error: %v", err)
+	}
+
+	if event, ok := <-events; !ok || event != tun.EventUp {
+		t.Fatalf("first event = %v, %v, want EventUp, true", event, ok)
+	}
+	if event, ok := <-events; ok {
+		t.Fatalf("second event = %v, %v, want closed channel", event, ok)
+	}
+	if event, ok := <-peerEvents; !ok || event != tun.EventUp {
+		t.Fatalf("peer first event = %v, %v, want EventUp, true", event, ok)
+	}
+	if event, ok := <-peerEvents; ok {
+		t.Fatalf("peer second event = %v, %v, want closed channel", event, ok)
+	}
+
+	sizes := make([]int, 1)
+	_, err := tun1.Read([][]byte{make([]byte, 1500)}, sizes, 0)
+	if !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("Read() after Close() error = %v, want os.ErrClosed", err)
+	}
+	if !errors.Is(err, tun.ErrReadOnClosedPipe) {
+		t.Fatalf("Read() after Close() error = %v, want ErrReadOnClosedPipe", err)
+	}
+
+	_, err = tun1.Write([][]byte{[]byte{1}}, 0)
+	if !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("Write() after Close() error = %v, want os.ErrClosed", err)
+	}
+	if !errors.Is(err, tun.ErrWriteOnClosedPipe) {
+		t.Fatalf("Write() after Close() error = %v, want ErrWriteOnClosedPipe", err)
+	}
+
+	_, err = tun2.Read([][]byte{make([]byte, 1500)}, sizes, 0)
+	if !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("peer Read() after Close() error = %v, want os.ErrClosed", err)
 	}
 }
 

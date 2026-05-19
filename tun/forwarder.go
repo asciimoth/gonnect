@@ -249,7 +249,7 @@ func frwReader(
 				for i := range bufs {
 					bufpool.PutBuffer(pool, bufs[i])
 				}
-				if isRetryableReadError(err) {
+				if !IsTunTermError(err) {
 					continue
 				}
 				_ = cfg.tun.Close()

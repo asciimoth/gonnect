@@ -52,7 +52,11 @@ func (p *Channel) Read(
 		for i := range n {
 			sizes[i] = copy(bufs[i][offset:], pkg.bufs[i][pkg.offset:])
 		}
-		p.feedback <- n
+		select {
+		case <-p.closeCh:
+			err = ErrReadOnClosedChan
+		case p.feedback <- n:
+		}
 	}
 	return
 }
@@ -70,8 +74,13 @@ func (p *Channel) Write(bufs [][]byte, offset int) (written int, err error) {
 			bufs:   bufs[written:],
 			offset: offset,
 		}:
-			r := <-p.feedback
-			written += r
+			select {
+			case <-p.closeCh:
+				err = ErrWriteOnClosedChan
+				return
+			case r := <-p.feedback:
+				written += r
+			}
 		}
 	}
 }

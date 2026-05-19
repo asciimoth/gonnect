@@ -2,6 +2,7 @@ package tun
 
 import (
 	"errors"
+	"os"
 	"strings"
 )
 
@@ -14,8 +15,19 @@ func batchSizeOf(t Tun) int {
 	return 1
 }
 
-func isRetryableReadError(err error) bool {
+// IsTunTermError reports whether err should be treated as terminating the
+// current Tun use.
+//
+// It returns false for nil and for known non-terminal errors where callers
+// can keep using the same Tun, such as temporary errors and capacity errors
+// produced when the read buffer batch is too small. It returns true for all
+// other errors, including closed-device errors.
+func IsTunTermError(err error) bool {
 	if err == nil {
+		return false
+	}
+
+	if errors.Is(err, os.ErrDeadlineExceeded) {
 		return false
 	}
 
@@ -24,12 +36,16 @@ func isRetryableReadError(err error) bool {
 	}
 	var tempErr temporary
 	if errors.As(err, &tempErr) && tempErr.Temporary() {
-		return true
+		return false
 	}
 
 	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "too many segments") ||
-		strings.Contains(msg, "need more buffers")
+	if strings.Contains(msg, "too many segments") ||
+		strings.Contains(msg, "need more buffers") {
+		return false
+	}
+
+	return true
 }
 
 func writePackets(t Tun, bufs [][]byte, offset int) error {

@@ -210,6 +210,53 @@ func TestDetachedNetworkDownCancelsParallelBlockedDials(t *testing.T) {
 	}
 }
 
+type blockingLookupNetwork struct {
+	gonnect.Network
+	entered chan struct{}
+}
+
+func (n *blockingLookupNetwork) LookupHost(
+	ctx context.Context,
+	host string,
+) ([]string, error) {
+	n.entered <- struct{}{}
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func TestDetachedNetworkDownCancelsBlockedLookup(t *testing.T) {
+	wrapped := &blockingLookupNetwork{
+		Network: gonnect.NativeConfig{}.Build(),
+		entered: make(chan struct{}, 1),
+	}
+	wrapper := gonnect.DetachNetwork(wrapped)
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := wrapper.LookupHost(context.Background(), "blocked")
+		errCh <- err
+	}()
+
+	select {
+	case <-wrapped.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("blocked lookup did not start")
+	}
+
+	if err := wrapper.Down(); err != nil {
+		t.Fatalf("Down() error = %v", err)
+	}
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("LookupHost returned nil error after Down()")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Down() did not cancel blocked lookup")
+	}
+}
+
 type delayedLoopbackNetwork struct {
 	gonnect.Network
 	delay   time.Duration
@@ -284,5 +331,58 @@ func TestDetachedNetworkCloseCancelsContextIgnoringDialAndListen(
 	}
 	if elapsed := time.Since(start); elapsed >= wrapped.delay {
 		t.Fatalf("operations waited for wrapped delay: %v", elapsed)
+	}
+}
+
+type delayedLookupNetwork struct {
+	gonnect.Network
+	delay   time.Duration
+	entered chan struct{}
+}
+
+func (n *delayedLookupNetwork) LookupHost(
+	ctx context.Context,
+	host string,
+) ([]string, error) {
+	n.entered <- struct{}{}
+	time.Sleep(n.delay)
+	return []string{"127.0.0.1"}, nil
+}
+
+func TestDetachedNetworkCloseCancelsContextIgnoringLookup(t *testing.T) {
+	wrapped := &delayedLookupNetwork{
+		Network: gonnect.NativeConfig{}.Build(),
+		delay:   time.Second,
+		entered: make(chan struct{}, 1),
+	}
+	wrapper := gonnect.DetachNetwork(wrapped)
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := wrapper.LookupHost(context.Background(), "example.test")
+		errCh <- err
+	}()
+
+	select {
+	case <-wrapped.entered:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("delayed lookup did not start")
+	}
+
+	start := time.Now()
+	if err := wrapper.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("LookupHost returned nil error after Close()")
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("Close() did not release delayed lookup immediately")
+	}
+	if elapsed := time.Since(start); elapsed >= wrapped.delay {
+		t.Fatalf("lookup waited for wrapped delay: %v", elapsed)
 	}
 }

@@ -24,10 +24,10 @@ var _ interface {
 // this wrapper. Multiple DetachedNetwork values can wrap the same Network and be
 // used concurrently; stopping one wrapper does not stop the others.
 //
-// Long operations such as Dial and Listen are run without holding the wrapper
-// mutex. The wrapper injects its own cancellation into the supplied context so a
-// concurrent Down or Close can unblock operations that honor context
-// cancellation.
+// Long operations such as Dial, Listen, and Lookup are run without holding the
+// wrapper mutex. The wrapper injects its own cancellation into the supplied
+// context so a concurrent Down or Close can unblock operations that honor
+// context cancellation.
 type DetachedNetwork struct {
 	wrapped Network
 

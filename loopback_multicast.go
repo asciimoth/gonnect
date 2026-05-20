@@ -30,6 +30,7 @@ type loopbackMulticastRegistry struct {
 
 func (r *loopbackMulticastRegistry) listen(
 	address string,
+	allowAnyHost bool,
 ) (*loopbackMulticastPacketConn, error) {
 	if address == "" {
 		address = "[::]:0"
@@ -39,6 +40,7 @@ func (r *loopbackMulticastRegistry) listen(
 		return nil, err
 	}
 	host = strings.Trim(host, "[]")
+	host = replaceNonLocalHostWithLocalhost(host, allowAnyHost)
 	if host != "" && host != "::" && host != "::1" && host != "localhost" {
 		return nil, loopbackDnsReqErr(host)
 	}
@@ -422,7 +424,7 @@ func (ln *LoopbackNetwork) ListenMulticastUDP(
 	if network != "udp6" {
 		return nil, net.UnknownNetworkError(network)
 	}
-	conn, err := reg.listen(address)
+	conn, err := reg.listen(address, ln.AllowAnyHost)
 	if err != nil {
 		return nil, loopbackListenErrWrap(err, network, address)
 	}

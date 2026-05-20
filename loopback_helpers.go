@@ -229,10 +229,20 @@ func normalizeLoopbackHost(network, host string) (string, error) {
 	return norm, nil
 }
 
+func replaceNonLocalHostWithLocalhost(host string, allowAnyHost bool) string {
+	if !allowAnyHost || IsLocal(host) {
+		return host
+	}
+	return "localhost"
+}
+
 // loopbackListenPrep prepares the network and address for a listen operation.
 // It normalizes the host, parses the port, and returns the host and port.
 // If laddr is empty, it defaults to "localhost:".
-func loopbackListenPrep(network, laddr string) (string, *uint16, error) {
+func loopbackListenPrep(
+	network, laddr string,
+	allowAnyHost bool,
+) (string, *uint16, error) {
 	if laddr == "" {
 		laddr = "localhost:"
 	}
@@ -242,6 +252,7 @@ func loopbackListenPrep(network, laddr string) (string, *uint16, error) {
 		return "", nil, err
 	}
 
+	host = replaceNonLocalHostWithLocalhost(host, allowAnyHost)
 	host, err = normalizeLoopbackHost(network, host)
 	if err != nil {
 		return "", nil, err
@@ -274,6 +285,7 @@ func loopbackListenPrep(network, laddr string) (string, *uint16, error) {
 // If laddr or raddr is empty, they default to "localhost:".
 func loopbackDialPrep(
 	network, laddr, raddr string,
+	allowAnyHost bool,
 ) (string, *uint16, int, error) {
 	if raddr == "" {
 		raddr = "localhost:"
@@ -296,6 +308,8 @@ func loopbackDialPrep(
 		return "", nil, 0, err
 	}
 
+	lhost = replaceNonLocalHostWithLocalhost(lhost, allowAnyHost)
+	rhost = replaceNonLocalHostWithLocalhost(rhost, allowAnyHost)
 	host, err := normalizeLoopbackHosts(network, lhost, rhost)
 
 	if err != nil {

@@ -45,6 +45,109 @@ func TestLoopbackNetworkUdpPingPong(t *testing.T) {
 	gt.RunUdpPingPongForNetworks(t, pair, pair)
 }
 
+func TestLoopbackNetworkAllowAnyHost(t *testing.T) {
+	t.Parallel()
+
+	network := gonnect.NewLoopbackNetwok()
+	if listener, err := network.ListenTCP(
+		t.Context(),
+		"tcp",
+		"example.com:0",
+	); err == nil {
+		_ = listener.Close()
+		t.Fatal("ListenTCP() unexpectedly accepted a hostname before opt-in")
+	}
+
+	network.AllowAnyHost = true
+	listener, err := network.ListenTCP(t.Context(), "tcp", "example.com:0")
+	if err != nil {
+		t.Fatalf("ListenTCP() error = %v", err)
+	}
+	defer listener.Close()
+	if host, _, err := net.SplitHostPort(listener.Addr().String()); err != nil {
+		t.Fatalf("SplitHostPort() error = %v", err)
+	} else if host != "127.0.0.1" {
+		t.Fatalf("listener host = %q, want 127.0.0.1", host)
+	}
+
+	_, port, err := net.SplitHostPort(listener.Addr().String())
+	if err != nil {
+		t.Fatalf("SplitHostPort() error = %v", err)
+	}
+	acceptErr := make(chan error, 1)
+	go func() {
+		conn, err := listener.AcceptTCP()
+		if err != nil {
+			acceptErr <- err
+			return
+		}
+		defer conn.Close()
+		_, err = conn.Write([]byte("ok"))
+		acceptErr <- err
+	}()
+
+	client, err := network.DialTCP(
+		t.Context(),
+		"tcp",
+		"192.0.2.10:0",
+		net.JoinHostPort("service.internal", port),
+	)
+	if err != nil {
+		t.Fatalf("DialTCP() error = %v", err)
+	}
+	defer client.Close()
+	if err := client.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline() error = %v", err)
+	}
+	buf := make([]byte, 2)
+	if n, err := client.Read(buf); err != nil || string(buf[:n]) != "ok" {
+		t.Fatalf("Read() = %d, %q, %v; want %q, nil", n, buf[:n], err, "ok")
+	}
+	if err := <-acceptErr; err != nil {
+		t.Fatalf("server write error = %v", err)
+	}
+}
+
+func TestLoopbackNetworkAllowAnyHostUDP(t *testing.T) {
+	t.Parallel()
+
+	network := gonnect.NewLoopbackNetwok()
+	network.AllowAnyHost = true
+
+	server, err := network.ListenUDP(t.Context(), "udp4", "example.com:0")
+	if err != nil {
+		t.Fatalf("ListenUDP() error = %v", err)
+	}
+	defer server.Close()
+	_, port, err := net.SplitHostPort(server.LocalAddr().String())
+	if err != nil {
+		t.Fatalf("SplitHostPort() error = %v", err)
+	}
+
+	client, err := network.DialUDP(
+		t.Context(),
+		"udp4",
+		"198.51.100.10:0",
+		net.JoinHostPort("service.internal", port),
+	)
+	if err != nil {
+		t.Fatalf("DialUDP() error = %v", err)
+	}
+	defer client.Close()
+
+	if _, err := client.Write([]byte("ok")); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	if err := server.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline() error = %v", err)
+	}
+	buf := make([]byte, 2)
+	n, _, err := server.ReadFrom(buf)
+	if err != nil || string(buf[:n]) != "ok" {
+		t.Fatalf("ReadFrom() = %d, %q, %v; want %q, nil", n, buf[:n], err, "ok")
+	}
+}
+
 func TestLoopbackNetworkInterfaceMulticastAddrs(t *testing.T) {
 	t.Parallel()
 

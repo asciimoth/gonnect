@@ -32,6 +32,11 @@ var ErrNetworkDown = &net.OpError{
 type LoopbackNetwork struct {
 	mu sync.Mutex
 
+	// AllowAnyHost rewrites non-loopback host names and addresses to localhost
+	// before Dial and Listen style address normalization. It is false by
+	// default to preserve the historical loopback resolver behavior.
+	AllowAnyHost bool
+
 	// up indicates whether the network is currently active.
 	up bool
 
@@ -475,7 +480,7 @@ func (ln *LoopbackNetwork) ListenTCP(
 		return nil, net.UnknownNetworkError(network)
 	}
 
-	host, port, err := loopbackListenPrep(network, laddr)
+	host, port, err := loopbackListenPrep(network, laddr, ln.AllowAnyHost)
 	if err != nil {
 		return nil, loopbackListenErrWrap(err, network, laddr)
 	}
@@ -548,7 +553,7 @@ func (ln *LoopbackNetwork) ListenUDP(
 		return nil, net.UnknownNetworkError(network)
 	}
 
-	host, port, err := loopbackListenPrep(network, laddr)
+	host, port, err := loopbackListenPrep(network, laddr, ln.AllowAnyHost)
 	if err != nil {
 		return nil, loopbackListenErrWrap(err, network, laddr)
 	}
@@ -622,7 +627,12 @@ func (ln *LoopbackNetwork) DialTCP(
 		return nil, net.UnknownNetworkError(network)
 	}
 
-	host, lport, rport, err := loopbackDialPrep(network, laddr, raddr)
+	host, lport, rport, err := loopbackDialPrep(
+		network,
+		laddr,
+		raddr,
+		ln.AllowAnyHost,
+	)
 	if err != nil {
 		return nil, loopbackDialErrWrap(err, network, laddr, raddr)
 	}
@@ -709,7 +719,12 @@ func (ln *LoopbackNetwork) DialUDP(
 		return nil, net.UnknownNetworkError(network)
 	}
 
-	host, lport, rport, err := loopbackDialPrep(network, laddr, raddr)
+	host, lport, rport, err := loopbackDialPrep(
+		network,
+		laddr,
+		raddr,
+		ln.AllowAnyHost,
+	)
 	if err != nil {
 		return nil, loopbackDialErrWrap(err, network, laddr, raddr)
 	}

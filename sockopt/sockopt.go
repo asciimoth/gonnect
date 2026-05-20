@@ -43,6 +43,9 @@ var ErrUnsupported = errors.New("option unsupported")
 // This is useful for optional socket options
 // where unsupported platforms should be silently skipped.
 func IgnoreUnsupported(err error) error {
+	if err == nil {
+		return nil
+	}
 	if errors.Is(err, ErrUnsupported) {
 		return nil
 	}

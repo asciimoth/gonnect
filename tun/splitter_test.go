@@ -224,13 +224,34 @@ func TestSplitterRoutesLargeBatchToMultipleFrontends(t *testing.T) {
 	read3 := readTunPacketsAsync(f3, len(want3))
 	backend.enqueueRead(mockReadResult{packets: packets})
 
-	if got := awaitTunPackets(t, "frontend 1", read1); !reflect.DeepEqual(got, want1) {
+	if got := awaitTunPackets(
+		t,
+		"frontend 1",
+		read1,
+	); !reflect.DeepEqual(
+		got,
+		want1,
+	) {
 		t.Fatalf("frontend 1 packets = %q, want %q", got, want1)
 	}
-	if got := awaitTunPackets(t, "frontend 2", read2); !reflect.DeepEqual(got, want2) {
+	if got := awaitTunPackets(
+		t,
+		"frontend 2",
+		read2,
+	); !reflect.DeepEqual(
+		got,
+		want2,
+	) {
 		t.Fatalf("frontend 2 packets = %q, want %q", got, want2)
 	}
-	if got := awaitTunPackets(t, "frontend 3", read3); !reflect.DeepEqual(got, want3) {
+	if got := awaitTunPackets(
+		t,
+		"frontend 3",
+		read3,
+	); !reflect.DeepEqual(
+		got,
+		want3,
+	) {
 		t.Fatalf("frontend 3 packets = %q, want %q", got, want3)
 	}
 	if router.locks != 1 || router.unlocks != 1 {

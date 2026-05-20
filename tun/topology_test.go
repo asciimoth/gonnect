@@ -30,9 +30,30 @@ func TestJoinerSplitterDetachedTunComplexTopologyChanges(t *testing.T) {
 	rightFront2 := right.Get(2)
 	assertTunEvent(t, "right frontend 2 initial", rightFront2.Events(), EventUp)
 	rightDetached2 := Detach(rightFront2)
-	assertTunEvent(t, "right detached 2 initial", rightDetached2.Events(), EventUp)
-	assertTunShape(t, "right frontend 2 after edge attach", rightFront2, 0, 0, 1300, 5)
-	assertTunShape(t, "right detached 2 after edge attach", rightDetached2, 0, 0, 1300, 5)
+	assertTunEvent(
+		t,
+		"right detached 2 initial",
+		rightDetached2.Events(),
+		EventUp,
+	)
+	assertTunShape(
+		t,
+		"right frontend 2 after edge attach",
+		rightFront2,
+		0,
+		0,
+		1300,
+		5,
+	)
+	assertTunShape(
+		t,
+		"right detached 2 after edge attach",
+		rightDetached2,
+		0,
+		0,
+		1300,
+		5,
+	)
 
 	if err := branch.AttachDefault(branchDefault); err != nil {
 		t.Fatalf("branch.AttachDefault() error = %v", err)
@@ -52,9 +73,30 @@ func TestJoinerSplitterDetachedTunComplexTopologyChanges(t *testing.T) {
 	leftFront1 := left.Get(1)
 	assertTunEvent(t, "left frontend 1 initial", leftFront1.Events(), EventUp)
 	leftDetached1 := Detach(leftFront1)
-	assertTunEvent(t, "left detached 1 initial", leftDetached1.Events(), EventUp)
-	assertTunShape(t, "left frontend 1 after branch attach", leftFront1, 256, 256, 1300, 5)
-	assertTunShape(t, "left detached 1 after branch attach", leftDetached1, 256, 256, 1300, 5)
+	assertTunEvent(
+		t,
+		"left detached 1 initial",
+		leftDetached1.Events(),
+		EventUp,
+	)
+	assertTunShape(
+		t,
+		"left frontend 1 after branch attach",
+		leftFront1,
+		256,
+		256,
+		1300,
+		5,
+	)
+	assertTunShape(
+		t,
+		"left detached 1 after branch attach",
+		leftDetached1,
+		256,
+		256,
+		1300,
+		5,
+	)
 
 	if err := root.AttachDefault(rootDefault); err != nil {
 		t.Fatalf("root.AttachDefault() error = %v", err)
@@ -83,13 +125,38 @@ func TestJoinerSplitterDetachedTunComplexTopologyChanges(t *testing.T) {
 	leftFront2 := left.Get(2)
 	assertTunEvent(t, "left frontend 2 initial", leftFront2.Events(), EventUp)
 	leftDetached2 := Detach(leftFront2)
-	assertTunEvent(t, "left detached 2 initial", leftDetached2.Events(), EventUp)
-	assertTunShape(t, "left detached 2 before root attach", leftDetached2, 256, 256, 1300, 5)
+	assertTunEvent(
+		t,
+		"left detached 2 initial",
+		leftDetached2.Events(),
+		EventUp,
+	)
+	assertTunShape(
+		t,
+		"left detached 2 before root attach",
+		leftDetached2,
+		256,
+		256,
+		1300,
+		5,
+	)
 	if err := root.AttachSecondary(leftDetached2); err != nil {
 		t.Fatalf("root.AttachSecondary(leftDetached2) error = %v", err)
 	}
-	assertNoTunEvent(t, "root after equal-MTU leftDetached2 attach", root.Events())
-	assertTunShape(t, "root after leftDetached2 attach", root, 256, 256, 1300, 5)
+	assertNoTunEvent(
+		t,
+		"root after equal-MTU leftDetached2 attach",
+		root.Events(),
+	)
+	assertTunShape(
+		t,
+		"root after leftDetached2 attach",
+		root,
+		256,
+		256,
+		1300,
+		5,
+	)
 
 	left.ResetRouter(&staticSplitRouter{targets: []int{2}})
 	assertTopologyFlow(
@@ -112,7 +179,15 @@ func TestJoinerSplitterDetachedTunComplexTopologyChanges(t *testing.T) {
 		EventMTUUpdate,
 	)
 	assertTunShape(t, "branch after right detach", branch, 256, 256, 1400, 3)
-	assertTunShape(t, "left frontend 2 after right detach", leftFront2, 256, 256, 1400, 3)
+	assertTunShape(
+		t,
+		"left frontend 2 after right detach",
+		leftFront2,
+		256,
+		256,
+		1400,
+		3,
+	)
 	assertTunShape(t, "root after right detach", root, 256, 256, 1400, 5)
 	assertWriteDeliveredTo(
 		t,
@@ -132,8 +207,21 @@ func TestJoinerSplitterDetachedTunComplexTopologyChanges(t *testing.T) {
 	)
 
 	rightReplacement := Detach(rightFront2)
-	assertTunEvent(t, "right replacement initial", rightReplacement.Events(), EventUp)
-	assertTunShape(t, "right replacement before attach", rightReplacement, 0, 0, 1300, 5)
+	assertTunEvent(
+		t,
+		"right replacement initial",
+		rightReplacement.Events(),
+		EventUp,
+	)
+	assertTunShape(
+		t,
+		"right replacement before attach",
+		rightReplacement,
+		0,
+		0,
+		1300,
+		5,
+	)
 	if err := branch.AttachSecondary(rightReplacement); err != nil {
 		t.Fatalf("branch.AttachSecondary(rightReplacement) error = %v", err)
 	}
@@ -143,7 +231,15 @@ func TestJoinerSplitterDetachedTunComplexTopologyChanges(t *testing.T) {
 		root.Events(),
 		EventMTUUpdate,
 	)
-	assertTunShape(t, "branch after right replacement", branch, 256, 256, 1300, 5)
+	assertTunShape(
+		t,
+		"branch after right replacement",
+		branch,
+		256,
+		256,
+		1300,
+		5,
+	)
 	assertTunShape(t, "root after right replacement", root, 256, 256, 1300, 5)
 	assertTopologyFlow(
 		t,
@@ -165,7 +261,15 @@ func TestJoinerSplitterDetachedTunComplexTopologyChanges(t *testing.T) {
 		EventMTUUpdate,
 	)
 	assertTunMTUErr(t, "branch closed by left detach", branch, os.ErrClosed)
-	assertTunShape(t, "left frontend 2 after backend detach", leftFront2, 256, 256, 1500, 256)
+	assertTunShape(
+		t,
+		"left frontend 2 after backend detach",
+		leftFront2,
+		256,
+		256,
+		1500,
+		256,
+	)
 	assertTunShape(t, "root after left backend detach", root, 256, 256, 1450, 5)
 	assertRoutedWriteDropped(
 		t,

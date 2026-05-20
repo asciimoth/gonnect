@@ -49,7 +49,6 @@ linters:
     - exptostd
     - fatcontext
     - forcetypeassert
-    - funcorder
     - ginkgolinter
     - gocheckcompilerdirectives
     - gochecksumtype
@@ -101,6 +100,7 @@ linters:
     - contextcheck
     - tparallel
     - dupword
+    - funcorder
   exclusions:
     paths:
       - _examples

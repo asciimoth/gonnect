@@ -1,3 +1,4 @@
+// nolint
 package gonnect_test
 
 import (

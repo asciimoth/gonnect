@@ -178,7 +178,10 @@ func countGoroutinesWithStack(createdByNeedle string, needles ...string) int {
 	return count
 }
 
-func goroutineStacksWithStack(createdByNeedle string, needles ...string) string {
+func goroutineStacksWithStack(
+	createdByNeedle string,
+	needles ...string,
+) string {
 	var matches []string
 	for _, stack := range splitGoroutineStacks() {
 		if strings.Contains(stack, createdByNeedle) &&

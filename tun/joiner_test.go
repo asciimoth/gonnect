@@ -1046,7 +1046,9 @@ func readTunPacketsAsync(tun Tun, count int) <-chan tunPacketsResult {
 			for i := range n {
 				out = append(
 					out,
-					append([]byte(nil), bufs[i][tun.MRO():tun.MRO()+sizes[i]]...),
+					append(
+						[]byte(nil),
+						bufs[i][tun.MRO():tun.MRO()+sizes[i]]...),
 				)
 			}
 		}

@@ -42,6 +42,15 @@ func (u *lifecycleUpDown) IsUp() (bool, error) {
 	return u.ups.Load() > u.downs.Load(), nil
 }
 
+func newLifecycleRouter(t *testing.T) *gonnect.Router {
+	t.Helper()
+	r := gonnect.NewRouter()
+	if err := r.Attach(1, &gonnect.RejectNetwork{}); err != nil {
+		t.Fatalf("Router Attach() error = %v", err)
+	}
+	return r
+}
+
 func TestNetworkCloserSubscriberImplementations(t *testing.T) {
 	tests := []struct {
 		name string
@@ -57,7 +66,7 @@ func TestNetworkCloserSubscriberImplementations(t *testing.T) {
 			net:  gonnect.DetachNetwork(&gonnect.RejectNetwork{}),
 		},
 		{name: "LoopbackNetwork", net: gonnect.NewLoopbackNetwok()},
-		{name: "Router", net: gonnect.NewRouter()},
+		{name: "Router", net: newLifecycleRouter(t)},
 	}
 
 	for _, tt := range tests {
@@ -134,7 +143,7 @@ func TestNetworkUpDownSubscriberImplementations(t *testing.T) {
 			net:  gonnect.DetachNetwork(&gonnect.RejectNetwork{}),
 		},
 		{name: "LoopbackNetwork", net: gonnect.NewLoopbackNetwok()},
-		{name: "Router", net: gonnect.NewRouter()},
+		{name: "Router", net: newLifecycleRouter(t)},
 	}
 
 	for _, tt := range tests {

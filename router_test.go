@@ -36,6 +36,323 @@ func TestRouter_Stoppable(t *testing.T) {
 	}, "127.0.0.1:0")
 }
 
+type routerLifecycleBackend struct {
+	gonnect.RejectNetwork
+
+	mu     sync.Mutex
+	up     bool
+	closed bool
+	next   uint64
+	subs   map[uint64]gonnect.UpDown
+}
+
+func newRouterLifecycleBackend(up bool) *routerLifecycleBackend {
+	return &routerLifecycleBackend{
+		up:   up,
+		subs: make(map[uint64]gonnect.UpDown),
+	}
+}
+
+func (n *routerLifecycleBackend) Up() error {
+	n.mu.Lock()
+	if n.closed {
+		n.mu.Unlock()
+		return net.ErrClosed
+	}
+	if n.up {
+		n.mu.Unlock()
+		return nil
+	}
+	n.up = true
+	subs := n.subsSnapshotLocked()
+	n.mu.Unlock()
+	return upAllForTest(subs)
+}
+
+func (n *routerLifecycleBackend) Down() error {
+	n.mu.Lock()
+	if !n.up {
+		n.mu.Unlock()
+		return nil
+	}
+	n.up = false
+	subs := n.subsSnapshotLocked()
+	n.mu.Unlock()
+	return downAllForTest(subs)
+}
+
+func (n *routerLifecycleBackend) Close() error {
+	n.mu.Lock()
+	if n.closed {
+		n.mu.Unlock()
+		return nil
+	}
+	n.closed = true
+	n.up = false
+	subs := n.subsSnapshotLocked()
+	n.mu.Unlock()
+	return downAllForTest(subs)
+}
+
+func (n *routerLifecycleBackend) IsUp() (bool, error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.up && !n.closed, nil
+}
+
+func (n *routerLifecycleBackend) SubscribeUpDown(
+	u gonnect.UpDown,
+) (func(), error) {
+	n.mu.Lock()
+	id := n.next
+	n.next++
+	n.subs[id] = u
+	down := !n.up || n.closed
+	n.mu.Unlock()
+
+	var err error
+	if down {
+		err = u.Down()
+	}
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			n.mu.Lock()
+			delete(n.subs, id)
+			n.mu.Unlock()
+		})
+	}, err
+}
+
+func (n *routerLifecycleBackend) subsSnapshotLocked() []gonnect.UpDown {
+	subs := make([]gonnect.UpDown, 0, len(n.subs))
+	for _, sub := range n.subs {
+		subs = append(subs, sub)
+	}
+	return subs
+}
+
+func upAllForTest(subs []gonnect.UpDown) error {
+	var err error
+	for _, sub := range subs {
+		err = errors.Join(err, sub.Up())
+	}
+	return err
+}
+
+func downAllForTest(subs []gonnect.UpDown) error {
+	var err error
+	for _, sub := range subs {
+		err = errors.Join(err, sub.Down())
+	}
+	return err
+}
+
+func requireRouterUp(t *testing.T, r *gonnect.Router, want bool) {
+	t.Helper()
+	got, err := r.IsUp()
+	if err != nil {
+		t.Fatalf("Router IsUp() error = %v", err)
+	}
+	if got != want {
+		t.Fatalf("Router IsUp() = %v, want %v", got, want)
+	}
+}
+
+func TestRouterAutoUpDownFromSlots(t *testing.T) {
+	r := gonnect.NewRouter()
+	requireRouterUp(t, r, false)
+
+	watcher := &lifecycleUpDown{}
+	if _, err := r.SubscribeUpDown(watcher); err != nil {
+		t.Fatalf("SubscribeUpDown() error = %v", err)
+	}
+	if watcher.downs.Load() != 1 {
+		t.Fatalf(
+			"initial subscriber Down calls = %d, want 1",
+			watcher.downs.Load(),
+		)
+	}
+
+	if err := r.Attach(1, &gonnect.RejectNetwork{}); err != nil {
+		t.Fatalf("Attach non-UpDown backend error = %v", err)
+	}
+	requireRouterUp(t, r, true)
+	if watcher.ups.Load() != 1 {
+		t.Fatalf("subscriber Up calls = %d, want 1", watcher.ups.Load())
+	}
+
+	if err := r.Detach(1); err != nil {
+		t.Fatalf("Detach() error = %v", err)
+	}
+	requireRouterUp(t, r, false)
+	if watcher.downs.Load() != 2 {
+		t.Fatalf("subscriber Down calls = %d, want 2", watcher.downs.Load())
+	}
+
+	backend := newRouterLifecycleBackend(false)
+	if err := r.Attach(1, backend); err != nil {
+		t.Fatalf("Attach down backend error = %v", err)
+	}
+	requireRouterUp(t, r, false)
+
+	if err := backend.Up(); err != nil {
+		t.Fatalf("backend Up() error = %v", err)
+	}
+	requireRouterUp(t, r, true)
+
+	if err := backend.Down(); err != nil {
+		t.Fatalf("backend Down() error = %v", err)
+	}
+	requireRouterUp(t, r, false)
+}
+
+func TestRouterAutoStateAggregatesAllSlots(t *testing.T) {
+	r := gonnect.NewRouter()
+	downBackend := newRouterLifecycleBackend(false)
+	upBackend := newRouterLifecycleBackend(true)
+	if err := r.Attach(1, downBackend); err != nil {
+		t.Fatalf("Attach down backend error = %v", err)
+	}
+	requireRouterUp(t, r, false)
+
+	if err := r.Attach(2, upBackend); err != nil {
+		t.Fatalf("Attach up backend error = %v", err)
+	}
+	requireRouterUp(t, r, true)
+
+	if err := upBackend.Close(); err != nil {
+		t.Fatalf("up backend Close() error = %v", err)
+	}
+	requireRouterUp(t, r, false)
+
+	if err := downBackend.Up(); err != nil {
+		t.Fatalf("down backend Up() error = %v", err)
+	}
+	requireRouterUp(t, r, true)
+}
+
+func TestRouterSlotReplacementKeepsAutoStateScoped(t *testing.T) {
+	r := gonnect.NewRouter()
+	oldBackend := newRouterLifecycleBackend(true)
+	if err := r.Attach(1, oldBackend); err != nil {
+		t.Fatalf("Attach old backend error = %v", err)
+	}
+	requireRouterUp(t, r, true)
+
+	watcher := &lifecycleUpDown{}
+	if _, err := r.SubscribeUpDown(watcher); err != nil {
+		t.Fatalf("SubscribeUpDown() error = %v", err)
+	}
+
+	newBackend := newRouterLifecycleBackend(true)
+	if err := r.Attach(1, newBackend); err != nil {
+		t.Fatalf("Attach new backend error = %v", err)
+	}
+	requireRouterUp(t, r, true)
+	if watcher.downs.Load() != 0 {
+		t.Fatalf(
+			"subscriber Down calls after up-to-up replacement = %d, want 0",
+			watcher.downs.Load(),
+		)
+	}
+
+	if err := oldBackend.Down(); err != nil {
+		t.Fatalf("old backend Down() error = %v", err)
+	}
+	requireRouterUp(t, r, true)
+
+	if err := newBackend.Down(); err != nil {
+		t.Fatalf("new backend Down() error = %v", err)
+	}
+	requireRouterUp(t, r, false)
+}
+
+func TestRouterForcedDownIndependentFromSlotAutoState(t *testing.T) {
+	r := gonnect.NewRouter()
+	backend := newRouterLifecycleBackend(true)
+	if err := r.Attach(1, backend); err != nil {
+		t.Fatalf("Attach() error = %v", err)
+	}
+	requireRouterUp(t, r, true)
+
+	if err := r.Down(); err != nil {
+		t.Fatalf("Router Down() error = %v", err)
+	}
+	requireRouterUp(t, r, false)
+
+	if err := backend.Down(); err != nil {
+		t.Fatalf("backend Down() error = %v", err)
+	}
+	if err := backend.Up(); err != nil {
+		t.Fatalf("backend Up() error = %v", err)
+	}
+	requireRouterUp(t, r, false)
+
+	if err := r.Attach(2, &gonnect.RejectNetwork{}); err != nil {
+		t.Fatalf("Attach while forced down error = %v", err)
+	}
+	requireRouterUp(t, r, false)
+
+	if err := r.Up(); err != nil {
+		t.Fatalf("Router Up() error = %v", err)
+	}
+	requireRouterUp(t, r, true)
+
+	if err := r.Detach(1); err != nil {
+		t.Fatalf("Detach(1) error = %v", err)
+	}
+	if err := r.Detach(2); err != nil {
+		t.Fatalf("Detach(2) error = %v", err)
+	}
+	requireRouterUp(t, r, false)
+	if err := r.Up(); err != nil {
+		t.Fatalf("Router Up() with no up slots error = %v", err)
+	}
+	requireRouterUp(t, r, false)
+}
+
+func TestRouterBackendCloseDoesNotCloseRouter(t *testing.T) {
+	r := gonnect.NewRouter()
+	backend := newRouterLifecycleBackend(true)
+	if err := r.Attach(1, backend); err != nil {
+		t.Fatalf("Attach() error = %v", err)
+	}
+	closer := &lifecycleCloser{}
+	if _, err := r.SubscribeCloser(closer); err != nil {
+		t.Fatalf("SubscribeCloser() error = %v", err)
+	}
+
+	if err := backend.Close(); err != nil {
+		t.Fatalf("backend Close() error = %v", err)
+	}
+	requireRouterUp(t, r, false)
+	if closer.closes() != 0 {
+		t.Fatalf(
+			"router closer calls after backend Close = %d, want 0",
+			closer.closes(),
+		)
+	}
+	if err := r.Up(); err != nil {
+		t.Fatalf("Router Up() after backend Close error = %v", err)
+	}
+	requireRouterUp(t, r, false)
+
+	if err := r.Attach(2, &gonnect.RejectNetwork{}); err != nil {
+		t.Fatalf("Attach replacement up backend error = %v", err)
+	}
+	requireRouterUp(t, r, true)
+	if err := r.Close(); err != nil {
+		t.Fatalf("Router Close() error = %v", err)
+	}
+	if closer.closes() != 1 {
+		t.Fatalf(
+			"router closer calls after Router Close = %d, want 1",
+			closer.closes(),
+		)
+	}
+}
+
 func TestRouterDefaultTCPRoute(t *testing.T) {
 	ctx := context.Background()
 	r := gonnect.NewRouter()
@@ -322,6 +639,9 @@ func TestRouterRejectsMissingAndInvalidSlotsLikeRejectNetwork(t *testing.T) {
 	reject := &gonnect.RejectNetwork{}
 	r := gonnect.NewRouter()
 	r.SetCfg(testRouterCfg{tcpSlot: 2, udpSlot: 17})
+	if err := r.Attach(1, reject); err != nil {
+		t.Fatalf("Attach(1) error = %v", err)
+	}
 
 	_, got := r.DialTCP(ctx, "tcp", "", "127.0.0.1:80")
 	_, want := reject.DialTCP(ctx, "tcp", "", "127.0.0.1:80")
@@ -379,6 +699,9 @@ func TestRouterResolverOverridesLookupAndPreResolvesDial(t *testing.T) {
 		},
 		ports: map[string]int{"svc": 0},
 	})
+	if err := r.Attach(1, gonnect.NewLoopbackNetwok()); err != nil {
+		t.Fatalf("Attach(1) error = %v", err)
+	}
 
 	addrs, err := r.LookupHost(ctx, "service.test")
 	if err != nil {
@@ -388,9 +711,6 @@ func TestRouterResolverOverridesLookupAndPreResolvesDial(t *testing.T) {
 		t.Fatalf("LookupHost() = %v, want resolver result", addrs)
 	}
 
-	if err := r.Attach(1, gonnect.NewLoopbackNetwok()); err != nil {
-		t.Fatalf("Attach(1) error = %v", err)
-	}
 	ln, err := r.ListenTCP(ctx, "tcp", "localhost:0")
 	if err != nil {
 		t.Fatalf("ListenTCP() error = %v", err)

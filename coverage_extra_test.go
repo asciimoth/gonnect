@@ -1610,8 +1610,8 @@ func TestRouterAccessorsAndDelegatingBranches(t *testing.T) {
 	if r.IsNative() {
 		t.Fatal("Router IsNative() = true, want false")
 	}
-	if up, err := r.IsUp(); err != nil || !up {
-		t.Fatalf("initial Router IsUp = %v, %v, want true nil", up, err)
+	if up, err := r.IsUp(); err != nil || up {
+		t.Fatalf("initial Router IsUp = %v, %v, want false nil", up, err)
 	}
 	cfg := staticRouterCfg{slot: 1}
 	r.SetCfg(cfg)
@@ -1619,6 +1619,9 @@ func TestRouterAccessorsAndDelegatingBranches(t *testing.T) {
 		t.Fatal("GetCfg did not return installed config")
 	}
 	reject := &RejectNetwork{}
+	if err := r.Attach(1, reject); err != nil {
+		t.Fatalf("Attach reject error = %v", err)
+	}
 	r.SetResolver(reject)
 	if r.GetResolver() != reject {
 		t.Fatal("GetResolver did not return installed resolver")

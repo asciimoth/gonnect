@@ -49,12 +49,21 @@ type RouterCfg interface {
 // and Down stop the Router itself, cancel pending operations, and close all
 // objects returned by the Router.
 //
+// A Router is operational only when it has not been forced down with Down and at
+// least one attached backend slot is operational. Empty slots and attached
+// UpDown backends that are down or closed do not keep the Router up. Attached
+// backends that do not implement UpDown are treated as always operational.
+// Backend shutdown can make the Router go down, but it does not close the
+// Router; subscribed closers run only when the Router itself is closed.
+//
 // UDP listeners are frontend objects owned by the Router. For every alive
 // frontend UDP listener, the Router keeps one backend UDP listener per attached
 // backend slot. Reads fan in packets from all backend sockets, while writes are
 // routed per packet with RouterCfg.RouteUDP.
 type Router struct {
 	mu      sync.Mutex
+	wantUp  bool
+	autoUp  bool
 	up      bool
 	closed  bool
 	gen     uint64
@@ -63,6 +72,9 @@ type Router struct {
 	cfg     RouterCfg
 	res     Resolver
 	slots   [RouterSlots]Network
+	slotUp  [RouterSlots]bool
+	slotGen [RouterSlots]uint64
+	slotSub [RouterSlots]func()
 	closers map[uint64]io.Closer
 	bySlot  [RouterSlots]map[uint64]io.Closer
 	udp     map[uint64]*routerUDPConn
@@ -78,7 +90,7 @@ type Router struct {
 // slot 1.
 func NewRouter() *Router {
 	return &Router{
-		up:        true,
+		wantUp:    true,
 		gen:       1,
 		done:      make(chan struct{}),
 		closers:   make(map[uint64]io.Closer),
@@ -134,12 +146,15 @@ func (r *Router) Attach(slot int, backend Network) error {
 		return routerSlotError(slot)
 	}
 
+	backendUp := routerBackendIsUp(backend)
 	var udp []*routerUDPConn
-	oldClosers := r.replaceSlot(slot, backend, &udp)
-	if oldClosers == nil && udp == nil {
+	oldClosers, stopped := r.replaceSlot(slot, backend, backendUp, &udp)
+	if oldClosers == nil && udp == nil && stopped.done == nil {
 		return net.ErrClosed
 	}
-	err := closeAll(oldClosers)
+	err := r.closeTransition(stopped)
+	err = errors.Join(err, closeAll(oldClosers))
+	err = errors.Join(err, r.watchSlot(slot, backend))
 	for _, c := range udp {
 		c.detachBackend(slot)
 		c.attachBackend(slot, backend)
@@ -153,11 +168,12 @@ func (r *Router) Detach(slot int) error {
 		return routerSlotError(slot)
 	}
 	var udp []*routerUDPConn
-	oldClosers := r.replaceSlot(slot, nil, &udp)
-	if oldClosers == nil {
+	oldClosers, stopped := r.replaceSlot(slot, nil, false, &udp)
+	if oldClosers == nil && stopped.done == nil {
 		return net.ErrClosed
 	}
-	err := closeAll(oldClosers)
+	err := r.closeTransition(stopped)
+	err = errors.Join(err, closeAll(oldClosers))
 	for _, c := range udp {
 		c.detachBackend(slot)
 	}
@@ -167,15 +183,20 @@ func (r *Router) Detach(slot int) error {
 func (r *Router) replaceSlot(
 	slot int,
 	backend Network,
+	up bool,
 	udpOut *[]*routerUDPConn,
-) []io.Closer {
+) ([]io.Closer, routerTransition) {
 	idx := slot - 1
 	r.mu.Lock()
-	if !r.up || r.closed {
+	if r.closed {
 		r.mu.Unlock()
-		return nil
+		return nil, routerTransition{}
 	}
+	unsub := r.slotSub[idx]
+	r.slotSub[idx] = nil
+	r.slotGen[idx]++
 	r.slots[idx] = backend
+	r.slotUp[idx] = up
 	old := make([]io.Closer, 0, len(r.bySlot[idx]))
 	for id, c := range r.bySlot[idx] {
 		delete(r.closers, id)
@@ -188,8 +209,166 @@ func (r *Router) replaceSlot(
 			*udpOut = append(*udpOut, c)
 		}
 	}
+	stopped := r.applyAutoStateLocked()
 	r.mu.Unlock()
-	return old
+	if unsub != nil {
+		unsub()
+	}
+	return old, stopped
+}
+
+type routerTransition struct {
+	done    chan struct{}
+	closers []io.Closer
+	updowns []UpDown
+	up      bool
+}
+
+func (r *Router) watchSlot(slot int, backend Network) error {
+	idx := slot - 1
+	r.mu.Lock()
+	gen := r.slotGen[idx]
+	r.mu.Unlock()
+
+	var unsubscribe func()
+	var err error
+	if sub, ok := backend.(UpDownSubscriber); ok {
+		unsubscribe, err = sub.SubscribeUpDown(&routerSlotUpDown{
+			router: r,
+			slot:   slot,
+			gen:    gen,
+		})
+	}
+	up := routerBackendIsUp(backend)
+	return errors.Join(err, r.setSlotUp(slot, gen, up, unsubscribe))
+}
+
+func routerBackendIsUp(backend Network) bool {
+	u, ok := backend.(UpDown)
+	if !ok {
+		return true
+	}
+	up, err := u.IsUp()
+	return err == nil && up
+}
+
+type routerSlotUpDown struct {
+	router *Router
+	slot   int
+	gen    uint64
+}
+
+func (u *routerSlotUpDown) Up() error {
+	return u.router.setSlotUp(u.slot, u.gen, true, nil)
+}
+
+func (u *routerSlotUpDown) Down() error {
+	return u.router.setSlotUp(u.slot, u.gen, false, nil)
+}
+
+func (u *routerSlotUpDown) IsUp() (bool, error) {
+	u.router.mu.Lock()
+	defer u.router.mu.Unlock()
+	idx := u.slot - 1
+	return u.router.slotGen[idx] == u.gen && u.router.slotUp[idx], nil
+}
+
+func (r *Router) setSlotUp(
+	slot int,
+	gen uint64,
+	up bool,
+	unsubscribe func(),
+) error {
+	idx := slot - 1
+	r.mu.Lock()
+	if r.closed || r.slotGen[idx] != gen {
+		r.mu.Unlock()
+		if unsubscribe != nil {
+			unsubscribe()
+		}
+		return nil
+	}
+	if unsubscribe != nil {
+		old := r.slotSub[idx]
+		r.slotSub[idx] = unsubscribe
+		if old != nil {
+			defer old()
+		}
+	}
+	r.slotUp[idx] = up
+	transition := r.applyAutoStateLocked()
+	r.mu.Unlock()
+	return r.closeTransition(transition)
+}
+
+func (r *Router) applyAutoStateLocked() routerTransition {
+	autoUp := false
+	for i, backend := range r.slots {
+		if backend != nil && r.slotUp[i] {
+			autoUp = true
+			break
+		}
+	}
+	r.autoUp = autoUp
+	return r.applyEffectiveStateLocked()
+}
+
+func (r *Router) applyEffectiveStateLocked() routerTransition {
+	up := r.wantUp && r.autoUp && !r.closed
+	if r.up == up {
+		return routerTransition{}
+	}
+	r.up = up
+	r.gen++
+	if up {
+		r.done = make(chan struct{})
+		r.closers = make(map[uint64]io.Closer)
+		r.udp = make(map[uint64]*routerUDPConn)
+		return routerTransition{
+			updowns: r.updownsSnapshotLocked(),
+			up:      true,
+		}
+	}
+	transition := routerTransition{
+		done:    r.done,
+		closers: r.drainTrackedLocked(),
+		updowns: r.updownsSnapshotLocked(),
+	}
+	return transition
+}
+
+func (r *Router) updownsSnapshotLocked() []UpDown {
+	updowns := make([]UpDown, 0, len(r.updowns))
+	for _, u := range r.updowns {
+		updowns = append(updowns, u)
+	}
+	return updowns
+}
+
+func (r *Router) drainTrackedLocked() []io.Closer {
+	closers := make([]io.Closer, 0, len(r.closers))
+	for id, c := range r.closers {
+		delete(r.closers, id)
+		closers = append(closers, c)
+	}
+	for i := range r.bySlot {
+		clear(r.bySlot[i])
+	}
+	r.udp = make(map[uint64]*routerUDPConn)
+	return closers
+}
+
+func (r *Router) closeTransition(transition routerTransition) error {
+	if transition.done != nil {
+		close(transition.done)
+	}
+	if transition.up {
+		return upAll(transition.updowns)
+	}
+	return errors.Join(
+		closeAll(transition.closers),
+		downAll(transition.updowns),
+	)
 }
 
 // Up re-enables a stopped Router. Backend attachments and RouterCfg are kept.
@@ -199,21 +378,10 @@ func (r *Router) Up() error {
 		r.mu.Unlock()
 		return net.ErrClosed
 	}
-	if r.up {
-		r.mu.Unlock()
-		return nil
-	}
-	r.done = make(chan struct{})
-	r.gen++
-	r.up = true
-	r.closers = make(map[uint64]io.Closer)
-	r.udp = make(map[uint64]*routerUDPConn)
-	updowns := make([]UpDown, 0, len(r.updowns))
-	for _, u := range r.updowns {
-		updowns = append(updowns, u)
-	}
+	r.wantUp = true
+	transition := r.applyEffectiveStateLocked()
 	r.mu.Unlock()
-	return upAll(updowns)
+	return r.closeTransition(transition)
 }
 
 // Down stops the Router, cancels pending operations, and closes all Router
@@ -224,37 +392,21 @@ func (r *Router) Down() error {
 		r.mu.Unlock()
 		return nil
 	}
-	if !r.up || r.closed {
-		r.mu.Unlock()
-		return nil
-	}
-	r.up = false
-	r.gen++
-	done := r.done
-	closers := make([]io.Closer, 0, len(r.closers))
-	for id, c := range r.closers {
-		delete(r.closers, id)
-		closers = append(closers, c)
-	}
-	for i := range r.bySlot {
-		clear(r.bySlot[i])
-	}
-	r.udp = make(map[uint64]*routerUDPConn)
-	updowns := make([]UpDown, 0, len(r.updowns))
-	for _, u := range r.updowns {
-		updowns = append(updowns, u)
-	}
+	r.wantUp = false
+	transition := r.applyEffectiveStateLocked()
 	r.mu.Unlock()
 
-	close(done)
-	return errors.Join(closeAll(closers), downAll(updowns))
+	return r.closeTransition(transition)
 }
 
 // Close permanently closes this Router.
 func (r *Router) Close() error {
-	closers, updowns, closeSubs, done := r.closePrep()
+	closers, updowns, closeSubs, slotSubs, done := r.closePrep()
 	if done != nil {
 		close(done)
+	}
+	for _, unsubscribe := range slotSubs {
+		unsubscribe()
 	}
 	return errors.Join(closeAll(closers), downAll(updowns), closeAll(closeSubs))
 }
@@ -1105,15 +1257,18 @@ func (r *Router) closePrep() (
 	closers []io.Closer,
 	updowns []UpDown,
 	closeSubs []io.Closer,
+	slotSubs []func(),
 	done chan struct{},
 ) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
-		return nil, nil, nil, nil
+		return nil, nil, nil, nil, nil
 	}
 	wasUp := r.up
 	r.closed = true
+	r.wantUp = false
+	r.autoUp = false
 	r.up = false
 	r.gen++
 	if wasUp {
@@ -1139,7 +1294,14 @@ func (r *Router) closePrep() (
 		delete(r.closeSubs, id)
 		closeSubs = append(closeSubs, c)
 	}
-	return closers, updowns, closeSubs, done
+	slotSubs = make([]func(), 0, RouterSlots)
+	for i, unsubscribe := range r.slotSub {
+		if unsubscribe != nil {
+			r.slotSub[i] = nil
+			slotSubs = append(slotSubs, unsubscribe)
+		}
+	}
+	return closers, updowns, closeSubs, slotSubs, done
 }
 
 func (r *Router) acceptConnCallback(slot int) func(net.Conn) (net.Conn, error) {

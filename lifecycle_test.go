@@ -1,6 +1,7 @@
 package gonnect_test
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net"
@@ -45,10 +46,155 @@ func (u *lifecycleUpDown) IsUp() (bool, error) {
 func newLifecycleRouter(t *testing.T) *gonnect.Router {
 	t.Helper()
 	r := gonnect.NewRouter()
-	if err := r.Attach(1, &gonnect.RejectNetwork{}); err != nil {
+	if err := r.Attach(1, gonnect.NewLoopbackNetwok()); err != nil {
 		t.Fatalf("Router Attach() error = %v", err)
 	}
 	return r
+}
+
+type lifecycleLookup struct {
+	name      string
+	wantErrUp bool
+	call      func(context.Context, gonnect.Network) error
+}
+
+func lifecycleLookups() []lifecycleLookup {
+	return []lifecycleLookup{
+		{
+			name: "LookupIP",
+			call: func(ctx context.Context, n gonnect.Network) error {
+				_, err := n.LookupIP(ctx, "ip", "localhost")
+				return err
+			},
+		},
+		{
+			name: "LookupIPAddr",
+			call: func(ctx context.Context, n gonnect.Network) error {
+				_, err := n.LookupIPAddr(ctx, "localhost")
+				return err
+			},
+		},
+		{
+			name: "LookupNetIP",
+			call: func(ctx context.Context, n gonnect.Network) error {
+				_, err := n.LookupNetIP(ctx, "ip", "localhost")
+				return err
+			},
+		},
+		{
+			name: "LookupHost",
+			call: func(ctx context.Context, n gonnect.Network) error {
+				_, err := n.LookupHost(ctx, "localhost")
+				return err
+			},
+		},
+		{
+			name: "LookupAddr",
+			call: func(ctx context.Context, n gonnect.Network) error {
+				_, err := n.LookupAddr(ctx, "127.0.0.1")
+				return err
+			},
+		},
+		{
+			name:      "LookupCNAME",
+			wantErrUp: true,
+			call: func(ctx context.Context, n gonnect.Network) error {
+				_, err := n.LookupCNAME(ctx, "localhost")
+				return err
+			},
+		},
+		{
+			name: "LookupPort",
+			call: func(ctx context.Context, n gonnect.Network) error {
+				_, err := n.LookupPort(ctx, "tcp", "http")
+				return err
+			},
+		},
+		{
+			name: "LookupTXT",
+			call: func(ctx context.Context, n gonnect.Network) error {
+				_, err := n.LookupTXT(ctx, "localhost")
+				return err
+			},
+		},
+		{
+			name:      "LookupMX",
+			wantErrUp: true,
+			call: func(ctx context.Context, n gonnect.Network) error {
+				_, err := n.LookupMX(ctx, "localhost")
+				return err
+			},
+		},
+		{
+			name:      "LookupNS",
+			wantErrUp: true,
+			call: func(ctx context.Context, n gonnect.Network) error {
+				_, err := n.LookupNS(ctx, "localhost")
+				return err
+			},
+		},
+		{
+			name:      "LookupSRV",
+			wantErrUp: true,
+			call: func(ctx context.Context, n gonnect.Network) error {
+				_, _, err := n.LookupSRV(ctx, "svc", "tcp", "localhost")
+				return err
+			},
+		},
+	}
+}
+
+func isLifecycleStoppedLookupError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, net.ErrClosed) || errors.Is(err, gonnect.ErrNetworkDown) {
+		return true
+	}
+	var dnsErr *net.DNSError
+	return errors.As(err, &dnsErr) && dnsErr.Err == "network is down"
+}
+
+func requireLifecycleLookupWorking(
+	t *testing.T,
+	ctx context.Context,
+	n gonnect.Network,
+) {
+	t.Helper()
+	for _, lookup := range lifecycleLookups() {
+		t.Run(lookup.name, func(t *testing.T) {
+			err := lookup.call(ctx, n)
+			if isLifecycleStoppedLookupError(err) {
+				t.Fatalf(
+					"%s() returned stopped error while up: %v",
+					lookup.name,
+					err,
+				)
+			}
+			if !lookup.wantErrUp && err != nil {
+				t.Fatalf("%s() error while up = %v, want nil", lookup.name, err)
+			}
+		})
+	}
+}
+
+func requireLifecycleLookupsStopped(
+	t *testing.T,
+	ctx context.Context,
+	n gonnect.Network,
+) {
+	t.Helper()
+	for _, lookup := range lifecycleLookups() {
+		t.Run(lookup.name, func(t *testing.T) {
+			if err := lookup.call(ctx, n); !isLifecycleStoppedLookupError(err) {
+				t.Fatalf(
+					"%s() error while stopped = %v, want stopped error",
+					lookup.name,
+					err,
+				)
+			}
+		})
+	}
 }
 
 func TestNetworkCloserSubscriberImplementations(t *testing.T) {
@@ -124,6 +270,40 @@ func TestNetworkCloserSubscriberImplementations(t *testing.T) {
 			if late.closes() != 1 {
 				t.Fatalf("late closer closes = %d, want 1", late.closes())
 			}
+		})
+	}
+}
+
+func TestNetworkCloserLookupImplementationsStopAfterClose(t *testing.T) {
+	tests := []struct {
+		name string
+		net  interface {
+			gonnect.Network
+			io.Closer
+		}
+	}{
+		{
+			name: "DetachedNetwork",
+			net:  gonnect.DetachNetwork(gonnect.NewLoopbackNetwok()),
+		},
+		{name: "LoopbackNetwork", net: gonnect.NewLoopbackNetwok()},
+		{name: "Router", net: newLifecycleRouter(t)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			t.Run("before_Close", func(t *testing.T) {
+				requireLifecycleLookupWorking(t, ctx, tt.net)
+			})
+
+			if err := tt.net.Close(); err != nil {
+				t.Fatalf("Close() error = %v", err)
+			}
+
+			t.Run("after_Close", func(t *testing.T) {
+				requireLifecycleLookupsStopped(t, ctx, tt.net)
+			})
 		})
 	}
 }
@@ -249,6 +429,48 @@ func TestNetworkUpDownSubscriberImplementations(t *testing.T) {
 					afterClose.downs.Load(),
 				)
 			}
+		})
+	}
+}
+
+func TestNetworkUpDownLookupImplementationsStopAfterDownAndResumeAfterUp(
+	t *testing.T,
+) {
+	tests := []struct {
+		name string
+		net  interface {
+			gonnect.Network
+			gonnect.UpDown
+		}
+	}{
+		{
+			name: "DetachedNetwork",
+			net:  gonnect.DetachNetwork(gonnect.NewLoopbackNetwok()),
+		},
+		{name: "LoopbackNetwork", net: gonnect.NewLoopbackNetwok()},
+		{name: "Router", net: newLifecycleRouter(t)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			t.Run("before_Down", func(t *testing.T) {
+				requireLifecycleLookupWorking(t, ctx, tt.net)
+			})
+
+			if err := tt.net.Down(); err != nil {
+				t.Fatalf("Down() error = %v", err)
+			}
+			t.Run("after_Down", func(t *testing.T) {
+				requireLifecycleLookupsStopped(t, ctx, tt.net)
+			})
+
+			if err := tt.net.Up(); err != nil {
+				t.Fatalf("Up() error = %v", err)
+			}
+			t.Run("after_Up", func(t *testing.T) {
+				requireLifecycleLookupWorking(t, ctx, tt.net)
+			})
 		})
 	}
 }

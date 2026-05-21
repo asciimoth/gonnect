@@ -17,7 +17,9 @@ func TestIgnoreUnsupported(t *testing.T) {
 	if err := IgnoreUnsupported(ErrUnsupported); err != nil {
 		t.Fatalf("IgnoreUnsupported(ErrUnsupported) = %v, want nil", err)
 	}
-	if err := IgnoreUnsupported(errors.New("feature is not supported here")); err != nil {
+	if err := IgnoreUnsupported(
+		errors.New("feature is not supported here"),
+	); err != nil {
 		t.Fatalf("IgnoreUnsupported(not supported) = %v, want nil", err)
 	}
 	want := errors.New("other")
@@ -27,12 +29,22 @@ func TestIgnoreUnsupported(t *testing.T) {
 }
 
 func TestControlAndGetFd(t *testing.T) {
-	if err := Control(struct{}{}, func(uintptr) {}); !errors.Is(err, ErrUnsupported) {
+	if err := Control(
+		struct{}{},
+		func(uintptr) {},
+	); !errors.Is(
+		err,
+		ErrUnsupported,
+	) {
 		t.Fatalf("Control(unsupported) = %v, want ErrUnsupported", err)
 	}
 	fd, err := GetFd(struct{}{})
 	if !errors.Is(err, ErrUnsupported) || fd != NOFD {
-		t.Fatalf("GetFd(unsupported) = %d, %v, want NOFD ErrUnsupported", fd, err)
+		t.Fatalf(
+			"GetFd(unsupported) = %d, %v, want NOFD ErrUnsupported",
+			fd,
+			err,
+		)
 	}
 
 	conn, err := net.ListenPacket("udp4", "127.0.0.1:0")
@@ -128,7 +140,13 @@ func TestLinuxTCPOptions(t *testing.T) {
 	if _, err := GetTCPRTT(client); err != nil {
 		t.Fatalf("GetTCPRTT(client) error = %v", err)
 	}
-	if err := SetBindToInterface(client, &gonnect.LiteralInterface{NameVal: "lo"}); err != nil {
-		t.Logf("SetBindToInterface(lo) unsupported in this environment: %v", err)
+	if err := SetBindToInterface(
+		client,
+		&gonnect.LiteralInterface{NameVal: "lo"},
+	); err != nil {
+		t.Logf(
+			"SetBindToInterface(lo) unsupported in this environment: %v",
+			err,
+		)
 	}
 }

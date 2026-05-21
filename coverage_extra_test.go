@@ -46,7 +46,12 @@ func TestCallbacksRunMethods(t *testing.T) {
 	if _, err := cb.RunOnAccept(&fakeConn{}); !errors.Is(err, cbErr) {
 		t.Fatalf("RunOnAccept error = %v, want %v", err, cbErr)
 	}
-	if _, err := cb.RunOnAcceptTCP(&callbackTestTCPConn{}); !errors.Is(err, cbErr) {
+	if _, err := cb.RunOnAcceptTCP(
+		&callbackTestTCPConn{},
+	); !errors.Is(
+		err,
+		cbErr,
+	) {
 		t.Fatalf("RunOnAcceptTCP error = %v, want %v", err, cbErr)
 	}
 }
@@ -58,7 +63,10 @@ func TestCallbackPacketWrappers(t *testing.T) {
 		BeforeClose: func() { calls++ },
 	})
 	if GetWrapped(wrapped) != pc {
-		t.Fatalf("PacketConnWithCallbacks wrapped = %T, want fake packet conn", GetWrapped(wrapped))
+		t.Fatalf(
+			"PacketConnWithCallbacks wrapped = %T, want fake packet conn",
+			GetWrapped(wrapped),
+		)
 	}
 	if err := wrapped.Close(); err != nil {
 		t.Fatalf("packet Close error = %v", err)
@@ -73,7 +81,10 @@ func TestCallbackPacketWrappers(t *testing.T) {
 		BeforeClose: func() { calls++ },
 	})
 	if GetWrapped(netWrapped) != npc {
-		t.Fatalf("NetPacketConnWithCallbacks wrapped = %T, want fake net packet conn", GetWrapped(netWrapped))
+		t.Fatalf(
+			"NetPacketConnWithCallbacks wrapped = %T, want fake net packet conn",
+			GetWrapped(netWrapped),
+		)
 	}
 	if err := netWrapped.Close(); err != nil {
 		t.Fatalf("net packet Close error = %v", err)
@@ -88,19 +99,28 @@ func TestCallbackWrapperAccessors(t *testing.T) {
 	defer c2.Close()
 	wrappedConn := ConnWithCallbacks(c1, &Callbacks{})
 	if GetWrapped(wrappedConn) != c1 {
-		t.Fatalf("callback conn wrapped = %T, want original conn", GetWrapped(wrappedConn))
+		t.Fatalf(
+			"callback conn wrapped = %T, want original conn",
+			GetWrapped(wrappedConn),
+		)
 	}
 
 	ln := newCallbackTestListener()
 	wrappedListener := ListenerWithCallbacks(ln, &Callbacks{})
 	if GetWrapped(wrappedListener) != ln {
-		t.Fatalf("callback listener wrapped = %T, want original listener", GetWrapped(wrappedListener))
+		t.Fatalf(
+			"callback listener wrapped = %T, want original listener",
+			GetWrapped(wrappedListener),
+		)
 	}
 
 	tcpLn := newCallbackTestTCPListener()
 	wrappedTCPListener := TCPListenerWithCallbacks(tcpLn, &Callbacks{})
 	if GetWrapped(wrappedTCPListener) != tcpLn {
-		t.Fatalf("callback TCP listener wrapped = %T, want original listener", GetWrapped(wrappedTCPListener))
+		t.Fatalf(
+			"callback TCP listener wrapped = %T, want original listener",
+			GetWrapped(wrappedTCPListener),
+		)
 	}
 
 	tcpConn := TCPConnWithCallbacks(&callbackTestTCPConn{}, &Callbacks{})
@@ -122,7 +142,10 @@ func TestCallbackWrapperAccessors(t *testing.T) {
 	if packetConn.(*CallbackPacketConn).callbacks() == nil {
 		t.Fatal("callback packet conn callbacks returned nil")
 	}
-	netPacketConn := NetPacketConnWithCallbacks(&fakeNetPacketConn{}, &Callbacks{})
+	netPacketConn := NetPacketConnWithCallbacks(
+		&fakeNetPacketConn{},
+		&Callbacks{},
+	)
 	if netPacketConn.(*CallbackNetPacketConn).callbacks() == nil {
 		t.Fatal("callback net packet conn callbacks returned nil")
 	}
@@ -142,7 +165,10 @@ func TestCallbackWrapperBranchVariants(t *testing.T) {
 
 	wrappedConn := ConnWithCallbacks(&fakeFullUDPConn{}, cb)
 	if _, ok := wrappedConn.(*callbackFullUDPConn); !ok {
-		t.Fatalf("ConnWithCallbacks full UDP = %T, want callbackFullUDPConn", wrappedConn)
+		t.Fatalf(
+			"ConnWithCallbacks full UDP = %T, want callbackFullUDPConn",
+			wrappedConn,
+		)
 	}
 	if again := ConnWithCallbacks(wrappedConn, cb); again != wrappedConn {
 		t.Fatal("ConnWithCallbacks rewrapped callback wrapper")
@@ -154,15 +180,24 @@ func TestCallbackWrapperBranchVariants(t *testing.T) {
 
 	wrappedPacket := PacketConnWithCallbacks(&fakeFullUDPConn{}, nil)
 	if _, ok := wrappedPacket.(*callbackFullUDPConn); !ok {
-		t.Fatalf("PacketConnWithCallbacks full UDP = %T, want callbackFullUDPConn", wrappedPacket)
+		t.Fatalf(
+			"PacketConnWithCallbacks full UDP = %T, want callbackFullUDPConn",
+			wrappedPacket,
+		)
 	}
-	if again := PacketConnWithCallbacks(wrappedPacket, cb); again != wrappedPacket {
+	if again := PacketConnWithCallbacks(
+		wrappedPacket,
+		cb,
+	); again != wrappedPacket {
 		t.Fatal("PacketConnWithCallbacks rewrapped callback wrapper")
 	}
 
 	wrappedUDP := UDPConnWithCallbacks(&fakeFullUDPConn{}, nil)
 	if _, ok := wrappedUDP.(*callbackFullUDPConn); !ok {
-		t.Fatalf("UDPConnWithCallbacks full UDP = %T, want callbackFullUDPConn", wrappedUDP)
+		t.Fatalf(
+			"UDPConnWithCallbacks full UDP = %T, want callbackFullUDPConn",
+			wrappedUDP,
+		)
 	}
 	if again := UDPConnWithCallbacks(wrappedUDP, cb); again != wrappedUDP {
 		t.Fatal("UDPConnWithCallbacks rewrapped callback wrapper")
@@ -170,21 +205,32 @@ func TestCallbackWrapperBranchVariants(t *testing.T) {
 
 	wrappedNetPacket := NetPacketConnWithCallbacks(&fakeUDPConn{}, nil)
 	if _, ok := wrappedNetPacket.(*CallbackUDPConn); !ok {
-		t.Fatalf("NetPacketConnWithCallbacks UDP = %T, want CallbackUDPConn", wrappedNetPacket)
+		t.Fatalf(
+			"NetPacketConnWithCallbacks UDP = %T, want CallbackUDPConn",
+			wrappedNetPacket,
+		)
 	}
-	if again := NetPacketConnWithCallbacks(wrappedNetPacket, cb); again != wrappedNetPacket {
+	if again := NetPacketConnWithCallbacks(
+		wrappedNetPacket,
+		cb,
+	); again != wrappedNetPacket {
 		t.Fatal("NetPacketConnWithCallbacks rewrapped callback wrapper")
 	}
 }
 
 func TestCallbackSetNilAndErrorBranches(t *testing.T) {
 	var nilSet *callbackSet
-	nilSet.add(&Callbacks{BeforeClose: func() { t.Fatal("nil set called callback") }})
+	nilSet.add(
+		&Callbacks{BeforeClose: func() { t.Fatal("nil set called callback") }},
+	)
 	nilSet.runBeforeClose()
 	if conn, err := nilSet.runOnAccept(&fakeConn{}); err != nil || conn == nil {
 		t.Fatalf("nil runOnAccept = %v, %v, want conn nil", conn, err)
 	}
-	if conn, err := nilSet.runOnAcceptTCP(&callbackTestTCPConn{}); err != nil || conn == nil {
+	if conn, err := nilSet.runOnAcceptTCP(
+		&callbackTestTCPConn{},
+	); err != nil ||
+		conn == nil {
 		t.Fatalf("nil runOnAcceptTCP = %v, %v, want conn nil", conn, err)
 	}
 
@@ -193,16 +239,32 @@ func TestCallbackSetNilAndErrorBranches(t *testing.T) {
 	set := newCallbackSet(&Callbacks{
 		OnAccept: func(net.Conn) (net.Conn, error) { return conn, acceptErr },
 	})
-	if got, err := set.runOnAccept(conn); !errors.Is(err, acceptErr) || got != nil || conn.closed != 1 {
-		t.Fatalf("runOnAccept error branch = %v, %v, closed=%d", got, err, conn.closed)
+	if got, err := set.runOnAccept(
+		conn,
+	); !errors.Is(err, acceptErr) || got != nil ||
+		conn.closed != 1 {
+		t.Fatalf(
+			"runOnAccept error branch = %v, %v, closed=%d",
+			got,
+			err,
+			conn.closed,
+		)
 	}
 
 	tcpConn := &callbackTestTCPConn{}
 	set = newCallbackSet(&Callbacks{
 		OnAcceptTCP: func(TCPConn) (TCPConn, error) { return tcpConn, acceptErr },
 	})
-	if got, err := set.runOnAcceptTCP(tcpConn); !errors.Is(err, acceptErr) || got != nil || tcpConn.closeCount.Load() != 1 {
-		t.Fatalf("runOnAcceptTCP error branch = %v, %v, closed=%d", got, err, tcpConn.closeCount.Load())
+	if got, err := set.runOnAcceptTCP(
+		tcpConn,
+	); !errors.Is(err, acceptErr) || got != nil ||
+		tcpConn.closeCount.Load() != 1 {
+		t.Fatalf(
+			"runOnAcceptTCP error branch = %v, %v, closed=%d",
+			got,
+			err,
+			tcpConn.closeCount.Load(),
+		)
 	}
 }
 
@@ -224,7 +286,10 @@ func TestInterfacesAndWrapperHelpers(t *testing.T) {
 		native[0].Index() != 7 ||
 		native[0].Name() != "test0" ||
 		native[0].MTU() != 1500 ||
-		!reflect.DeepEqual(native[0].HardwareAddr(), net.HardwareAddr{1, 2, 3, 4, 5, 6}) ||
+		!reflect.DeepEqual(
+			native[0].HardwareAddr(),
+			net.HardwareAddr{1, 2, 3, 4, 5, 6},
+		) ||
 		native[0].Flags() != net.FlagUp {
 		t.Fatalf("native interface accessors returned unexpected values")
 	}
@@ -239,14 +304,25 @@ func TestInterfacesAndWrapperHelpers(t *testing.T) {
 	}
 	if lit.ID() != "literal" || lit.Index() != 3 || lit.Name() != "lit0" ||
 		lit.MTU() != 1400 || lit.Flags() != net.FlagBroadcast ||
-		!reflect.DeepEqual(lit.HardwareAddr(), net.HardwareAddr{6, 5, 4, 3, 2, 1}) {
+		!reflect.DeepEqual(
+			lit.HardwareAddr(),
+			net.HardwareAddr{6, 5, 4, 3, 2, 1},
+		) {
 		t.Fatalf("literal interface accessors returned unexpected values")
 	}
 	if addrs, err := lit.Addrs(); err != nil || len(addrs) != 0 {
-		t.Fatalf("literal Addrs = %v, %v, want empty nil-error slice", addrs, err)
+		t.Fatalf(
+			"literal Addrs = %v, %v, want empty nil-error slice",
+			addrs,
+			err,
+		)
 	}
 	if addrs, err := lit.MulticastAddrs(); err != nil || len(addrs) != 0 {
-		t.Fatalf("literal MulticastAddrs = %v, %v, want empty nil-error slice", addrs, err)
+		t.Fatalf(
+			"literal MulticastAddrs = %v, %v, want empty nil-error slice",
+			addrs,
+			err,
+		)
 	}
 	ifaces, err := net.Interfaces()
 	if err == nil && len(ifaces) > 0 {
@@ -284,10 +360,18 @@ func TestHelperWrapperRecursion(t *testing.T) {
 	}
 
 	sysErr := errors.New("syscall error")
-	if _, err := SyscallConn(&syscallConnProvider{err: sysErr}); !errors.Is(err, sysErr) {
+	if _, err := SyscallConn(
+		&syscallConnProvider{err: sysErr},
+	); !errors.Is(
+		err,
+		sysErr,
+	) {
 		t.Fatalf("SyscallConn error = %v, want %v", err, sysErr)
 	}
-	if rc, err := SyscallConn(&testWrapper{wrapped: &syscallConnProvider{}}); err != nil || rc != nil {
+	if rc, err := SyscallConn(
+		&testWrapper{wrapped: &syscallConnProvider{}},
+	); err != nil ||
+		rc != nil {
 		t.Fatalf("SyscallConn wrapped = %v, %v, want nil nil", rc, err)
 	}
 	if rc, err := SyscallConn(nil); err != nil || rc != nil {
@@ -298,7 +382,10 @@ func TestHelperWrapperRecursion(t *testing.T) {
 	if _, err := File(&fileProvider{err: fileErr}); !errors.Is(err, fileErr) {
 		t.Fatalf("File error = %v, want %v", err, fileErr)
 	}
-	if f, err := File(&testWrapper{wrapped: &fileProvider{}}); err != nil || f != nil {
+	if f, err := File(
+		&testWrapper{wrapped: &fileProvider{}},
+	); err != nil ||
+		f != nil {
 		t.Fatalf("File wrapped = %v, %v, want nil nil", f, err)
 	}
 	if f, err := File(nil); err != nil || f != nil {
@@ -320,10 +407,14 @@ func TestHelperWrapperRecursion(t *testing.T) {
 }
 
 func TestNetworkAndCloseHelpers(t *testing.T) {
-	if NetworkFromConn(&fakeConn{local: &NetAddr{Net: "local", Addr: "l"}}) != "local" {
+	if NetworkFromConn(
+		&fakeConn{local: &NetAddr{Net: "local", Addr: "l"}},
+	) != "local" {
 		t.Fatalf("NetworkFromConn should prefer local addr")
 	}
-	if NetworkFromConn(&fakeConn{remote: &NetAddr{Net: "remote", Addr: "r"}}) != "remote" {
+	if NetworkFromConn(
+		&fakeConn{remote: &NetAddr{Net: "remote", Addr: "r"}},
+	) != "remote" {
 		t.Fatalf("NetworkFromConn should use remote addr when local is nil")
 	}
 	if NetworkFromConn(&fakePacketConn{}) != "udp" {
@@ -352,26 +443,43 @@ func TestNetworkAndCloseHelpers(t *testing.T) {
 func TestDefaultInterfaceBranches(t *testing.T) {
 	ctx := context.Background()
 	dialErr := errors.New("dial error")
-	if _, err := DefaultInterface(ctx, &defaultIfaceNetwork{dialErr: dialErr}); !errors.Is(err, dialErr) {
+	if _, err := DefaultInterface(
+		ctx,
+		&defaultIfaceNetwork{dialErr: dialErr},
+	); !errors.Is(
+		err,
+		dialErr,
+	) {
 		t.Fatalf("DefaultInterface dial error = %v, want %v", err, dialErr)
 	}
 
 	if _, err := DefaultInterface(ctx, &defaultIfaceNetwork{
 		conn: &fakeConn{local: &NetAddr{Net: "tcp", Addr: "not udp"}},
 	}); !errors.Is(err, ErrNoDefaultInterface) {
-		t.Fatalf("DefaultInterface non-UDP local error = %v, want ErrNoDefaultInterface", err)
+		t.Fatalf(
+			"DefaultInterface non-UDP local error = %v, want ErrNoDefaultInterface",
+			err,
+		)
 	}
 
 	ifaceErr := errors.New("interfaces error")
 	if _, err := DefaultInterface(ctx, &defaultIfaceNetwork{
-		conn:      &fakeConn{local: &net.UDPAddr{IP: net.ParseIP("10.0.0.4"), Port: 12}},
+		conn: &fakeConn{
+			local: &net.UDPAddr{IP: net.ParseIP("10.0.0.4"), Port: 12},
+		},
 		ifacesErr: ifaceErr,
 	}); !errors.Is(err, ifaceErr) {
-		t.Fatalf("DefaultInterface interfaces error = %v, want %v", err, ifaceErr)
+		t.Fatalf(
+			"DefaultInterface interfaces error = %v, want %v",
+			err,
+			ifaceErr,
+		)
 	}
 
 	got, err := DefaultInterface(ctx, &defaultIfaceNetwork{
-		conn: &fakeConn{local: &net.UDPAddr{IP: net.ParseIP("10.0.0.4"), Port: 12}},
+		conn: &fakeConn{
+			local: &net.UDPAddr{IP: net.ParseIP("10.0.0.4"), Port: 12},
+		},
 		ifaces: []NetworkInterface{&LiteralInterface{
 			IDVal: "match",
 			AddrsVal: []net.Addr{&net.IPNet{
@@ -461,12 +569,18 @@ func TestPipeAndPacketHelpers(t *testing.T) {
 	}
 
 	writeErr := errors.New("write packet error")
-	if n, err := CopyPacket(&recordingPacketConn{err: writeErr}, &scriptedPacketConn{
-		packets: []packetScriptItem{{
-			data: []byte("x"),
-			addr: &NetAddr{Net: "udp", Addr: "127.0.0.1:1"},
-		}},
-	}, 8, nil); !errors.Is(err, writeErr) || n != 0 {
+	if n, err := CopyPacket(
+		&recordingPacketConn{err: writeErr},
+		&scriptedPacketConn{
+			packets: []packetScriptItem{{
+				data: []byte("x"),
+				addr: &NetAddr{Net: "udp", Addr: "127.0.0.1:1"},
+			}},
+		},
+		8,
+		nil,
+	); !errors.Is(err, writeErr) ||
+		n != 0 {
 		t.Fatalf("CopyPacket write error = %d, %v, want 0 writeErr", n, err)
 	}
 }
@@ -481,18 +595,37 @@ func TestRejectNetworkExtraBranches(t *testing.T) {
 		t.Fatalf("Interfaces = %v, %v, want empty nil-error slice", ifs, err)
 	}
 	if addrs, err := n.InterfaceAddrs(); err != nil || len(addrs) != 0 {
-		t.Fatalf("InterfaceAddrs = %v, %v, want empty nil-error slice", addrs, err)
+		t.Fatalf(
+			"InterfaceAddrs = %v, %v, want empty nil-error slice",
+			addrs,
+			err,
+		)
 	}
-	if addrs, err := n.InterfaceMulticastAddrs(); err != nil || len(addrs) != 0 {
-		t.Fatalf("InterfaceMulticastAddrs = %v, %v, want empty nil-error slice", addrs, err)
+	if addrs, err := n.InterfaceMulticastAddrs(); err != nil ||
+		len(addrs) != 0 {
+		t.Fatalf(
+			"InterfaceMulticastAddrs = %v, %v, want empty nil-error slice",
+			addrs,
+			err,
+		)
 	}
-	if _, err := n.ListenPacketConfig(ctx, nil, "udp", "127.0.0.1:1"); err == nil {
+	if _, err := n.ListenPacketConfig(
+		ctx,
+		nil,
+		"udp",
+		"127.0.0.1:1",
+	); err == nil {
 		t.Fatal("ListenPacketConfig returned nil error")
 	}
 	if _, err := n.ListenUDPConfig(ctx, nil, "udp", "127.0.0.1:1"); err == nil {
 		t.Fatal("ListenUDPConfig returned nil error")
 	}
-	if _, err := n.ListenMulticastUDP(ctx, "udp", "224.0.0.1:1", MulticastOptions{}); err == nil {
+	if _, err := n.ListenMulticastUDP(
+		ctx,
+		"udp",
+		"224.0.0.1:1",
+		MulticastOptions{},
+	); err == nil {
 		t.Fatal("ListenMulticastUDP returned nil error")
 	}
 	if _, err := n.LookupIP(ctx, "ip", "example.invalid"); err == nil {
@@ -545,11 +678,22 @@ func TestResolverCfgAndGoDebugHelpers(t *testing.T) {
 			return nil, dialErr
 		},
 	}.Build()
-	if _, err := resolver.Dial(context.Background(), "udp", "ignored:53"); !errors.Is(err, dialErr) {
+	if _, err := resolver.Dial(
+		context.Background(),
+		"udp",
+		"ignored:53",
+	); !errors.Is(
+		err,
+		dialErr,
+	) {
 		t.Fatalf("resolver Dial error = %v, want %v", err, dialErr)
 	}
 	if dialNetwork != "tcp" || dialAddress != "9.9.9.9:53" {
-		t.Fatalf("resolver Dial target = %s/%s, want tcp/9.9.9.9:53", dialNetwork, dialAddress)
+		t.Fatalf(
+			"resolver Dial target = %s/%s, want tcp/9.9.9.9:53",
+			dialNetwork,
+			dialAddress,
+		)
 	}
 	dialNetwork, dialAddress = "", ""
 	resolver = ResolverCfg{
@@ -559,16 +703,34 @@ func TestResolverCfgAndGoDebugHelpers(t *testing.T) {
 			return nil, dialErr
 		},
 	}.Build()
-	if _, err := resolver.Dial(context.Background(), "udp", "1.1.1.1:53"); !errors.Is(err, dialErr) {
-		t.Fatalf("resolver Dial without server error = %v, want %v", err, dialErr)
+	if _, err := resolver.Dial(
+		context.Background(),
+		"udp",
+		"1.1.1.1:53",
+	); !errors.Is(
+		err,
+		dialErr,
+	) {
+		t.Fatalf(
+			"resolver Dial without server error = %v, want %v",
+			err,
+			dialErr,
+		)
 	}
 	if dialNetwork != "udp" || dialAddress != "1.1.1.1:53" {
-		t.Fatalf("resolver Dial without server target = %s/%s", dialNetwork, dialAddress)
+		t.Fatalf(
+			"resolver Dial without server target = %s/%s",
+			dialNetwork,
+			dialAddress,
+		)
 	}
 	if port, err := LookupPortOffline("udp", "ntp"); err != nil || port != 123 {
 		t.Fatalf("LookupPortOffline udp/ntp = %d, %v, want 123 nil", port, err)
 	}
-	if _, err := LookupPortOffline("tcp", "definitely-unknown-service"); err == nil {
+	if _, err := LookupPortOffline(
+		"tcp",
+		"definitely-unknown-service",
+	); err == nil {
 		t.Fatal("LookupPortOffline unknown service returned nil error")
 	}
 
@@ -628,10 +790,19 @@ func TestNativeFilteredBranches(t *testing.T) {
 	if _, err := n.LookupNS(ctx, "example.invalid"); err == nil {
 		t.Fatal("filtered LookupNS returned nil error")
 	}
-	if _, _, err := n.LookupSRV(ctx, "svc", "tcp", "example.invalid"); err == nil {
+	if _, _, err := n.LookupSRV(
+		ctx,
+		"svc",
+		"tcp",
+		"example.invalid",
+	); err == nil {
 		t.Fatal("filtered LookupSRV returned nil error")
 	}
-	if _, _, err := n.LookupNetAddr(ctx, "tcp", "example.invalid:80"); err == nil {
+	if _, _, err := n.LookupNetAddr(
+		ctx,
+		"tcp",
+		"example.invalid:80",
+	); err == nil {
 		t.Fatal("filtered LookupNetAddr returned nil error")
 	}
 	if _, err := n.Dial(ctx, "tcp", "127.0.0.1:1"); err == nil {
@@ -641,11 +812,20 @@ func TestNativeFilteredBranches(t *testing.T) {
 		t.Fatal("filtered Listen returned nil error")
 	}
 
-	if err := (&NativeNetwork{}).doFilter("tcp", "127.0.0.1:1", actionDial); err != nil {
+	if err := (&NativeNetwork{}).doFilter(
+		"tcp",
+		"127.0.0.1:1",
+		actionDial,
+	); err != nil {
 		t.Fatalf("nil filter doFilter = %v, want nil", err)
 	}
-	if got := (nativeAddr{network: "tcp", address: "host:1"}); got.Network() != "tcp" || got.String() != "host:1" {
-		t.Fatalf("nativeAddr accessors returned %q/%q", got.Network(), got.String())
+	if got := (nativeAddr{network: "tcp", address: "host:1"}); got.Network() != "tcp" ||
+		got.String() != "host:1" {
+		t.Fatalf(
+			"nativeAddr accessors returned %q/%q",
+			got.Network(),
+			got.String(),
+		)
 	}
 	if nativePickIP(nil, 4) != nil {
 		t.Fatal("nativePickIP(nil) should return nil")
@@ -653,10 +833,17 @@ func TestNativeFilteredBranches(t *testing.T) {
 	if DefaultNetwork(nil) == nil {
 		t.Fatal("DefaultNetwork returned nil")
 	}
-	if _, err := n.ListenMulticastUDP(ctx, "udp4", "", MulticastOptions{}); err == nil {
+	if _, err := n.ListenMulticastUDP(
+		ctx,
+		"udp4",
+		"",
+		MulticastOptions{},
+	); err == nil {
 		t.Fatal("filtered ListenMulticastUDP udp4 returned nil error")
 	}
-	if flags := nativeIPv6ControlFlags(ControlDst | ControlInterface); flags == 0 {
+	if flags := nativeIPv6ControlFlags(
+		ControlDst | ControlInterface,
+	); flags == 0 {
 		t.Fatal("nativeIPv6ControlFlags returned zero for both flags")
 	}
 	if cm := controlMessageFromNative(nil); cm != (ControlMessage{}) {
@@ -665,19 +852,41 @@ func TestNativeFilteredBranches(t *testing.T) {
 	if native := controlMessageToNative(ControlMessage{}); native != nil {
 		t.Fatalf("controlMessageToNative(empty) = %#v, want nil", native)
 	}
-	if native := controlMessageToNative(ControlMessage{IfIndex: 123}); native == nil || native.IfIndex != 123 {
-		t.Fatalf("controlMessageToNative(IfIndex) = %#v, want index 123", native)
+	if native := controlMessageToNative(
+		ControlMessage{IfIndex: 123},
+	); native == nil ||
+		native.IfIndex != 123 {
+		t.Fatalf(
+			"controlMessageToNative(IfIndex) = %#v, want index 123",
+			native,
+		)
 	}
-	if got := addrIP(&net.IPAddr{IP: net.ParseIP("192.0.2.1")}); !got.Equal(net.ParseIP("192.0.2.1")) {
+	if got := addrIP(
+		&net.IPAddr{IP: net.ParseIP("192.0.2.1")},
+	); !got.Equal(
+		net.ParseIP("192.0.2.1"),
+	) {
 		t.Fatalf("addrIP(IPAddr) = %v", got)
 	}
-	if got := addrIP(&net.UDPAddr{IP: net.ParseIP("192.0.2.2")}); !got.Equal(net.ParseIP("192.0.2.2")) {
+	if got := addrIP(
+		&net.UDPAddr{IP: net.ParseIP("192.0.2.2")},
+	); !got.Equal(
+		net.ParseIP("192.0.2.2"),
+	) {
 		t.Fatalf("addrIP(UDPAddr) = %v", got)
 	}
-	if got := addrIP(&net.IPNet{IP: net.ParseIP("192.0.2.3")}); !got.Equal(net.ParseIP("192.0.2.3")) {
+	if got := addrIP(
+		&net.IPNet{IP: net.ParseIP("192.0.2.3")},
+	); !got.Equal(
+		net.ParseIP("192.0.2.3"),
+	) {
 		t.Fatalf("addrIP(IPNet) = %v", got)
 	}
-	if got := addrIP(&NetAddr{Net: "ip", Addr: "192.0.2.4%eth0"}); !got.Equal(net.ParseIP("192.0.2.4")) {
+	if got := addrIP(
+		&NetAddr{Net: "ip", Addr: "192.0.2.4%eth0"},
+	); !got.Equal(
+		net.ParseIP("192.0.2.4"),
+	) {
 		t.Fatalf("addrIP(zone addr) = %v", got)
 	}
 	if _, err := nativeNetInterface(&LiteralInterface{}); err == nil {
@@ -725,19 +934,41 @@ func TestNativeUnprivilegedBranches(t *testing.T) {
 		}
 	}
 
-	if hosts, err := n.LookupHost(ctx, "localhost"); err != nil || len(hosts) == 0 {
+	if hosts, err := n.LookupHost(
+		ctx,
+		"localhost",
+	); err != nil ||
+		len(hosts) == 0 {
 		t.Fatalf("LookupHost(localhost) = %v, %v", hosts, err)
 	}
-	if ips, err := n.LookupIP(ctx, "ip", "localhost"); err != nil || len(ips) == 0 {
+	if ips, err := n.LookupIP(
+		ctx,
+		"ip",
+		"localhost",
+	); err != nil ||
+		len(ips) == 0 {
 		t.Fatalf("LookupIP(localhost) = %v, %v", ips, err)
 	}
-	if addrs, err := n.LookupIPAddr(ctx, "localhost"); err != nil || len(addrs) == 0 {
+	if addrs, err := n.LookupIPAddr(
+		ctx,
+		"localhost",
+	); err != nil ||
+		len(addrs) == 0 {
 		t.Fatalf("LookupIPAddr(localhost) = %v, %v", addrs, err)
 	}
-	if ips, err := n.LookupNetIP(ctx, "ip", "localhost"); err != nil || len(ips) == 0 {
+	if ips, err := n.LookupNetIP(
+		ctx,
+		"ip",
+		"localhost",
+	); err != nil ||
+		len(ips) == 0 {
 		t.Fatalf("LookupNetIP(localhost) = %v, %v", ips, err)
 	}
-	if names, err := n.LookupAddr(ctx, "127.0.0.1"); err != nil || len(names) == 0 {
+	if names, err := n.LookupAddr(
+		ctx,
+		"127.0.0.1",
+	); err != nil ||
+		len(names) == 0 {
 		t.Fatalf("LookupAddr(127.0.0.1) = %v, %v", names, err)
 	}
 	_, _ = n.LookupCNAME(ctx, "localhost")
@@ -769,7 +1000,12 @@ func TestNativeUnprivilegedBranches(t *testing.T) {
 	}
 	_ = udpCfg.Close()
 
-	dialedUDP, err := n.DialUDP(ctx, "udp4", "127.0.0.1:0", udp.LocalAddr().String())
+	dialedUDP, err := n.DialUDP(
+		ctx,
+		"udp4",
+		"127.0.0.1:0",
+		udp.LocalAddr().String(),
+	)
 	if err != nil {
 		t.Fatalf("DialUDP error = %v", err)
 	}
@@ -808,7 +1044,11 @@ func TestLoopbackLookupAndStateBranches(t *testing.T) {
 		t.Fatalf("initial IsUp = %v, %v, want true nil", up, err)
 	}
 	if addrs, err := ln.InterfaceAddrs(); err != nil || len(addrs) == 0 {
-		t.Fatalf("InterfaceAddrs = %v, %v, want non-empty nil-error slice", addrs, err)
+		t.Fatalf(
+			"InterfaceAddrs = %v, %v, want non-empty nil-error slice",
+			addrs,
+			err,
+		)
 	}
 	if _, err := ln.InterfacesByIndex(2); err == nil {
 		t.Fatal("InterfacesByIndex(2) returned nil error")
@@ -826,7 +1066,11 @@ func TestLoopbackLookupAndStateBranches(t *testing.T) {
 	if _, err := ln.LookupTXT(ctx, "example.invalid"); err == nil {
 		t.Fatal("LookupTXT(non-local) returned nil error")
 	}
-	if names, err := ln.LookupAddr(ctx, "127.0.0.1"); err != nil || len(names) != 1 || names[0] != "localhost" {
+	if names, err := ln.LookupAddr(
+		ctx,
+		"127.0.0.1",
+	); err != nil || len(names) != 1 ||
+		names[0] != "localhost" {
 		t.Fatalf("LookupAddr(local) = %v, %v, want localhost nil", names, err)
 	}
 	if _, err := ln.LookupAddr(ctx, "192.0.2.1"); err == nil {
@@ -835,28 +1079,63 @@ func TestLoopbackLookupAndStateBranches(t *testing.T) {
 	if _, err := ln.LookupCNAME(ctx, "localhost"); err == nil {
 		t.Fatal("LookupCNAME returned nil error")
 	}
-	if port, err := ln.LookupPort(ctx, "tcp", "http"); err != nil || port != 80 {
+	if port, err := ln.LookupPort(
+		ctx,
+		"tcp",
+		"http",
+	); err != nil ||
+		port != 80 {
 		t.Fatalf("LookupPort(http) = %d, %v, want 80 nil", port, err)
 	}
-	if ips, err := ln.LookupIP(ctx, "ip4", "localhost"); err != nil || len(ips) != 1 || ips[0].To4() == nil {
+	if ips, err := ln.LookupIP(
+		ctx,
+		"ip4",
+		"localhost",
+	); err != nil || len(ips) != 1 ||
+		ips[0].To4() == nil {
 		t.Fatalf("LookupIP(ip4 localhost) = %v, %v, want IPv4 nil", ips, err)
 	}
-	if ips, err := ln.LookupIP(ctx, "ip6", "localhost"); err != nil || len(ips) != 1 || ips[0].To4() != nil {
+	if ips, err := ln.LookupIP(
+		ctx,
+		"ip6",
+		"localhost",
+	); err != nil || len(ips) != 1 ||
+		ips[0].To4() != nil {
 		t.Fatalf("LookupIP(ip6 localhost) = %v, %v, want IPv6 nil", ips, err)
 	}
-	if ips, err := ln.LookupIP(ctx, "ip", "localhost"); err != nil || len(ips) != 2 {
+	if ips, err := ln.LookupIP(
+		ctx,
+		"ip",
+		"localhost",
+	); err != nil ||
+		len(ips) != 2 {
 		t.Fatalf("LookupIP(ip localhost) = %v, %v, want two nil", ips, err)
 	}
 	if _, err := ln.LookupIP(ctx, "ip", "example.invalid"); err == nil {
 		t.Fatal("LookupIP(non-local) returned nil error")
 	}
-	if ips, err := ln.LookupNetIP(ctx, "ip4", "localhost"); err != nil || len(ips) != 1 || !ips[0].Is4() {
+	if ips, err := ln.LookupNetIP(
+		ctx,
+		"ip4",
+		"localhost",
+	); err != nil || len(ips) != 1 ||
+		!ips[0].Is4() {
 		t.Fatalf("LookupNetIP(ip4 localhost) = %v, %v, want IPv4 nil", ips, err)
 	}
-	if ips, err := ln.LookupNetIP(ctx, "ip6", "localhost"); err != nil || len(ips) != 1 {
+	if ips, err := ln.LookupNetIP(
+		ctx,
+		"ip6",
+		"localhost",
+	); err != nil ||
+		len(ips) != 1 {
 		t.Fatalf("LookupNetIP(ip6 localhost) = %v, %v, want one nil", ips, err)
 	}
-	if ips, err := ln.LookupNetIP(ctx, "ip", "localhost"); err != nil || len(ips) != 2 {
+	if ips, err := ln.LookupNetIP(
+		ctx,
+		"ip",
+		"localhost",
+	); err != nil ||
+		len(ips) != 2 {
 		t.Fatalf("LookupNetIP(ip localhost) = %v, %v, want two nil", ips, err)
 	}
 	if _, err := ln.LookupNetIP(ctx, "ip", "example.invalid"); err == nil {
@@ -865,8 +1144,16 @@ func TestLoopbackLookupAndStateBranches(t *testing.T) {
 	if _, err := ln.LookupNS(ctx, "localhost"); err == nil {
 		t.Fatal("LookupNS returned nil error")
 	}
-	if addrs, err := ln.LookupIPAddr(ctx, "localhost"); err != nil || len(addrs) != 2 {
-		t.Fatalf("LookupIPAddr(localhost) = %v, %v, want two addrs nil", addrs, err)
+	if addrs, err := ln.LookupIPAddr(
+		ctx,
+		"localhost",
+	); err != nil ||
+		len(addrs) != 2 {
+		t.Fatalf(
+			"LookupIPAddr(localhost) = %v, %v, want two addrs nil",
+			addrs,
+			err,
+		)
 	}
 	if _, err := ln.LookupIPAddr(ctx, "example.invalid"); err == nil {
 		t.Fatal("LookupIPAddr(non-local) returned nil error")
@@ -925,23 +1212,65 @@ func TestLoopbackHelperBranches(t *testing.T) {
 	if _, err := normalizeLoopbackHost("tcp4", "::1"); err == nil {
 		t.Fatal("normalizeLoopbackHost mismatched IPv6/tcp4 returned nil error")
 	}
-	if _, err := normalizeLoopbackHosts("tcp4", "127.0.0.1", "::1"); err == nil {
+	if _, err := normalizeLoopbackHosts(
+		"tcp4",
+		"127.0.0.1",
+		"::1",
+	); err == nil {
 		t.Fatal("normalizeLoopbackHosts mismatched families returned nil error")
 	}
-	if host := replaceNonLocalHostWithLocalhost("example.invalid", true); host != "localhost" {
+	if host := replaceNonLocalHostWithLocalhost(
+		"example.invalid",
+		true,
+	); host != "localhost" {
 		t.Fatalf("replaceNonLocalHostWithLocalhost = %q, want localhost", host)
 	}
-	if _, _, err := loopbackListenPrep("tcp", "example.invalid:80", false); err == nil {
-		t.Fatal("loopbackListenPrep non-local without AllowAnyHost returned nil error")
+	if _, _, err := loopbackListenPrep(
+		"tcp",
+		"example.invalid:80",
+		false,
+	); err == nil {
+		t.Fatal(
+			"loopbackListenPrep non-local without AllowAnyHost returned nil error",
+		)
 	}
-	if host, port, err := loopbackListenPrep("tcp", "example.invalid:http", true); err != nil || host != "127.0.0.1" || port == nil || *port != 80 {
-		t.Fatalf("loopbackListenPrep AllowAnyHost = %q, %v, %v, want 127.0.0.1 80 nil", host, port, err)
+	if host, port, err := loopbackListenPrep(
+		"tcp",
+		"example.invalid:http",
+		true,
+	); err != nil || host != "127.0.0.1" || port == nil ||
+		*port != 80 {
+		t.Fatalf(
+			"loopbackListenPrep AllowAnyHost = %q, %v, %v, want 127.0.0.1 80 nil",
+			host,
+			port,
+			err,
+		)
 	}
-	if _, _, _, err := loopbackDialPrep("tcp", "example.invalid:0", "localhost:http", false); err == nil {
-		t.Fatal("loopbackDialPrep non-local without AllowAnyHost returned nil error")
+	if _, _, _, err := loopbackDialPrep(
+		"tcp",
+		"example.invalid:0",
+		"localhost:http",
+		false,
+	); err == nil {
+		t.Fatal(
+			"loopbackDialPrep non-local without AllowAnyHost returned nil error",
+		)
 	}
-	if host, lport, rport, err := loopbackDialPrep("tcp", "example.invalid:http", "localhost:http", true); err != nil || host != "127.0.0.1" || lport == nil || *lport != 80 || rport != 80 {
-		t.Fatalf("loopbackDialPrep AllowAnyHost = %q, %v, %d, %v", host, lport, rport, err)
+	if host, lport, rport, err := loopbackDialPrep(
+		"tcp",
+		"example.invalid:http",
+		"localhost:http",
+		true,
+	); err != nil || host != "127.0.0.1" || lport == nil || *lport != 80 ||
+		rport != 80 {
+		t.Fatalf(
+			"loopbackDialPrep AllowAnyHost = %q, %v, %d, %v",
+			host,
+			lport,
+			rport,
+			err,
+		)
 	}
 	if timerForDeadline(time.Time{}) != nil {
 		t.Fatal("timerForDeadline zero returned non-nil channel")
@@ -968,22 +1297,48 @@ func TestLoopbackConfigAndMulticastHelpers(t *testing.T) {
 	_ = uc.Close()
 
 	group := &net.UDPAddr{IP: net.ParseIP("ff02::1"), Port: 5353, Zone: "lo"}
-	if ip, port, zone, err := multicastDestination(group); err != nil || !ip.Equal(group.IP) || port != 5353 || zone != "lo" {
+	if ip, port, zone, err := multicastDestination(
+		group,
+	); err != nil || !ip.Equal(group.IP) || port != 5353 ||
+		zone != "lo" {
 		t.Fatalf("multicastDestination UDP = %v/%d/%q/%v", ip, port, zone, err)
 	}
-	if ip, port, zone, err := multicastDestination(&net.IPAddr{IP: group.IP, Zone: "lo"}); err != nil || !ip.Equal(group.IP) || port != 0 || zone != "lo" {
+	if ip, port, zone, err := multicastDestination(
+		&net.IPAddr{IP: group.IP, Zone: "lo"},
+	); err != nil || !ip.Equal(group.IP) || port != 0 ||
+		zone != "lo" {
 		t.Fatalf("multicastDestination IP = %v/%d/%q/%v", ip, port, zone, err)
 	}
-	if ip, port, zone, err := multicastDestination(&NetAddr{Net: "udp6", Addr: "[ff02::1%lo]:domain"}); err != nil || !ip.Equal(group.IP) || port != 53 || zone != "lo" {
-		t.Fatalf("multicastDestination string = %v/%d/%q/%v", ip, port, zone, err)
+	if ip, port, zone, err := multicastDestination(
+		&NetAddr{Net: "udp6", Addr: "[ff02::1%lo]:domain"},
+	); err != nil || !ip.Equal(group.IP) || port != 53 ||
+		zone != "lo" {
+		t.Fatalf(
+			"multicastDestination string = %v/%d/%q/%v",
+			ip,
+			port,
+			zone,
+			err,
+		)
 	}
-	if _, _, _, err := multicastDestination(&net.UDPAddr{IP: net.IPv4(224, 0, 0, 1), Port: 1}); err == nil {
+	if _, _, _, err := multicastDestination(
+		&net.UDPAddr{IP: net.IPv4(224, 0, 0, 1), Port: 1},
+	); err == nil {
 		t.Fatal("multicastDestination IPv4 multicast returned nil error")
 	}
-	if got, err := loopbackMulticastKey(&LiteralInterface{IndexVal: 1, NameVal: loopbackMulticastIfName}, group, 5353); err != nil || got == "" {
+	if got, err := loopbackMulticastKey(
+		&LiteralInterface{IndexVal: 1, NameVal: loopbackMulticastIfName},
+		group,
+		5353,
+	); err != nil ||
+		got == "" {
 		t.Fatalf("loopbackMulticastKey = %q, %v", got, err)
 	}
-	if _, err := loopbackMulticastKey(&LiteralInterface{IndexVal: 2, NameVal: "bad0"}, group, 5353); err == nil {
+	if _, err := loopbackMulticastKey(
+		&LiteralInterface{IndexVal: 2, NameVal: "bad0"},
+		group,
+		5353,
+	); err == nil {
 		t.Fatal("loopbackMulticastKey bad interface returned nil error")
 	}
 	masked := maskControlMessage(ControlMessage{
@@ -999,7 +1354,11 @@ func TestLoopbackConfigAndMulticastHelpers(t *testing.T) {
 func TestLoopbackMulticastConnBehavior(t *testing.T) {
 	ctx := context.Background()
 	ln := NewLoopbackNetwok()
-	group := &net.UDPAddr{IP: net.ParseIP("ff02::1"), Port: 0, Zone: loopbackMulticastIfName}
+	group := &net.UDPAddr{
+		IP:   net.ParseIP("ff02::1"),
+		Port: 0,
+		Zone: loopbackMulticastIfName,
+	}
 
 	recv, err := ln.ListenMulticastUDP(ctx, "udp", "", MulticastOptions{
 		ControlFlags: ControlDst | ControlInterface,
@@ -1008,7 +1367,12 @@ func TestLoopbackMulticastConnBehavior(t *testing.T) {
 		t.Fatalf("ListenMulticastUDP recv error = %v", err)
 	}
 	defer recv.Close()
-	send, err := ln.ListenMulticastUDP(ctx, "udp6", "[::]:0", MulticastOptions{})
+	send, err := ln.ListenMulticastUDP(
+		ctx,
+		"udp6",
+		"[::]:0",
+		MulticastOptions{},
+	)
 	if err != nil {
 		t.Fatalf("ListenMulticastUDP send error = %v", err)
 	}
@@ -1032,13 +1396,28 @@ func TestLoopbackMulticastConnBehavior(t *testing.T) {
 		Port: recv.LocalAddr().(*net.UDPAddr).Port,
 		Zone: loopbackMulticastIfName,
 	}
-	if n, err := send.WriteToControl([]byte("hello"), ControlMessage{IfName: loopbackMulticastIfName}, dst); err != nil || n != 5 {
+	if n, err := send.WriteToControl(
+		[]byte("hello"),
+		ControlMessage{IfName: loopbackMulticastIfName},
+		dst,
+	); err != nil ||
+		n != 5 {
 		t.Fatalf("WriteToControl = %d, %v, want 5 nil", n, err)
 	}
 	buf := make([]byte, 16)
 	n, cm, from, err := recv.ReadFromControl(buf)
-	if err != nil || string(buf[:n]) != "hello" || cm.Dst == nil || cm.IfIndex != 1 || cm.IfName != loopbackMulticastIfName || from == nil {
-		t.Fatalf("ReadFromControl = %d %q %#v %v %v", n, string(buf[:n]), cm, from, err)
+	if err != nil || string(buf[:n]) != "hello" || cm.Dst == nil ||
+		cm.IfIndex != 1 ||
+		cm.IfName != loopbackMulticastIfName ||
+		from == nil {
+		t.Fatalf(
+			"ReadFromControl = %d %q %#v %v %v",
+			n,
+			string(buf[:n]),
+			cm,
+			from,
+			err,
+		)
 	}
 
 	if err := recv.SetControlMessage(ControlInterface, false); err != nil {
@@ -1059,7 +1438,9 @@ func TestLoopbackMulticastConnBehavior(t *testing.T) {
 		t.Fatal("WriteTo after LeaveGroup returned nil error")
 	}
 
-	if err := recv.SetReadDeadline(time.Now().Add(-time.Millisecond)); err != nil {
+	if err := recv.SetReadDeadline(
+		time.Now().Add(-time.Millisecond),
+	); err != nil {
 		t.Fatalf("expired SetReadDeadline error = %v", err)
 	}
 	if _, _, _, err := recv.ReadFromControl(buf); err == nil {
@@ -1079,13 +1460,23 @@ func TestLoopbackMulticastConnBehavior(t *testing.T) {
 		t.Fatal("ReadFrom closed conn returned nil error")
 	}
 
-	if _, err := ln.ListenMulticastUDP(ctx, "udp4", "", MulticastOptions{}); err == nil {
+	if _, err := ln.ListenMulticastUDP(
+		ctx,
+		"udp4",
+		"",
+		MulticastOptions{},
+	); err == nil {
 		t.Fatal("ListenMulticastUDP udp4 returned nil error")
 	}
 	if err := ln.Down(); err != nil {
 		t.Fatalf("Loopback Down error = %v", err)
 	}
-	if _, err := ln.ListenMulticastUDP(ctx, "udp", "", MulticastOptions{}); err == nil {
+	if _, err := ln.ListenMulticastUDP(
+		ctx,
+		"udp",
+		"",
+		MulticastOptions{},
+	); err == nil {
 		t.Fatal("ListenMulticastUDP while down returned nil error")
 	}
 }
@@ -1124,7 +1515,12 @@ func TestLoopbackPipeTCPExtraMethods(t *testing.T) {
 	n, err := server.WriteTo(&out)
 	<-readFromDone
 	if err != nil || n != 5 || out.String() != "hello" {
-		t.Fatalf("WriteTo after ReadFrom = %d, %q, %v, want 5 hello nil", n, out.String(), err)
+		t.Fatalf(
+			"WriteTo after ReadFrom = %d, %q, %v, want 5 hello nil",
+			n,
+			out.String(),
+			err,
+		)
 	}
 
 	if err := client.CloseRead(); err != nil {
@@ -1156,18 +1552,34 @@ func TestLoopbackPipeUDPExtraMethods(t *testing.T) {
 		t.Fatalf("SetDeadline error = %v", err)
 	}
 	dst := netip.MustParseAddrPort(c2.LocalAddr().String())
-	if n, err := c1.WriteToUDPAddrPort([]byte("one"), dst); err != nil || n != 3 {
+	if n, err := c1.WriteToUDPAddrPort(
+		[]byte("one"),
+		dst,
+	); err != nil ||
+		n != 3 {
 		t.Fatalf("WriteToUDPAddrPort = %d, %v, want 3 nil", n, err)
 	}
 	buf := make([]byte, 8)
-	if n, addr, err := c2.ReadFromUDPAddrPort(buf); err != nil || n != 3 || !addr.Addr().Is4() {
+	if n, addr, err := c2.ReadFromUDPAddrPort(
+		buf,
+	); err != nil || n != 3 ||
+		!addr.Addr().Is4() {
 		t.Fatalf("ReadFromUDPAddrPort = %d, %v, %v", n, addr, err)
 	}
 
-	if n, _, err := c1.WriteMsgUDPAddrPort([]byte("two"), nil, dst); err != nil || n != 3 {
+	if n, _, err := c1.WriteMsgUDPAddrPort(
+		[]byte("two"),
+		nil,
+		dst,
+	); err != nil ||
+		n != 3 {
 		t.Fatalf("WriteMsgUDPAddrPort = %d, %v, want 3 nil", n, err)
 	}
-	if n, _, _, addr, err := c2.ReadMsgUDPAddrPort(buf, nil); err != nil || n != 3 || !addr.Addr().Is4() {
+	if n, _, _, addr, err := c2.ReadMsgUDPAddrPort(
+		buf,
+		nil,
+	); err != nil || n != 3 ||
+		!addr.Addr().Is4() {
 		t.Fatalf("ReadMsgUDPAddrPort = %d, %v, %v", n, addr, err)
 	}
 
@@ -1175,10 +1587,19 @@ func TestLoopbackPipeUDPExtraMethods(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveUDPAddr error = %v", err)
 	}
-	if n, _, err := c1.WriteMsgUDP([]byte("tri"), nil, dstUDP); err != nil || n != 3 {
+	if n, _, err := c1.WriteMsgUDP(
+		[]byte("tri"),
+		nil,
+		dstUDP,
+	); err != nil ||
+		n != 3 {
 		t.Fatalf("WriteMsgUDP = %d, %v, want 3 nil", n, err)
 	}
-	if n, _, _, addr, err := c2.ReadMsgUDP(buf, nil); err != nil || n != 3 || addr == nil {
+	if n, _, _, addr, err := c2.ReadMsgUDP(
+		buf,
+		nil,
+	); err != nil || n != 3 ||
+		addr == nil {
 		t.Fatalf("ReadMsgUDP = %d, %v, %v", n, addr, err)
 	}
 }
@@ -1228,26 +1649,64 @@ func TestRouterAccessorsAndDelegatingBranches(t *testing.T) {
 	if err := r.Attach(1, NewLoopbackNetwok()); err != nil {
 		t.Fatalf("Attach loopback error = %v", err)
 	}
-	if ips, err := r.LookupIP(ctx, "ip4", "localhost"); err != nil || len(ips) != 1 {
+	if ips, err := r.LookupIP(
+		ctx,
+		"ip4",
+		"localhost",
+	); err != nil ||
+		len(ips) != 1 {
 		t.Fatalf("Router LookupIP via backend = %v, %v, want one nil", ips, err)
 	}
-	if addrs, err := r.LookupIPAddr(ctx, "localhost"); err != nil || len(addrs) != 2 {
-		t.Fatalf("Router LookupIPAddr via backend = %v, %v, want two nil", addrs, err)
+	if addrs, err := r.LookupIPAddr(
+		ctx,
+		"localhost",
+	); err != nil ||
+		len(addrs) != 2 {
+		t.Fatalf(
+			"Router LookupIPAddr via backend = %v, %v, want two nil",
+			addrs,
+			err,
+		)
 	}
-	if ips, err := r.LookupNetIP(ctx, "ip4", "localhost"); err != nil || len(ips) != 1 {
-		t.Fatalf("Router LookupNetIP via backend = %v, %v, want one nil", ips, err)
+	if ips, err := r.LookupNetIP(
+		ctx,
+		"ip4",
+		"localhost",
+	); err != nil ||
+		len(ips) != 1 {
+		t.Fatalf(
+			"Router LookupNetIP via backend = %v, %v, want one nil",
+			ips,
+			err,
+		)
 	}
-	if names, err := r.LookupAddr(ctx, "127.0.0.1"); err != nil || len(names) != 1 {
-		t.Fatalf("Router LookupAddr via backend = %v, %v, want one nil", names, err)
+	if names, err := r.LookupAddr(
+		ctx,
+		"127.0.0.1",
+	); err != nil ||
+		len(names) != 1 {
+		t.Fatalf(
+			"Router LookupAddr via backend = %v, %v, want one nil",
+			names,
+			err,
+		)
 	}
 	if _, err := r.LookupCNAME(ctx, "localhost"); err == nil {
 		t.Fatal("Router LookupCNAME via backend returned nil error")
 	}
 	if port, err := r.LookupPort(ctx, "tcp", "http"); err != nil || port != 80 {
-		t.Fatalf("Router LookupPort via backend = %d, %v, want 80 nil", port, err)
+		t.Fatalf(
+			"Router LookupPort via backend = %d, %v, want 80 nil",
+			port,
+			err,
+		)
 	}
 	if txt, err := r.LookupTXT(ctx, "localhost"); err != nil || len(txt) != 0 {
-		t.Fatalf("Router LookupTXT via backend = %v, %v, want empty nil", txt, err)
+		t.Fatalf(
+			"Router LookupTXT via backend = %v, %v, want empty nil",
+			txt,
+			err,
+		)
 	}
 	if _, err := r.LookupMX(ctx, "localhost"); err == nil {
 		t.Fatal("Router LookupMX via backend returned nil error")
@@ -1267,7 +1726,12 @@ func TestRouterAccessorsAndDelegatingBranches(t *testing.T) {
 	if _, err := r.InterfaceMulticastAddrs(); err != nil {
 		t.Fatalf("Router InterfaceMulticastAddrs error = %v", err)
 	}
-	if _, err := r.ListenPacketConfig(ctx, nil, "udp", "localhost:0"); err != nil {
+	if _, err := r.ListenPacketConfig(
+		ctx,
+		nil,
+		"udp",
+		"localhost:0",
+	); err != nil {
 		t.Fatalf("Router ListenPacketConfig error = %v", err)
 	}
 	if c, err := r.ListenUDPConfig(ctx, nil, "udp", "localhost:0"); err != nil {
@@ -1275,8 +1739,19 @@ func TestRouterAccessorsAndDelegatingBranches(t *testing.T) {
 	} else {
 		_ = c.Close()
 	}
-	if _, err := r.ListenMulticastUDP(ctx, "udp", "224.0.0.1:1", MulticastOptions{}); !errors.Is(err, ErrUnsupported) {
-		t.Fatalf("Router ListenMulticastUDP error = %v, want ErrUnsupported", err)
+	if _, err := r.ListenMulticastUDP(
+		ctx,
+		"udp",
+		"224.0.0.1:1",
+		MulticastOptions{},
+	); !errors.Is(
+		err,
+		ErrUnsupported,
+	) {
+		t.Fatalf(
+			"Router ListenMulticastUDP error = %v, want ErrUnsupported",
+			err,
+		)
 	}
 	if err := r.Down(); err != nil {
 		t.Fatalf("Router Down error = %v", err)
@@ -1302,10 +1777,16 @@ func TestRouterAccessorsAndDelegatingBranches(t *testing.T) {
 	if err := routerTimeout("dial", "tcp"); err == nil {
 		t.Fatal("routerTimeout returned nil")
 	}
-	if got := routerPickResolvedHost("tcp4", []string{"::1", "127.0.0.1"}); got != "127.0.0.1" {
+	if got := routerPickResolvedHost(
+		"tcp4",
+		[]string{"::1", "127.0.0.1"},
+	); got != "127.0.0.1" {
 		t.Fatalf("routerPickResolvedHost tcp4 = %q, want 127.0.0.1", got)
 	}
-	if got := routerPickResolvedHost("tcp6", []string{"127.0.0.1", "::1"}); got != "::1" {
+	if got := routerPickResolvedHost(
+		"tcp6",
+		[]string{"127.0.0.1", "::1"},
+	); got != "::1" {
 		t.Fatalf("routerPickResolvedHost tcp6 = %q, want ::1", got)
 	}
 }
@@ -1321,18 +1802,32 @@ func TestDetachedNetworkAccessorsAndDelegatingBranches(t *testing.T) {
 		t.Fatal("DetachedNetwork IsNative() = true, want false")
 	}
 	if up, err := n.IsUp(); err != nil || !up {
-		t.Fatalf("initial DetachedNetwork IsUp = %v, %v, want true nil", up, err)
+		t.Fatalf(
+			"initial DetachedNetwork IsUp = %v, %v, want true nil",
+			up,
+			err,
+		)
 	}
 	if _, err := n.DialUDP(ctx, "udp", "", "127.0.0.1:1"); err == nil {
 		t.Fatal("DetachedNetwork DialUDP returned nil error")
 	}
-	if _, err := n.ListenPacketConfig(ctx, nil, "udp", "127.0.0.1:1"); err == nil {
+	if _, err := n.ListenPacketConfig(
+		ctx,
+		nil,
+		"udp",
+		"127.0.0.1:1",
+	); err == nil {
 		t.Fatal("DetachedNetwork ListenPacketConfig returned nil error")
 	}
 	if _, err := n.ListenUDPConfig(ctx, nil, "udp", "127.0.0.1:1"); err == nil {
 		t.Fatal("DetachedNetwork ListenUDPConfig returned nil error")
 	}
-	if _, err := n.ListenMulticastUDP(ctx, "udp", "224.0.0.1:1", MulticastOptions{}); err == nil {
+	if _, err := n.ListenMulticastUDP(
+		ctx,
+		"udp",
+		"224.0.0.1:1",
+		MulticastOptions{},
+	); err == nil {
 		t.Fatal("DetachedNetwork ListenMulticastUDP returned nil error")
 	}
 	if _, err := n.LookupIP(ctx, "ip", "example.invalid"); err == nil {
@@ -1370,16 +1865,33 @@ func TestDetachedNetworkAccessorsAndDelegatingBranches(t *testing.T) {
 		t.Fatalf("DetachedNetwork Down error = %v", err)
 	}
 	if up, err := n.IsUp(); err != nil || up {
-		t.Fatalf("DetachedNetwork IsUp after Down = %v, %v, want false nil", up, err)
+		t.Fatalf(
+			"DetachedNetwork IsUp after Down = %v, %v, want false nil",
+			up,
+			err,
+		)
 	}
-	if _, err := n.LookupHost(ctx, "localhost"); !errors.Is(err, net.ErrClosed) {
-		t.Fatalf("DetachedNetwork LookupHost while down = %v, want net.ErrClosed", err)
+	if _, err := n.LookupHost(
+		ctx,
+		"localhost",
+	); !errors.Is(
+		err,
+		net.ErrClosed,
+	) {
+		t.Fatalf(
+			"DetachedNetwork LookupHost while down = %v, want net.ErrClosed",
+			err,
+		)
 	}
 	if err := n.Up(); err != nil {
 		t.Fatalf("DetachedNetwork Up error = %v", err)
 	}
 	if up, err := n.IsUp(); err != nil || !up {
-		t.Fatalf("DetachedNetwork IsUp after Up = %v, %v, want true nil", up, err)
+		t.Fatalf(
+			"DetachedNetwork IsUp after Up = %v, %v, want true nil",
+			up,
+			err,
+		)
 	}
 }
 
@@ -1417,7 +1929,10 @@ func TestDetachedNetworkTrackingBranches(t *testing.T) {
 	_ = trackedMcast.Close()
 	_ = trackedMcast.Close()
 	if mcast.closed != 2 {
-		t.Fatalf("detached multicast underlying closes = %d, want 2", mcast.closed)
+		t.Fatalf(
+			"detached multicast underlying closes = %d, want 2",
+			mcast.closed,
+		)
 	}
 
 	tcpListener := newCallbackTestTCPListener()
@@ -1437,20 +1952,56 @@ func TestDetachedNetworkTrackingBranches(t *testing.T) {
 		t.Fatalf("Down error = %v", err)
 	}
 	closed := &fakeCloser{}
-	if _, err := n.SubscribeCloser(closed); !errors.Is(err, net.ErrClosed) || closed.closed != 1 {
-		t.Fatalf("SubscribeCloser while down = closed %d, %v", closed.closed, err)
+	unsubClosed, err := n.SubscribeCloser(closed)
+	if err != nil || unsubClosed == nil || closed.closed != 0 {
+		t.Fatalf(
+			"SubscribeCloser while down = closed %d, unsub nil %t, err %v",
+			closed.closed,
+			unsubClosed == nil,
+			err,
+		)
 	}
-	if _, err := n.trackTCPConn(n.gen, &callbackTestTCPConn{}); !errors.Is(err, net.ErrClosed) {
+	unsubClosed()
+	if _, err := n.trackTCPConn(
+		n.gen,
+		&callbackTestTCPConn{},
+	); !errors.Is(
+		err,
+		net.ErrClosed,
+	) {
 		t.Fatalf("trackTCPConn while down = %v, want net.ErrClosed", err)
 	}
-	if _, err := n.trackMulticastPacketConn(n.gen, &fakeMulticastPacketConn{}); !errors.Is(err, net.ErrClosed) {
-		t.Fatalf("trackMulticastPacketConn while down = %v, want net.ErrClosed", err)
+	if _, err := n.trackMulticastPacketConn(
+		n.gen,
+		&fakeMulticastPacketConn{},
+	); !errors.Is(
+		err,
+		net.ErrClosed,
+	) {
+		t.Fatalf(
+			"trackMulticastPacketConn while down = %v, want net.ErrClosed",
+			err,
+		)
 	}
-	if _, err := n.trackTCPListener(n.gen, newCallbackTestTCPListener()); !errors.Is(err, net.ErrClosed) {
+	if _, err := n.trackTCPListener(
+		n.gen,
+		newCallbackTestTCPListener(),
+	); !errors.Is(
+		err,
+		net.ErrClosed,
+	) {
 		t.Fatalf("trackTCPListener while down = %v, want net.ErrClosed", err)
 	}
-	if _, err := n.acceptTCPConnCallback(&callbackTestTCPConn{}); !errors.Is(err, net.ErrClosed) {
-		t.Fatalf("acceptTCPConnCallback while down = %v, want net.ErrClosed", err)
+	if _, err := n.acceptTCPConnCallback(
+		&callbackTestTCPConn{},
+	); !errors.Is(
+		err,
+		net.ErrClosed,
+	) {
+		t.Fatalf(
+			"acceptTCPConnCallback while down = %v, want net.ErrClosed",
+			err,
+		)
 	}
 }
 
@@ -1514,6 +2065,7 @@ func (c *fakeNetPacketConn) ReadFrom([]byte) (int, net.Addr, error) {
 func (c *fakeNetPacketConn) WriteTo(b []byte, _ net.Addr) (int, error) {
 	return len(b), nil
 }
+
 func (c *fakeNetPacketConn) Close() error                     { c.closed++; return nil }
 func (c *fakeNetPacketConn) LocalAddr() net.Addr              { return nil }
 func (c *fakeNetPacketConn) SetDeadline(time.Time) error      { return nil }
@@ -1524,7 +2076,11 @@ type fakePacketConn struct {
 	fakeNetPacketConn
 }
 
-func (c *fakePacketConn) Read([]byte) (int, error)    { return 0, net.ErrClosed }
+func (c *fakePacketConn) Read(
+	[]byte,
+) (int, error) {
+	return 0, net.ErrClosed
+}
 func (c *fakePacketConn) Write(b []byte) (int, error) { return len(b), nil }
 func (c *fakePacketConn) RemoteAddr() net.Addr        { return nil }
 
@@ -1541,19 +2097,41 @@ func (c *fakeUDPConn) ReadFromUDPAddrPort([]byte) (int, netip.AddrPort, error) {
 func (c *fakeUDPConn) WriteToUDP(b []byte, _ *net.UDPAddr) (int, error) {
 	return len(b), nil
 }
-func (c *fakeUDPConn) WriteToUDPAddrPort(b []byte, _ netip.AddrPort) (int, error) {
+
+func (c *fakeUDPConn) WriteToUDPAddrPort(
+	b []byte,
+	_ netip.AddrPort,
+) (int, error) {
 	return len(b), nil
 }
-func (c *fakeUDPConn) ReadMsgUDP([]byte, []byte) (int, int, int, *net.UDPAddr, error) {
+
+func (c *fakeUDPConn) ReadMsgUDP(
+	[]byte,
+	[]byte,
+) (int, int, int, *net.UDPAddr, error) {
 	return 0, 0, 0, nil, net.ErrClosed
 }
-func (c *fakeUDPConn) ReadMsgUDPAddrPort([]byte, []byte) (int, int, int, netip.AddrPort, error) {
+
+func (c *fakeUDPConn) ReadMsgUDPAddrPort(
+	[]byte,
+	[]byte,
+) (int, int, int, netip.AddrPort, error) {
 	return 0, 0, 0, netip.AddrPort{}, net.ErrClosed
 }
-func (c *fakeUDPConn) WriteMsgUDP(b []byte, _ []byte, _ *net.UDPAddr) (int, int, error) {
+
+func (c *fakeUDPConn) WriteMsgUDP(
+	b []byte,
+	_ []byte,
+	_ *net.UDPAddr,
+) (int, int, error) {
 	return len(b), 0, nil
 }
-func (c *fakeUDPConn) WriteMsgUDPAddrPort(b []byte, _ []byte, _ netip.AddrPort) (int, int, error) {
+
+func (c *fakeUDPConn) WriteMsgUDPAddrPort(
+	b []byte,
+	_ []byte,
+	_ netip.AddrPort,
+) (int, int, error) {
 	return len(b), 0, nil
 }
 
@@ -1590,6 +2168,7 @@ func (c *scriptedPacketConn) ReadFrom(b []byte) (int, net.Addr, error) {
 func (c *scriptedPacketConn) WriteTo(b []byte, _ net.Addr) (int, error) {
 	return len(b), nil
 }
+
 func (c *scriptedPacketConn) Close() error                     { c.closed.Add(1); return nil }
 func (c *scriptedPacketConn) LocalAddr() net.Addr              { return nil }
 func (c *scriptedPacketConn) SetDeadline(time.Time) error      { return nil }
@@ -1635,10 +2214,18 @@ func (c *fakeMulticastPacketConn) LeaveGroup(NetworkInterface, net.Addr) error {
 func (c *fakeMulticastPacketConn) SetControlMessage(ControlFlags, bool) error {
 	return nil
 }
-func (c *fakeMulticastPacketConn) ReadFromControl([]byte) (int, ControlMessage, net.Addr, error) {
+
+func (c *fakeMulticastPacketConn) ReadFromControl(
+	[]byte,
+) (int, ControlMessage, net.Addr, error) {
 	return 0, ControlMessage{}, nil, net.ErrClosed
 }
-func (c *fakeMulticastPacketConn) WriteToControl(b []byte, _ ControlMessage, _ net.Addr) (int, error) {
+
+func (c *fakeMulticastPacketConn) WriteToControl(
+	b []byte,
+	_ ControlMessage,
+	_ net.Addr,
+) (int, error) {
 	return len(b), nil
 }
 
@@ -1659,7 +2246,11 @@ type defaultIfaceNetwork struct {
 	ifacesErr error
 }
 
-func (n *defaultIfaceNetwork) Dial(context.Context, string, string) (net.Conn, error) {
+func (n *defaultIfaceNetwork) Dial(
+	context.Context,
+	string,
+	string,
+) (net.Conn, error) {
 	if n.dialErr != nil {
 		return nil, n.dialErr
 	}

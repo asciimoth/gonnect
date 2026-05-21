@@ -13,6 +13,8 @@ var _ interface {
 	Network
 	UpDown
 	io.Closer
+	CloserSubscriber
+	UpDownSubscriber
 	Wrapper
 } = (*DetachedNetwork)(nil)
 
@@ -21,8 +23,9 @@ var _ interface {
 // Down and Close affect only the wrapper: they do not call Down or Close on the
 // wrapped Network. They do cancel in-flight wrapper operations and close every
 // connection, packet connection, listener, and accepted connection returned via
-// this wrapper. Multiple DetachedNetwork values can wrap the same Network and be
-// used concurrently; stopping one wrapper does not stop the others.
+// this wrapper. Close is terminal: a closed wrapper cannot be brought back up.
+// Multiple DetachedNetwork values can wrap the same Network and be used
+// concurrently; stopping one wrapper does not stop the others.
 //
 // Long operations such as Dial, Listen, and Lookup are run without holding the
 // wrapper mutex. The wrapper injects its own cancellation into the supplied
@@ -33,21 +36,37 @@ type DetachedNetwork struct {
 
 	mu      sync.Mutex
 	up      bool
+	closed  bool
 	gen     uint64
 	done    chan struct{}
 	nextID  uint64
 	closers map[uint64]io.Closer
+
+	nextUpDownID uint64
+	updowns      map[uint64]UpDown
+
+	nextCloseSubID uint64
+	closeSubs      map[uint64]io.Closer
 }
 
 // DetachNetwork creates an independently stoppable wrapper around n.
 func DetachNetwork(n Network) *DetachedNetwork {
-	return &DetachedNetwork{
-		wrapped: n,
-		up:      true,
-		gen:     1,
-		done:    make(chan struct{}),
-		closers: make(map[uint64]io.Closer),
+	dn := &DetachedNetwork{
+		wrapped:   n,
+		up:        true,
+		gen:       1,
+		done:      make(chan struct{}),
+		closers:   make(map[uint64]io.Closer),
+		updowns:   make(map[uint64]UpDown),
+		closeSubs: make(map[uint64]io.Closer),
 	}
+	if sub, ok := n.(CloserSubscriber); ok {
+		_, _ = sub.SubscribeCloser(dn)
+	}
+	if sub, ok := n.(UpDownSubscriber); ok {
+		_, _ = sub.SubscribeUpDown(dn)
+	}
+	return dn
 }
 
 // GetWrapped returns the wrapped Network.
@@ -59,20 +78,33 @@ func (n *DetachedNetwork) IsNative() bool { return n.wrapped.IsNative() }
 // Up re-enables this wrapper. It does not call Up on the wrapped Network.
 func (n *DetachedNetwork) Up() error {
 	n.mu.Lock()
-	defer n.mu.Unlock()
+	if n.closed {
+		n.mu.Unlock()
+		return net.ErrClosed
+	}
 	if n.up {
+		n.mu.Unlock()
 		return nil
 	}
 	n.done = make(chan struct{})
 	n.gen++
 	n.up = true
-	return nil
+	updowns := make([]UpDown, 0, len(n.updowns))
+	for _, u := range n.updowns {
+		updowns = append(updowns, u)
+	}
+	n.mu.Unlock()
+	return upAll(updowns)
 }
 
 // Down stops this wrapper, cancels pending wrapper operations, and closes all
 // objects spawned through it. It does not call Down on the wrapped Network.
 func (n *DetachedNetwork) Down() error {
 	n.mu.Lock()
+	if n.closed {
+		n.mu.Unlock()
+		return nil
+	}
 	if !n.up {
 		n.mu.Unlock()
 		return nil
@@ -85,45 +117,85 @@ func (n *DetachedNetwork) Down() error {
 		delete(n.closers, id)
 		closers = append(closers, c)
 	}
+	updowns := make([]UpDown, 0, len(n.updowns))
+	for _, u := range n.updowns {
+		updowns = append(updowns, u)
+	}
 	n.mu.Unlock()
 
 	close(done)
-	return closeAll(closers)
+	return errors.Join(closeAll(closers), downAll(updowns))
 }
 
-// Close is equivalent to Down.
-func (n *DetachedNetwork) Close() error { return n.Down() }
+// Close permanently closes this wrapper.
+func (n *DetachedNetwork) Close() error {
+	closers, updowns, closeSubs, done := n.closePrep()
+	if done != nil {
+		close(done)
+	}
+	return errors.Join(closeAll(closers), downAll(updowns), closeAll(closeSubs))
+}
 
-// SubscribeCloser registers c to be closed when this wrapper is stopped.
+// SubscribeCloser registers c to be closed when this wrapper is closed.
 //
 // It is intended for callers that bypass this Network's Dial or Listen methods
 // but still want their externally-created connections
-// to be closed by Down or Close. The returned unsubscribe function removes c
-// from this wrapper without closing it. If this Network is already down, c is
+// to be closed by Close. The returned unsubscribe function removes c
+// from this wrapper without closing it. If this Network is already closed, c is
 // closed before SubscribeCloser returns net.ErrClosed.
 func (n *DetachedNetwork) SubscribeCloser(c io.Closer) (func(), error) {
 	n.mu.Lock()
-	if !n.up {
+	if n.closed {
 		n.mu.Unlock()
 		_ = c.Close()
 		return nil, net.ErrClosed
 	}
-	id := n.nextID
-	n.nextID++
-	n.closers[id] = c
+	id := n.nextCloseSubID
+	n.nextCloseSubID++
+	if n.closeSubs == nil {
+		n.closeSubs = make(map[uint64]io.Closer)
+	}
+	n.closeSubs[id] = c
 	n.mu.Unlock()
 
 	var once sync.Once
 	return func() {
-		once.Do(func() { n.unregister(id) })
+		once.Do(func() { n.unregisterCloseSub(id) })
 	}, nil
+}
+
+// SubscribeUpDown registers u to follow this wrapper's up/down state.
+//
+// The returned unsubscribe function removes u without changing it. The
+// subscription persists across Down and Up cycles. If this wrapper is already
+// down or closed, u.Down is called before SubscribeUpDown returns.
+func (n *DetachedNetwork) SubscribeUpDown(u UpDown) (func(), error) {
+	n.mu.Lock()
+	id := n.nextUpDownID
+	n.nextUpDownID++
+	if n.updowns == nil {
+		n.updowns = make(map[uint64]UpDown)
+	}
+	n.updowns[id] = u
+	down := !n.up || n.closed
+	n.mu.Unlock()
+
+	var err error
+	if down {
+		err = u.Down()
+	}
+
+	var once sync.Once
+	return func() {
+		once.Do(func() { n.unregisterUpDown(id) })
+	}, err
 }
 
 // IsUp reports whether this wrapper is currently up.
 func (n *DetachedNetwork) IsUp() (bool, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	return n.up, nil
+	return n.up && !n.closed, nil
 }
 
 // Dial establishes a connection via the wrapped Network and tracks it on this
@@ -657,7 +729,7 @@ func (n *DetachedNetwork) begin(
 	}
 
 	n.mu.Lock()
-	if !n.up {
+	if !n.up || n.closed {
 		n.mu.Unlock()
 		return nil, nil, 0, nil, net.ErrClosed
 	}
@@ -679,7 +751,7 @@ func (n *DetachedNetwork) begin(
 func (n *DetachedNetwork) checkUp() error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	if !n.up {
+	if !n.up || n.closed {
 		return net.ErrClosed
 	}
 	return nil
@@ -691,9 +763,58 @@ func (n *DetachedNetwork) unregister(id uint64) {
 	delete(n.closers, id)
 }
 
+func (n *DetachedNetwork) unregisterUpDown(id uint64) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	delete(n.updowns, id)
+}
+
+func (n *DetachedNetwork) unregisterCloseSub(id uint64) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	delete(n.closeSubs, id)
+}
+
+func (n *DetachedNetwork) closePrep() (
+	closers []io.Closer,
+	updowns []UpDown,
+	closeSubs []io.Closer,
+	done chan struct{},
+) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.closed {
+		return nil, nil, nil, nil
+	}
+	wasUp := n.up
+	n.closed = true
+	n.up = false
+	n.gen++
+	if wasUp {
+		done = n.done
+	}
+	closers = make([]io.Closer, 0, len(n.closers))
+	for id, c := range n.closers {
+		delete(n.closers, id)
+		closers = append(closers, c)
+	}
+	if wasUp {
+		updowns = make([]UpDown, 0, len(n.updowns))
+		for _, u := range n.updowns {
+			updowns = append(updowns, u)
+		}
+	}
+	closeSubs = make([]io.Closer, 0, len(n.closeSubs))
+	for id, c := range n.closeSubs {
+		delete(n.closeSubs, id)
+		closeSubs = append(closeSubs, c)
+	}
+	return closers, updowns, closeSubs, done
+}
+
 func (n *DetachedNetwork) trackConn(gen uint64, c net.Conn) (net.Conn, error) {
 	n.mu.Lock()
-	if !n.up || n.gen != gen {
+	if !n.up || n.closed || n.gen != gen {
 		n.mu.Unlock()
 		_ = c.Close()
 		return nil, net.ErrClosed
@@ -706,7 +827,7 @@ func (n *DetachedNetwork) trackConn(gen uint64, c net.Conn) (net.Conn, error) {
 		BeforeClose: func() { n.unregister(id) },
 	})
 	n.mu.Lock()
-	if !n.up || n.gen != gen {
+	if !n.up || n.closed || n.gen != gen {
 		n.mu.Unlock()
 		_ = c.Close()
 		return nil, net.ErrClosed
@@ -721,7 +842,7 @@ func (n *DetachedNetwork) trackTCPConn(
 	c TCPConn,
 ) (TCPConn, error) {
 	n.mu.Lock()
-	if !n.up || n.gen != gen {
+	if !n.up || n.closed || n.gen != gen {
 		n.mu.Unlock()
 		_ = c.Close()
 		return nil, net.ErrClosed
@@ -734,7 +855,7 @@ func (n *DetachedNetwork) trackTCPConn(
 		BeforeClose: func() { n.unregister(id) },
 	})
 	n.mu.Lock()
-	if !n.up || n.gen != gen {
+	if !n.up || n.closed || n.gen != gen {
 		n.mu.Unlock()
 		_ = c.Close()
 		return nil, net.ErrClosed
@@ -749,7 +870,7 @@ func (n *DetachedNetwork) trackUDPConn(
 	c UDPConn,
 ) (UDPConn, error) {
 	n.mu.Lock()
-	if !n.up || n.gen != gen {
+	if !n.up || n.closed || n.gen != gen {
 		n.mu.Unlock()
 		_ = c.Close()
 		return nil, net.ErrClosed
@@ -762,7 +883,7 @@ func (n *DetachedNetwork) trackUDPConn(
 		BeforeClose: func() { n.unregister(id) },
 	})
 	n.mu.Lock()
-	if !n.up || n.gen != gen {
+	if !n.up || n.closed || n.gen != gen {
 		n.mu.Unlock()
 		_ = c.Close()
 		return nil, net.ErrClosed
@@ -777,7 +898,7 @@ func (n *DetachedNetwork) trackPacketConn(
 	c PacketConn,
 ) (PacketConn, error) {
 	n.mu.Lock()
-	if !n.up || n.gen != gen {
+	if !n.up || n.closed || n.gen != gen {
 		n.mu.Unlock()
 		_ = c.Close()
 		return nil, net.ErrClosed
@@ -790,7 +911,7 @@ func (n *DetachedNetwork) trackPacketConn(
 		BeforeClose: func() { n.unregister(id) },
 	})
 	n.mu.Lock()
-	if !n.up || n.gen != gen {
+	if !n.up || n.closed || n.gen != gen {
 		n.mu.Unlock()
 		_ = c.Close()
 		return nil, net.ErrClosed
@@ -805,7 +926,7 @@ func (n *DetachedNetwork) trackMulticastPacketConn(
 	c MulticastPacketConn,
 ) (MulticastPacketConn, error) {
 	n.mu.Lock()
-	if !n.up || n.gen != gen {
+	if !n.up || n.closed || n.gen != gen {
 		n.mu.Unlock()
 		_ = c.Close()
 		return nil, net.ErrClosed
@@ -841,7 +962,7 @@ func (n *DetachedNetwork) trackListener(
 	l net.Listener,
 ) (net.Listener, error) {
 	n.mu.Lock()
-	if !n.up || n.gen != gen {
+	if !n.up || n.closed || n.gen != gen {
 		n.mu.Unlock()
 		_ = l.Close()
 		return nil, net.ErrClosed
@@ -856,7 +977,7 @@ func (n *DetachedNetwork) trackListener(
 		OnAcceptTCP: n.acceptTCPConnCallback,
 	})
 	n.mu.Lock()
-	if !n.up || n.gen != gen {
+	if !n.up || n.closed || n.gen != gen {
 		n.mu.Unlock()
 		_ = l.Close()
 		return nil, net.ErrClosed
@@ -871,7 +992,7 @@ func (n *DetachedNetwork) trackTCPListener(
 	l TCPListener,
 ) (TCPListener, error) {
 	n.mu.Lock()
-	if !n.up || n.gen != gen {
+	if !n.up || n.closed || n.gen != gen {
 		n.mu.Unlock()
 		_ = l.Close()
 		return nil, net.ErrClosed
@@ -886,7 +1007,7 @@ func (n *DetachedNetwork) trackTCPListener(
 		OnAcceptTCP: n.acceptTCPConnCallback,
 	})
 	n.mu.Lock()
-	if !n.up || n.gen != gen {
+	if !n.up || n.closed || n.gen != gen {
 		n.mu.Unlock()
 		_ = l.Close()
 		return nil, net.ErrClosed
@@ -898,7 +1019,7 @@ func (n *DetachedNetwork) trackTCPListener(
 
 func (n *DetachedNetwork) acceptConnCallback(c net.Conn) (net.Conn, error) {
 	n.mu.Lock()
-	if !n.up {
+	if !n.up || n.closed {
 		n.mu.Unlock()
 		_ = c.Close()
 		return nil, net.ErrClosed
@@ -911,7 +1032,7 @@ func (n *DetachedNetwork) acceptConnCallback(c net.Conn) (net.Conn, error) {
 		BeforeClose: func() { n.unregister(id) },
 	})
 	n.mu.Lock()
-	if !n.up {
+	if !n.up || n.closed {
 		n.mu.Unlock()
 		_ = c.Close()
 		return nil, net.ErrClosed
@@ -923,7 +1044,7 @@ func (n *DetachedNetwork) acceptConnCallback(c net.Conn) (net.Conn, error) {
 
 func (n *DetachedNetwork) acceptTCPConnCallback(c TCPConn) (TCPConn, error) {
 	n.mu.Lock()
-	if !n.up {
+	if !n.up || n.closed {
 		n.mu.Unlock()
 		_ = c.Close()
 		return nil, net.ErrClosed
@@ -936,7 +1057,7 @@ func (n *DetachedNetwork) acceptTCPConnCallback(c TCPConn) (TCPConn, error) {
 		BeforeClose: func() { n.unregister(id) },
 	})
 	n.mu.Lock()
-	if !n.up {
+	if !n.up || n.closed {
 		n.mu.Unlock()
 		_ = c.Close()
 		return nil, net.ErrClosed
@@ -995,6 +1116,22 @@ func closeAll(closers []io.Closer) error {
 	var err error
 	for _, c := range closers {
 		err = errors.Join(err, c.Close())
+	}
+	return err
+}
+
+func downAll(updowns []UpDown) error {
+	var err error
+	for _, u := range updowns {
+		err = errors.Join(err, u.Down())
+	}
+	return err
+}
+
+func upAll(updowns []UpDown) error {
+	var err error
+	for _, u := range updowns {
+		err = errors.Join(err, u.Up())
 	}
 	return err
 }

@@ -114,8 +114,8 @@ func TestDetachedNetworkSubscribeCloser(t *testing.T) {
 	unsubscribeRemoved()
 	unsubscribeRemoved()
 
-	if err := wrapper.Down(); err != nil {
-		t.Fatalf("Down() error = %v", err)
+	if err := wrapper.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
 	}
 
 	if kept.closes() != 1 {
@@ -129,10 +129,10 @@ func TestDetachedNetworkSubscribeCloser(t *testing.T) {
 	}
 }
 
-func TestDetachedNetworkSubscribeCloserWhenDown(t *testing.T) {
+func TestDetachedNetworkSubscribeCloserWhenClosed(t *testing.T) {
 	wrapper := gonnect.DetachNetwork(gonnect.NativeConfig{}.Build())
-	if err := wrapper.Down(); err != nil {
-		t.Fatalf("Down() error = %v", err)
+	if err := wrapper.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
 	}
 
 	closer := &testCloser{}

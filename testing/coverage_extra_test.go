@@ -16,15 +16,28 @@ func TestErrorExpectationHelpers(t *stdtesting.T) {
 		t.Fatalf("boolPtr(true) = %v, want true pointer", p)
 	}
 
-	if err := expectUnknownNetworkErrorWith("bad")(net.UnknownNetworkError("bad")); err != nil {
+	if err := expectUnknownNetworkErrorWith(
+		"bad",
+	)(
+		net.UnknownNetworkError("bad"),
+	); err != nil {
 		t.Fatalf("unknown network expectation failed: %v", err)
 	}
-	if err := expectUnknownNetworkErrorWith("other")(net.UnknownNetworkError("bad")); err == nil {
+	if err := expectUnknownNetworkErrorWith(
+		"other",
+	)(
+		net.UnknownNetworkError("bad"),
+	); err == nil {
 		t.Fatal("unknown network expectation accepted mismatched network")
 	}
 
 	addrErr := &net.AddrError{Err: "missing port in address", Addr: "127.0.0.1"}
-	if err := expectAddrErrorWith("127.0.0.1", "missing port")(addrErr); err != nil {
+	if err := expectAddrErrorWith(
+		"127.0.0.1",
+		"missing port",
+	)(
+		addrErr,
+	); err != nil {
 		t.Fatalf("addr error expectation failed: %v", err)
 	}
 	if err := expectAddrErrorWith("127.0.0.2", "")(addrErr); err == nil {
@@ -47,7 +60,15 @@ func TestErrorExpectationHelpers(t *stdtesting.T) {
 	)(dnsErr); err != nil {
 		t.Fatalf("dns error expectation failed: %v", err)
 	}
-	if err := expectDNSErrorWith("wrong", nil, nil, nil, "")(dnsErr); err == nil {
+	if err := expectDNSErrorWith(
+		"wrong",
+		nil,
+		nil,
+		nil,
+		"",
+	)(
+		dnsErr,
+	); err == nil {
 		t.Fatal("dns error expectation accepted mismatched name")
 	}
 
@@ -64,7 +85,9 @@ func TestInterfaceErrorExpectationHelpers(t *stdtesting.T) {
 	if err := expectInterfaceNotFound()(syscall.ENODEV); err != nil {
 		t.Fatalf("interface not found errno expectation failed: %v", err)
 	}
-	if err := expectInterfaceNotFound()(errors.New("no such network interface")); err != nil {
+	if err := expectInterfaceNotFound()(
+		errors.New("no such network interface"),
+	); err != nil {
 		t.Fatalf("interface not found string expectation failed: %v", err)
 	}
 	if err := expectInterfaceNotFound()(&net.OpError{
@@ -83,10 +106,14 @@ func TestInterfaceErrorExpectationHelpers(t *stdtesting.T) {
 	if err := expectInterfacesSystemErr()(syscall.EPERM); err != nil {
 		t.Fatalf("system err expectation rejected errno: %v", err)
 	}
-	if err := expectInterfacesSystemErr()(errors.New("permission denied")); err != nil {
+	if err := expectInterfacesSystemErr()(
+		errors.New("permission denied"),
+	); err != nil {
 		t.Fatalf("system err expectation rejected permission string: %v", err)
 	}
-	if err := expectInterfacesSystemErr()(errors.New("unexpected")); err == nil {
+	if err := expectInterfacesSystemErr()(
+		errors.New("unexpected"),
+	); err == nil {
 		t.Fatal("system err expectation accepted unrelated error")
 	}
 }
@@ -101,7 +128,11 @@ func TestGenRandomString(t *stdtesting.T) {
 	}
 	for _, r := range got {
 		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')) {
-			t.Fatalf("genRandomString produced non-alphanumeric rune %q in %q", r, got)
+			t.Fatalf(
+				"genRandomString produced non-alphanumeric rune %q in %q",
+				r,
+				got,
+			)
 		}
 	}
 }

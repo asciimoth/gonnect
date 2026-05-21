@@ -4,10 +4,8 @@ import (
 	"context"
 	"errors"
 	"io"
-	"maps"
 	"net"
 	"net/netip"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,8 +13,11 @@ import (
 
 // Static type assertions
 var (
-	_ Network = &LoopbackNetwork{}
-	_ UpDown  = &LoopbackNetwork{}
+	_ Network          = &LoopbackNetwork{}
+	_ UpDown           = &LoopbackNetwork{}
+	_ io.Closer        = &LoopbackNetwork{}
+	_ CloserSubscriber = &LoopbackNetwork{}
+	_ UpDownSubscriber = &LoopbackNetwork{}
 )
 
 var ErrNetworkDown = &net.OpError{
@@ -39,6 +40,8 @@ type LoopbackNetwork struct {
 
 	// up indicates whether the network is currently active.
 	up bool
+	// closed indicates whether the network has been permanently closed.
+	closed bool
 
 	tcp4reg *loopbackTCPRegistry
 	tcp6reg *loopbackTCPRegistry
@@ -50,6 +53,12 @@ type LoopbackNetwork struct {
 	nextID uint64
 	// closers tracks all open connections and listeners by ID.
 	closers map[uint64]io.Closer
+
+	nextUpDownID uint64
+	updowns      map[uint64]UpDown
+
+	nextCloseSubID uint64
+	closeSubs      map[uint64]io.Closer
 }
 
 // NewLoopbackNetwok creates and returns a new loopback network instance.
@@ -74,7 +83,9 @@ func NewLoopbackNetwok() *LoopbackNetwork {
 			Network: "udp6",
 			Host:    "::1",
 		},
-		mcast: &loopbackMulticastRegistry{},
+		mcast:     &loopbackMulticastRegistry{},
+		updowns:   make(map[uint64]UpDown),
+		closeSubs: make(map[uint64]io.Closer),
 	}
 }
 
@@ -796,43 +807,127 @@ func (ln *LoopbackNetwork) Dial(
 // Down shuts down the network by closing all tracked connections and listeners.
 // After calling Down, the network will reject new operations until Up() is called.
 func (ln *LoopbackNetwork) Down() error {
-	closers := ln.downPrep()
+	ln.mu.Lock()
+	if ln.closed {
+		ln.mu.Unlock()
+		return nil
+	}
+	ln.mu.Unlock()
+	closers, updowns := ln.downPrep()
 	for _, c := range closers {
 		_ = c.Close()
 	}
-	return nil
+	return downAll(updowns)
 }
 
 // Up re-enables the network after it has been shut down with Down().
 func (ln *LoopbackNetwork) Up() error {
 	ln.mu.Lock()
-	defer ln.mu.Unlock()
+	if ln.closed {
+		ln.mu.Unlock()
+		return net.ErrClosed
+	}
+	if ln.up {
+		ln.mu.Unlock()
+		return nil
+	}
 	ln.up = true
-	return nil
+	updowns := make([]UpDown, 0, len(ln.updowns))
+	for _, u := range ln.updowns {
+		updowns = append(updowns, u)
+	}
+	ln.mu.Unlock()
+	return upAll(updowns)
+}
+
+// Close permanently closes this network.
+func (ln *LoopbackNetwork) Close() error {
+	closers, updowns, closeSubs := ln.closePrep()
+	return errors.Join(closeAll(closers), downAll(updowns), closeAll(closeSubs))
+}
+
+// SubscribeCloser registers c to be closed when this network is closed.
+//
+// The returned unsubscribe function removes c without closing it. If this
+// network is already closed, c is closed before SubscribeCloser returns
+// net.ErrClosed.
+func (ln *LoopbackNetwork) SubscribeCloser(c io.Closer) (func(), error) {
+	ln.mu.Lock()
+	if ln.closed {
+		ln.mu.Unlock()
+		_ = c.Close()
+		return nil, net.ErrClosed
+	}
+	id := ln.nextCloseSubID
+	ln.nextCloseSubID++
+	if ln.closeSubs == nil {
+		ln.closeSubs = make(map[uint64]io.Closer)
+	}
+	ln.closeSubs[id] = c
+	ln.mu.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() { ln.unregisterCloseSub(id) })
+	}, nil
+}
+
+// SubscribeUpDown registers u to follow this network's up/down state.
+//
+// The returned unsubscribe function removes u without changing it. The
+// subscription persists across Down and Up cycles. If this network is already
+// down or closed, u.Down is called before SubscribeUpDown returns.
+func (ln *LoopbackNetwork) SubscribeUpDown(u UpDown) (func(), error) {
+	ln.mu.Lock()
+	id := ln.nextUpDownID
+	ln.nextUpDownID++
+	if ln.updowns == nil {
+		ln.updowns = make(map[uint64]UpDown)
+	}
+	ln.updowns[id] = u
+	down := !ln.up || ln.closed
+	ln.mu.Unlock()
+
+	var err error
+	if down {
+		err = u.Down()
+	}
+
+	var once sync.Once
+	return func() {
+		once.Do(func() { ln.unregisterUpDown(id) })
+	}, err
 }
 
 // IsUp returns whether the network is currently active.
 func (ln *LoopbackNetwork) IsUp() (bool, error) {
 	ln.mu.Lock()
 	defer ln.mu.Unlock()
-	return ln.up, nil
+	return ln.up && !ln.closed, nil
 }
 
 // downPrep prepares the network for shutdown by marking it as down
 // and collecting all tracked closers for cleanup.
 // It returns the closers that should be closed after releasing the lock.
-func (ln *LoopbackNetwork) downPrep() (closers []io.Closer) {
+func (ln *LoopbackNetwork) downPrep() (
+	closers []io.Closer,
+	updowns []UpDown,
+) {
 	ln.mu.Lock()
 	defer ln.mu.Unlock()
-	if !ln.up {
+	if !ln.up || ln.closed {
 		return
 	}
 	ln.up = false
-	closers = make([]io.Closer, len(ln.closers))
-	if ln.closers == nil {
-		return
+	closers = make([]io.Closer, 0, len(ln.closers))
+	for id, c := range ln.closers {
+		delete(ln.closers, id)
+		closers = append(closers, c)
 	}
-	closers = slices.Collect(maps.Values(ln.closers))
+	updowns = make([]UpDown, 0, len(ln.updowns))
+	for _, u := range ln.updowns {
+		updowns = append(updowns, u)
+	}
 	return
 }
 
@@ -860,6 +955,50 @@ func (ln *LoopbackNetwork) unregister(id uint64) {
 	delete(ln.closers, id)
 }
 
+func (ln *LoopbackNetwork) unregisterUpDown(id uint64) {
+	ln.mu.Lock()
+	defer ln.mu.Unlock()
+	delete(ln.updowns, id)
+}
+
+func (ln *LoopbackNetwork) unregisterCloseSub(id uint64) {
+	ln.mu.Lock()
+	defer ln.mu.Unlock()
+	delete(ln.closeSubs, id)
+}
+
+func (ln *LoopbackNetwork) closePrep() (
+	closers []io.Closer,
+	updowns []UpDown,
+	closeSubs []io.Closer,
+) {
+	ln.mu.Lock()
+	defer ln.mu.Unlock()
+	if ln.closed {
+		return nil, nil, nil
+	}
+	wasUp := ln.up
+	ln.closed = true
+	ln.up = false
+	closers = make([]io.Closer, 0, len(ln.closers))
+	for id, c := range ln.closers {
+		delete(ln.closers, id)
+		closers = append(closers, c)
+	}
+	if wasUp {
+		updowns = make([]UpDown, 0, len(ln.updowns))
+		for _, u := range ln.updowns {
+			updowns = append(updowns, u)
+		}
+	}
+	closeSubs = make([]io.Closer, 0, len(ln.closeSubs))
+	for id, c := range ln.closeSubs {
+		delete(ln.closeSubs, id)
+		closeSubs = append(closeSubs, c)
+	}
+	return closers, updowns, closeSubs
+}
+
 // buildUnregCallback returns a callback function that unregisters a connection
 // by ID when called. This is used as the BeforeClose callback for tracked connections.
 func (ln *LoopbackNetwork) buildUnregCallback(id uint64) func() {
@@ -871,7 +1010,7 @@ func (ln *LoopbackNetwork) buildUnregCallback(id uint64) func() {
 // checkUp returns an error if the network is down.
 // WARN: NOT thread safe - caller must hold ln.mu lock.
 func (ln *LoopbackNetwork) checkUp() error {
-	if !ln.up {
+	if !ln.up || ln.closed {
 		return ErrNetworkDown
 	}
 	return nil

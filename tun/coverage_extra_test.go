@@ -87,7 +87,10 @@ func TestSplitterFrontendAccessorsAndState(t *testing.T) {
 		t.Fatalf("Close error = %v", err)
 	}
 	if _, err := f.IsUp(); !errors.Is(err, ErrSplitterFrontendClosed) {
-		t.Fatalf("IsUp after Close error = %v, want ErrSplitterFrontendClosed", err)
+		t.Fatalf(
+			"IsUp after Close error = %v, want ErrSplitterFrontendClosed",
+			err,
+		)
 	}
 }
 

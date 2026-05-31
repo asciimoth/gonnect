@@ -21,20 +21,30 @@ func TestRouterRejectsWithoutCallbackOrValidBackend(t *testing.T) {
 		err,
 		ErrNoUpstream,
 	) {
-		t.Fatalf("query without router callback error = %v, want ErrNoUpstream", err)
+		t.Fatalf(
+			"query without router callback error = %v, want ErrNoUpstream",
+			err,
+		)
 	}
 
-	if err := r.AttachRouter(func(*Message) string { return "missing" }); err != nil {
+	if err := r.AttachRouter(
+		func(*Message) string { return "missing" },
+	); err != nil {
 		t.Fatalf("AttachRouter(missing) error = %v", err)
 	}
 	if _, err := queryWithTimeout(r, "example.test."); !errors.Is(
 		err,
 		ErrNoUpstream,
 	) {
-		t.Fatalf("query with missing backend error = %v, want ErrNoUpstream", err)
+		t.Fatalf(
+			"query with missing backend error = %v, want ErrNoUpstream",
+			err,
+		)
 	}
 
-	if err := r.AttachRouter(func(*Message) string { return "blue" }); err != nil {
+	if err := r.AttachRouter(
+		func(*Message) string { return "blue" },
+	); err != nil {
 		t.Fatalf("AttachRouter(blue) error = %v", err)
 	}
 	assertRoutedTo(t, r, "example.test.", "blue")
@@ -129,10 +139,14 @@ func TestRouterComplexDynamicTopology(t *testing.T) {
 	if err := root.Attach("east", east); err != nil {
 		t.Fatalf("root attach east error = %v", err)
 	}
-	if err := root.AttachRouter(func(*Message) string { return "east" }); err != nil {
+	if err := root.AttachRouter(
+		func(*Message) string { return "east" },
+	); err != nil {
 		t.Fatalf("root route east error = %v", err)
 	}
-	if err := east.AttachRouter(func(*Message) string { return "primary" }); err != nil {
+	if err := east.AttachRouter(
+		func(*Message) string { return "primary" },
+	); err != nil {
 		t.Fatalf("east route primary error = %v", err)
 	}
 	if _, err := queryWithTimeout(root, "svc.east.test."); !errors.Is(
@@ -154,7 +168,9 @@ func TestRouterComplexDynamicTopology(t *testing.T) {
 	if err := root.Attach("west", west); err != nil {
 		t.Fatalf("root attach west error = %v", err)
 	}
-	if err := root.AttachRouter(func(*Message) string { return "west" }); err != nil {
+	if err := root.AttachRouter(
+		func(*Message) string { return "west" },
+	); err != nil {
 		t.Fatalf("root route west error = %v", err)
 	}
 	if _, err := queryWithTimeout(root, "svc.west.test."); !errors.Is(
@@ -163,7 +179,9 @@ func TestRouterComplexDynamicTopology(t *testing.T) {
 	) {
 		t.Fatalf("west without callback error = %v, want ErrNoUpstream", err)
 	}
-	if err := west.AttachRouter(func(*Message) string { return "active" }); err != nil {
+	if err := west.AttachRouter(
+		func(*Message) string { return "active" },
+	); err != nil {
 		t.Fatalf("west route active error = %v", err)
 	}
 	if err := west.Attach("active", westA); err != nil {
@@ -235,7 +253,9 @@ func TestRouterMutationsCancelInFlightRequests(t *testing.T) {
 	if err := r.Attach("up", up); err != nil {
 		t.Fatalf("Attach() error = %v", err)
 	}
-	if err := r.AttachRouter(func(*Message) string { return "up" }); err != nil {
+	if err := r.AttachRouter(
+		func(*Message) string { return "up" },
+	); err != nil {
 		t.Fatalf("AttachRouter() error = %v", err)
 	}
 	queryDone := make(chan error, 1)

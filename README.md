@@ -12,7 +12,7 @@ I created it mostly for myself, but feel free to use it in your projects or
 
 ## Related projects
 
-There are some projects based on Gonnect or created for similar use cases. 
+There are some projects based on Gonnect or created for using with it. 
 You may find them useful too:
 
 - [gonnect-netstack](https://github.com/asciimoth/gonnect-netstack) - gVisor's netstack integration for the gonnect ecosystem 
@@ -27,6 +27,8 @@ You may find them useful too:
 - [bufpool](https://github.com/asciimoth/bufpool) - Byte buffer pool interface and testing helpers
 - [putback](https://github.com/asciimoth/putback) - A minimal library that provides wrappers for common I/O interfaces, adding the ability to return read bytes back to the stream for subsequent reading
 - [mnlib](https://github.com/asciimoth/mnlib) - Mesh-oriented DNS names lib (`.meshname`, `.meship`, `.ygg`, `.pk.ygg`)
+- [gonnect-routing](https://github.com/asciimoth/gonnect-routing) - bytecode-based flexible routing rules engine for `gonnect.Router` and `gonnect/tun.Splitter`
+- [sysnet-debu](https://github.com/asciimoth/sysnet-debug) - debug implementation of OS network abstraction from `gonnect/sysnet`
 
 ## License
 Files in this repository are distributed under the CC0 license.  

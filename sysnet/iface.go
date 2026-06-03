@@ -96,6 +96,31 @@ type BuildOpts struct {
 	Exclude []Rule
 }
 
+func (b *BuildOpts) Copy() BuildOpts {
+	c := BuildOpts{
+		TunNeeded: b.TunNeeded,
+		DnsNeeded: b.DnsNeeded,
+		MTU:       b.MTU,
+	}
+
+	if b.TunAddrs != nil {
+		c.TunAddrs = make([]string, len(b.TunAddrs))
+		copy(c.TunAddrs, b.TunAddrs)
+	}
+
+	if b.TunRoutes != nil {
+		c.TunRoutes = make([]string, len(b.TunRoutes))
+		copy(c.TunRoutes, b.TunRoutes)
+	}
+
+	if b.Exclude != nil {
+		c.Exclude = make([]Rule, len(b.Exclude))
+		copy(c.Exclude, b.Exclude)
+	}
+
+	return c
+}
+
 // System holds the components for operating with the network system.
 type System struct {
 	// Tun is the TUN device interface, or nil if not enabled.

@@ -28,7 +28,8 @@ You may find them useful too:
 - [putback](https://github.com/asciimoth/putback) - A minimal library that provides wrappers for common I/O interfaces, adding the ability to return read bytes back to the stream for subsequent reading
 - [mnlib](https://github.com/asciimoth/mnlib) - Mesh-oriented DNS names lib (`.meshname`, `.meship`, `.ygg`, `.pk.ygg`)
 - [gonnect-routing](https://github.com/asciimoth/gonnect-routing) - bytecode-based flexible routing rules engine for `gonnect.Router` and `gonnect/tun.Splitter`
-- [sysnet-debu](https://github.com/asciimoth/sysnet-debug) - debug implementation of OS network abstraction from `gonnect/sysnet`
+- [sysnet-debug](https://github.com/asciimoth/sysnet-debug) - debug implementation of OS network abstraction from `gonnect/sysnet`
+- [pmark](https://github.com/asciimoth/p-mark) - Go lib and tool for tagging processes for split routing and other purposes
 
 ## License
 Files in this repository are distributed under the CC0 license.  

@@ -36,4 +36,5 @@ go.work.sum
 /.direnv
 
 examples/sockowner/sockowner
+examples/sockowner/sockowner.exe
 

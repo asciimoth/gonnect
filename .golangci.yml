@@ -104,6 +104,7 @@ linters:
   exclusions:
     paths:
       - _examples
+      - examples
     rules:
       - path: testing
         linters:

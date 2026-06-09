@@ -52,17 +52,31 @@ func GetBuffSize(a any) (recvSize, sendSize int, err error) {
 
 // SetRoutingMark sets the routing mark (SO_RTABLE) on the socket.
 // On OpenBSD, this sets the routing table ID.
-func SetRoutingMark(a any, mark int) error {
+func SetRoutingMark(a any, mark uint32) error {
+	if mark > unix.RT_TABLEID_MAX {
+		return unix.EINVAL
+	}
 	return Control(a, func(fd uintptr) {
-		_ = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_RTABLE, mark)
+		_ = unix.SetsockoptInt(
+			int(fd),
+			unix.SOL_SOCKET,
+			unix.SO_RTABLE,
+			int(mark),
+		)
 	})
 }
 
 // GetRoutingMark retrieves the routing mark (SO_RTABLE) from the socket.
 // On OpenBSD, this gets the routing table ID.
-func GetRoutingMark(a any) (mark int, err error) {
+func GetRoutingMark(a any) (mark uint32, err error) {
 	err1 := Control(a, func(fd uintptr) {
-		mark, err = unix.GetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_RTABLE)
+		var value int
+		value, err = unix.GetsockoptInt(
+			int(fd),
+			unix.SOL_SOCKET,
+			unix.SO_RTABLE,
+		)
+		mark = routingMarkFromSockoptInt(value)
 	})
 	if err1 != nil {
 		err = err1

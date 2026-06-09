@@ -58,16 +58,23 @@ func GetBuffSize(a any) (recvSize, sendSize int, err error) {
 
 // SetRoutingMark sets the routing mark (SO_MARK) on the socket.
 // This requires appropriate privileges (CAP_NET_ADMIN or net_admin capability).
-func SetRoutingMark(a any, mark int) error {
+func SetRoutingMark(a any, mark uint32) error {
 	return Control(a, func(fd uintptr) {
-		_ = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_MARK, mark)
+		_ = unix.SetsockoptInt(
+			int(fd),
+			unix.SOL_SOCKET,
+			unix.SO_MARK,
+			int(mark),
+		)
 	})
 }
 
 // GetRoutingMark retrieves the routing mark (SO_MARK) from the socket.
-func GetRoutingMark(a any) (mark int, err error) {
+func GetRoutingMark(a any) (mark uint32, err error) {
 	err1 := Control(a, func(fd uintptr) {
-		mark, err = unix.GetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_MARK)
+		var value int
+		value, err = unix.GetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_MARK)
+		mark = routingMarkFromSockoptInt(value)
 	})
 	if err1 != nil {
 		err = err1

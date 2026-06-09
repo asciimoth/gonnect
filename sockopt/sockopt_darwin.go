@@ -53,13 +53,13 @@ func GetBuffSize(a any) (recvSize, sendSize int, err error) {
 
 // SetRoutingMark sets the routing mark on the socket.
 // This operation is not supported on Darwin (macOS).
-func SetRoutingMark(a any, mark int) error {
+func SetRoutingMark(a any, mark uint32) error {
 	return ErrUnsupported
 }
 
 // GetRoutingMark retrieves the routing mark from the socket.
 // This operation is not supported on Darwin (macOS).
-func GetRoutingMark(a any) (mark int, err error) {
+func GetRoutingMark(a any) (mark uint32, err error) {
 	return 0, ErrUnsupported
 }
 

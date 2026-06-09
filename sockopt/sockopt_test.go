@@ -4,6 +4,7 @@ package sockopt
 import (
 	"errors"
 	"net"
+	"strconv"
 	"testing"
 	"time"
 
@@ -25,6 +26,72 @@ func TestIgnoreUnsupported(t *testing.T) {
 	want := errors.New("other")
 	if err := IgnoreUnsupported(want); !errors.Is(err, want) {
 		t.Fatalf("IgnoreUnsupported(other) = %v, want %v", err, want)
+	}
+}
+
+func TestRoutingMarkFromSockoptInt(t *testing.T) {
+	type testCase struct {
+		name  string
+		value int
+		want  uint32
+	}
+
+	tests := []testCase{
+		{
+			name:  "zero",
+			value: 0,
+			want:  0,
+		},
+		{
+			name:  "positive mark",
+			value: FwmarkIstio,
+			want:  FwmarkIstio,
+		},
+		{
+			name:  "max signed int32",
+			value: routingMarkSignBit - 1,
+			want:  routingMarkSignBit - 1,
+		},
+		{
+			name:  "uint32 high bit",
+			value: -routingMarkSignBit,
+			want:  routingMarkSignBit,
+		},
+		{
+			name:  "max uint32",
+			value: -1,
+			want:  maxRoutingMark,
+		},
+	}
+	if strconv.IntSize == 64 {
+		minMark := int64(minRoutingMarkInt)
+		maxMark := int64(maxRoutingMark)
+		tests = append(
+			tests,
+			testCase{
+				name:  "below signed int32",
+				value: int(minMark - 1),
+				want:  0,
+			},
+			testCase{
+				name:  "above uint32",
+				value: int(maxMark + 1),
+				want:  0,
+			},
+		)
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := routingMarkFromSockoptInt(tt.value); got != tt.want {
+				t.Fatalf(
+					"routingMarkFromSockoptInt(%d) = %#x, want %#x",
+					tt.value,
+					got,
+					tt.want,
+				)
+			}
+		})
 	}
 }
 

@@ -35,3 +35,5 @@ go.work.sum
 /.pre-commit-config.yaml
 /.direnv
 
+examples/sockowner/sockowner
+

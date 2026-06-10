@@ -1797,7 +1797,7 @@ func TestRouterAccessorsAndDelegatingBranches(t *testing.T) {
 func TestDetachedNetworkAccessorsAndDelegatingBranches(t *testing.T) {
 	ctx := context.Background()
 	base := &RejectNetwork{}
-	n := DetachNetwork(base)
+	n := DetachNetwork(base, nil)
 	if n.GetWrapped() != base {
 		t.Fatal("DetachedNetwork GetWrapped did not return wrapped network")
 	}
@@ -1899,7 +1899,7 @@ func TestDetachedNetworkAccessorsAndDelegatingBranches(t *testing.T) {
 }
 
 func TestDetachedNetworkTrackingBranches(t *testing.T) {
-	n := DetachNetwork(&RejectNetwork{})
+	n := DetachNetwork(&RejectNetwork{}, nil)
 	unsub, err := n.SubscribeCloser(&fakeCloser{})
 	if err != nil {
 		t.Fatalf("SubscribeCloser error = %v", err)

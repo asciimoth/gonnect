@@ -205,7 +205,7 @@ func (c NativeConfig) Build() *NativeNetwork {
 // NativeNetwork does not implement UpDown. Wrap it with DetachNetwork when an
 // independently stoppable native network is needed:
 //
-//	n := DetachNetwork(NativeConfig{}.Build())
+//	n := DetachNetwork(NativeConfig{}.Build(), nil)
 type NativeNetwork struct {
 	// filter is an optional function to reject network operations.
 	filter Filter

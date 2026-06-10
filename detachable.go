@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"strconv"
 	"sync"
 )
 
@@ -33,6 +34,7 @@ var _ interface {
 // context cancellation.
 type DetachedNetwork struct {
 	wrapped Network
+	res     Resolver
 
 	mu      sync.Mutex
 	up      bool
@@ -50,9 +52,18 @@ type DetachedNetwork struct {
 }
 
 // DetachNetwork creates an independently stoppable wrapper around n.
-func DetachNetwork(n Network) *DetachedNetwork {
+//
+// If res is nil, lookup calls and address handling are delegated to n exactly
+// as they would be without the wrapper. If res is non-nil, all Lookup methods
+// are routed to res, and Dial/Listen methods resolve host and service names in
+// address arguments through res before calling n. IP literal hosts and numeric
+// ports are passed through unchanged. Resolution is attempted only after the
+// wrapper is confirmed to be up and open, so down or closed wrappers return the
+// same lifecycle errors regardless of whether a resolver is installed.
+func DetachNetwork(n Network, res Resolver) *DetachedNetwork {
 	dn := &DetachedNetwork{
 		wrapped:   n,
+		res:       res,
 		up:        true,
 		gen:       1,
 		done:      make(chan struct{}),
@@ -209,6 +220,10 @@ func (n *DetachedNetwork) Dial(
 		return nil, err
 	}
 	defer cancel()
+	address, err = n.resolveNetAddr(ctx, network, address)
+	if err != nil {
+		return nil, err
+	}
 	c, err := runDetachedOp(
 		ctx,
 		done,
@@ -234,6 +249,10 @@ func (n *DetachedNetwork) Listen(
 		return nil, err
 	}
 	defer cancel()
+	address, err = n.resolveNetAddr(ctx, network, address)
+	if err != nil {
+		return nil, err
+	}
 	l, err := runDetachedOp(
 		ctx,
 		done,
@@ -258,6 +277,10 @@ func (n *DetachedNetwork) PacketDial(
 		return nil, err
 	}
 	defer cancel()
+	address, err = n.resolveNetAddr(ctx, network, address)
+	if err != nil {
+		return nil, err
+	}
 	c, err := runDetachedOp(
 		ctx,
 		done,
@@ -282,6 +305,10 @@ func (n *DetachedNetwork) ListenPacket(
 		return nil, err
 	}
 	defer cancel()
+	address, err = n.resolveNetAddr(ctx, network, address)
+	if err != nil {
+		return nil, err
+	}
 	c, err := runDetachedOp(
 		ctx,
 		done,
@@ -306,6 +333,14 @@ func (n *DetachedNetwork) DialTCP(
 		return nil, err
 	}
 	defer cancel()
+	laddr, err = n.resolveNetAddr(ctx, network, laddr)
+	if err != nil {
+		return nil, err
+	}
+	raddr, err = n.resolveNetAddr(ctx, network, raddr)
+	if err != nil {
+		return nil, err
+	}
 	c, err := runDetachedOp(
 		ctx,
 		done,
@@ -330,6 +365,10 @@ func (n *DetachedNetwork) ListenTCP(
 		return nil, err
 	}
 	defer cancel()
+	laddr, err = n.resolveNetAddr(ctx, network, laddr)
+	if err != nil {
+		return nil, err
+	}
 	l, err := runDetachedOp(
 		ctx,
 		done,
@@ -354,6 +393,14 @@ func (n *DetachedNetwork) DialUDP(
 		return nil, err
 	}
 	defer cancel()
+	laddr, err = n.resolveNetAddr(ctx, network, laddr)
+	if err != nil {
+		return nil, err
+	}
+	raddr, err = n.resolveNetAddr(ctx, network, raddr)
+	if err != nil {
+		return nil, err
+	}
 	c, err := runDetachedOp(
 		ctx,
 		done,
@@ -378,6 +425,10 @@ func (n *DetachedNetwork) ListenUDP(
 		return nil, err
 	}
 	defer cancel()
+	laddr, err = n.resolveNetAddr(ctx, network, laddr)
+	if err != nil {
+		return nil, err
+	}
 	c, err := runDetachedOp(
 		ctx,
 		done,
@@ -404,6 +455,10 @@ func (n *DetachedNetwork) ListenPacketConfig(
 		return nil, err
 	}
 	defer cancel()
+	address, err = n.resolveNetAddr(ctx, network, address)
+	if err != nil {
+		return nil, err
+	}
 	c, err := runDetachedOp(
 		ctx,
 		done,
@@ -430,6 +485,10 @@ func (n *DetachedNetwork) ListenUDPConfig(
 		return nil, err
 	}
 	defer cancel()
+	laddr, err = n.resolveNetAddr(ctx, network, laddr)
+	if err != nil {
+		return nil, err
+	}
 	c, err := runDetachedOp(
 		ctx,
 		done,
@@ -454,6 +513,10 @@ func (n *DetachedNetwork) ListenMulticastUDP(
 		return nil, err
 	}
 	defer cancel()
+	address, err = n.resolveNetAddr(ctx, network, address)
+	if err != nil {
+		return nil, err
+	}
 	c, err := runDetachedOp(
 		ctx,
 		done,
@@ -481,6 +544,9 @@ func (n *DetachedNetwork) LookupIP(
 		ctx,
 		done,
 		func(ctx context.Context) ([]net.IP, error) {
+			if n.res != nil {
+				return n.res.LookupIP(ctx, network, address)
+			}
 			return n.wrapped.LookupIP(ctx, network, address)
 		},
 		func([]net.IP) {},
@@ -500,6 +566,9 @@ func (n *DetachedNetwork) LookupIPAddr(
 		ctx,
 		done,
 		func(ctx context.Context) ([]net.IPAddr, error) {
+			if n.res != nil {
+				return n.res.LookupIPAddr(ctx, host)
+			}
 			return n.wrapped.LookupIPAddr(ctx, host)
 		},
 		func([]net.IPAddr) {},
@@ -519,6 +588,9 @@ func (n *DetachedNetwork) LookupNetIP(
 		ctx,
 		done,
 		func(ctx context.Context) ([]netip.Addr, error) {
+			if n.res != nil {
+				return n.res.LookupNetIP(ctx, network, host)
+			}
 			return n.wrapped.LookupNetIP(ctx, network, host)
 		},
 		func([]netip.Addr) {},
@@ -538,6 +610,9 @@ func (n *DetachedNetwork) LookupHost(
 		ctx,
 		done,
 		func(ctx context.Context) ([]string, error) {
+			if n.res != nil {
+				return n.res.LookupHost(ctx, host)
+			}
 			return n.wrapped.LookupHost(ctx, host)
 		},
 		func([]string) {},
@@ -557,6 +632,9 @@ func (n *DetachedNetwork) LookupAddr(
 		ctx,
 		done,
 		func(ctx context.Context) ([]string, error) {
+			if n.res != nil {
+				return n.res.LookupAddr(ctx, addr)
+			}
 			return n.wrapped.LookupAddr(ctx, addr)
 		},
 		func([]string) {},
@@ -573,6 +651,9 @@ func (n *DetachedNetwork) LookupCNAME(
 	}
 	defer cancel()
 	return runDetachedOp(ctx, done, func(ctx context.Context) (string, error) {
+		if n.res != nil {
+			return n.res.LookupCNAME(ctx, host)
+		}
 		return n.wrapped.LookupCNAME(ctx, host)
 	}, func(string) {})
 }
@@ -587,6 +668,9 @@ func (n *DetachedNetwork) LookupPort(
 	}
 	defer cancel()
 	return runDetachedOp(ctx, done, func(ctx context.Context) (int, error) {
+		if n.res != nil {
+			return n.res.LookupPort(ctx, network, service)
+		}
 		return n.wrapped.LookupPort(ctx, network, service)
 	}, func(int) {})
 }
@@ -604,6 +688,9 @@ func (n *DetachedNetwork) LookupTXT(
 		ctx,
 		done,
 		func(ctx context.Context) ([]string, error) {
+			if n.res != nil {
+				return n.res.LookupTXT(ctx, name)
+			}
 			return n.wrapped.LookupTXT(ctx, name)
 		},
 		func([]string) {},
@@ -623,6 +710,9 @@ func (n *DetachedNetwork) LookupMX(
 		ctx,
 		done,
 		func(ctx context.Context) ([]*net.MX, error) {
+			if n.res != nil {
+				return n.res.LookupMX(ctx, name)
+			}
 			return n.wrapped.LookupMX(ctx, name)
 		},
 		func([]*net.MX) {},
@@ -642,6 +732,9 @@ func (n *DetachedNetwork) LookupNS(
 		ctx,
 		done,
 		func(ctx context.Context) ([]*net.NS, error) {
+			if n.res != nil {
+				return n.res.LookupNS(ctx, name)
+			}
 			return n.wrapped.LookupNS(ctx, name)
 		},
 		func([]*net.NS) {},
@@ -664,7 +757,11 @@ func (n *DetachedNetwork) LookupSRV(
 			cname string
 			addrs []*net.SRV
 		}, error) {
-			cname, addrs, err := n.wrapped.LookupSRV(ctx, service, proto, name)
+			var res Resolver = n.wrapped
+			if n.res != nil {
+				res = n.res
+			}
+			cname, addrs, err := res.LookupSRV(ctx, service, proto, name)
 			return struct {
 				cname string
 				addrs []*net.SRV
@@ -746,6 +843,43 @@ func (n *DetachedNetwork) begin(
 		}
 	}()
 	return opCtx, cancel, gen, wrapperDone, nil
+}
+
+func (n *DetachedNetwork) resolveNetAddr(
+	ctx context.Context,
+	network, address string,
+) (string, error) {
+	if address == "" || n.res == nil {
+		return address, nil
+	}
+
+	host, service, err := net.SplitHostPort(address)
+	if err != nil {
+		return "", err
+	}
+
+	if _, err := strconv.Atoi(service); err != nil {
+		port, err := n.res.LookupPort(ctx, NormalNet(network), service)
+		if err != nil {
+			return "", err
+		}
+		service = strconv.Itoa(port)
+	}
+
+	if host == "" || net.ParseIP(host) != nil {
+		return net.JoinHostPort(host, service), nil
+	}
+
+	lookupHost := host
+	hosts, err := n.res.LookupHost(ctx, lookupHost)
+	if err != nil {
+		return "", err
+	}
+	host = routerPickResolvedHost(network, hosts)
+	if host == "" {
+		return "", NoSuchHost(lookupHost, "detacheddns")
+	}
+	return net.JoinHostPort(host, service), nil
 }
 
 func (n *DetachedNetwork) checkUp() error {

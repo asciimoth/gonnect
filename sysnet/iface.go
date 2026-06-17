@@ -66,6 +66,8 @@ func (r *RulesInfo) Copy() RulesInfo {
 // Matcher should be used only with outgoing traffic comes form System that was
 // used to build it.
 type Matcher interface {
+	io.Closer
+
 	Match(flow sockowner.FlowTuple) (bool, error)
 }
 

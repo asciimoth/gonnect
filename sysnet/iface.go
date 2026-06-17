@@ -5,29 +5,30 @@
 package sysnet
 
 import (
+	"errors"
 	"io"
-	"math"
 	"net"
 
 	"github.com/asciimoth/gonnect"
 	"github.com/asciimoth/gonnect/dns"
+	"github.com/asciimoth/gonnect/sockowner"
 	"github.com/asciimoth/gonnect/subnet"
 	"github.com/asciimoth/gonnect/tun"
 )
 
-const (
-	CGROUP_UNKNOWN     = 0
-	UID_UNKNOWN        = math.MaxUint64
-	GID_UNKNOWN        = math.MaxUint64
-	PID_UNKNOWN        = math.MinInt
-	ROUTE_MARK_UNKNOWN = 0
+var (
+	// ErrNotSupported should be used by System implementation when unsupported
+	// feature used.
+	ErrNotSupported = errors.New("feature is not supported")
+
+	ErrUnknownTun = errors.New("unknown tun")
 )
 
 // A Rule matches IP packets and connections to check if they are owned by a
 // specific process, user, application, or other entity.
 // For example: Type="app", Rule="org.mozilla.firefox".
-// Different SysBuilder and System implementations may support different sets
-// of rule types, so callers should check SysBuilder.ListRules first.
+// Different System and System implementations may support different sets
+// of rule types, so callers should check System.ListRules first.
 type Rule struct {
 	Type, Rule string
 }
@@ -37,70 +38,120 @@ type RuleTypeInfo struct {
 	Type, Description string
 }
 
-// NetInfo reports information that can be fetched for a connection or packet.
-// Not all systems support all fields; unsupported or unknown fields should
-// have their default values.
-type NetInfo struct {
-	Cgroup uint64 // Default 0
+type RulesInfo struct {
+	// TunRules that can be used in Exclude or Include lists for DefaultTun.
+	TunRules []RuleTypeInfo
 
-	UID  uint64 // Default UID_UNKNOWN
-	GID  uint64 // Default GID_UNKNOWN
-	User string // Default ""
+	// Rules that can be used in Matchers with IP packets come from Tuns.
+	IPMatcherRules []RuleTypeInfo
 
-	PID int // Default PID_UNKNOWN
-
-	// RouteMark holds the packet/connection route mark value:
-	// SO_MARK on Linux, SO_USER_COOKIE on FreeBSD, SO_RTABLE on OpenBSD.
-	// There is no matching concept specified for other operating systems.
-	// Default 0.
-	RouteMark int
+	// Rules that can be used in Matchers with Connections accepted via LocalNet.
+	ConnMatcherRules []RuleTypeInfo
 }
 
-// IPMatcher matches IP packets against rules and extracts network information.
-// IPMatcher must be thread safe.
-type IPMatcher interface {
-	Lock()
-	Unlock()
-
-	Map(rule Rule) uint64
-	UnMap(rule uint64)
-	UnMapAll()
-
-	Match(pkt []byte, rule uint64) bool
-
-	PktInfo(pkt []byte) *NetInfo
-
-	Close() error
+func (r *RulesInfo) Copy() RulesInfo {
+	rules := RulesInfo{
+		TunRules:         make([]RuleTypeInfo, len(r.TunRules)),
+		IPMatcherRules:   make([]RuleTypeInfo, len(r.IPMatcherRules)),
+		ConnMatcherRules: make([]RuleTypeInfo, len(r.ConnMatcherRules)),
+	}
+	copy(rules.TunRules, r.TunRules)
+	copy(rules.IPMatcherRules, r.IPMatcherRules)
+	copy(rules.ConnMatcherRules, r.ConnMatcherRules)
+	return rules
 }
 
-// BuildOpts specifies configuration options for building a System.
-type BuildOpts struct {
-	// TunNeeded specifies whether a TUN device should be created.
-	TunNeeded bool
-	// DnsNeeded specifies whether DNS integration should be enabled.
-	DnsNeeded bool
+// Matcher instance is constructed by a System from a Rule and matches
+// 5-tuple flow info.
+// Matcher should be used only with outgoing traffic comes form System that was
+// used to build it.
+type Matcher interface {
+	Match(flow sockowner.FlowTuple) (bool, error)
+}
 
+// MatchConn matches a connection incoming from LocalNet against provided matcher.
+// It MUST NOT be used for any connections except one accepted from Listeners
+// created via LocalNet owned by same System instance that was used to build
+// this Matcher.
+func MatchConn(c net.Conn, matcher Matcher) (bool, error) {
+	if matcher == nil || c == nil {
+		return false, nil
+	}
+	flow, err := sockowner.IncomingConnPeerFlow(c)
+	if err != nil {
+		return false, err
+	}
+	return matcher.Match(*flow)
+}
+
+// DefaultTunOpts specifies configuration options for building a DefaultTun
+type DefaultTunOpts struct {
 	// TunAddrs specifies the addresses that should be owned by the TUN device,
 	// for example: "10.0.0.2/32".
+	// Loopback addrs passed here should be ignored.
+	// If TunAddrs is void, implementation should pick some safe addr and subnet.
 	TunAddrs []string
 
-	// TunRoutes specifies the routes that should be owned by the TUN device,
-	// for example: "0.0.0.0/0" for all routes.
+	// TunRoutes specifies the extra routes that should be owned by the TUN device,
+	// for example: "0.0.0.0/0" and "::/0" for all routes.
+	// Loopback subnets passed here should be ignored.
 	TunRoutes []string
 
-	// MTU specifies the initial MTU for the TUN device.
+	// MTU specifies the initial MTU for the TUN device. If MTU is 0 or too low,
+	// implementation should use a sensible default.
 	MTU int
 
-	// Exclude specifies a list of rules to exclude traffic from being routed
-	// through System.Tun.
+	// DnsIP is an address to host DNS server on. It should be one of TunAddrs.
+	// If not provided, some of addrs owned by DefaultTun should be picked.
+	// Any DnsIP not included in TunAddrs should be ignored.
+	DnsIP string
+
+	// If Strict mode enabled, all traffic that not goes to DefaultTun device
+	// (e.g. excluded) should be dropped insteade of passed to some other
+	// suitable network interface.
+	// Note that Strict mode toggling may be not supported on some systems.
+	Strict bool
+
+	// Exclude specifies a list of rules to identify traffic that SHOULD NOT go
+	// to DefaultTun.
+	// If Strict is enabled, excluded traffic should not go anywhere else and
+	// should be just dropped instead. Note that Strict mode toggle may be not
+	// supported on some systems.
+	// Exclude is mutually exclusive with Include.
 	Exclude []Rule
+
+	// Include specifies a list of rules to identify traffic that SHOULD go to
+	// DefaultTun while everything else bypass it.
+	// If Strict is enabled, not included traffic should not go anywhere else and
+	// should be just dropped instead. Note that Strict mode toggle may be not
+	// supported on some systems.
+	// Include is mutually exclusive with Exclude.
+	Include []Rule
 }
 
-func (b *BuildOpts) Copy() BuildOpts {
-	c := BuildOpts{
-		TunNeeded: b.TunNeeded,
-		DnsNeeded: b.DnsNeeded,
-		MTU:       b.MTU,
+// TunOpts specifies configuration options for building a regular Tun.
+type TunOpts struct {
+	// TunAddrs specifies the addresses that should be owned by the TUN device,
+	// for example: "10.0.0.2/32".
+	// Loopback addrs passed here should be ignored.
+	// If TunAddrs is void, there will be no
+	TunAddrs []string
+
+	// TunRoutes specifies the extra routes that should be owned by the TUN device,
+	// for example: "0.0.0.0/0" and "::/0" for all routes.
+	// Loopback subnets passed here should be ignored.
+	TunRoutes []string
+
+	// MTU specifies the initial MTU for the TUN device. If MTU is 0 or too low,
+	// implementation should use a sensible default.
+	MTU int
+}
+
+func (b *DefaultTunOpts) Copy() DefaultTunOpts {
+	c := DefaultTunOpts{
+		MTU:    b.MTU,
+		DnsIP:  b.DnsIP,
+		Strict: b.Strict,
 	}
 
 	if b.TunAddrs != nil {
@@ -118,31 +169,57 @@ func (b *BuildOpts) Copy() BuildOpts {
 		copy(c.Exclude, b.Exclude)
 	}
 
+	if b.Include != nil {
+		c.Include = make([]Rule, len(b.Include))
+		copy(c.Include, b.Include)
+	}
+
 	return c
 }
 
-// System holds the components for operating with the network system.
-type System struct {
-	// Tun is the TUN device interface, or nil if not enabled.
-	Tun tun.Tun
+// DefaultTun represents a Tun device intended to use as a default route
+// for system traffic. It is also responsible for DNS requests processing because
+// on may systems (e.g. android, linux with systremd-resolved, etc) DNS
+// configuration must be binded to specific network interface.
+// Some implementation of DefaultTun automatically intercept all DNS requests
+// sent via it.
+type DefaultTun interface {
+	tun.Tun
 
-	// OutNet and LocalNet are the outbound and local network interfaces.
-	// These must never be nil; SysBuilder implementations that cannot provide
-	// one should return gonnect.RejectNetwork.
-	OutNet, LocalNet gonnect.Network
-
-	// DNSOut is the interface for handling outgoing DNS requests.
-	DNSOut dns.Interface
-	// DNSIn is an optional callback to set the current system DNS resolver.
-	DNSIn func(dns.Interface)
-
-	// Matcher is a pointer to the IP packet matcher.
-	Matcher IPMatcher
+	// SetDns sets the current system DNS resolver owerwriting previous if there
+	// are one.
+	// When being called with nil arg, it should drop all incoming DNS requests.
+	// After DefaultTun is closed, DNS configuration associated with it should be
+	// removed and system dns should be rolled back to configuration existed before
+	// DefaultTun creation.
+	SetDns(resolver dns.Interface)
 }
 
-// SysBuilder constructs System instances for a specific platform.
-type SysBuilder interface {
+type Features struct {
+	// Can regular Tun (not DefaultTun) be built.
+	Tun bool
+	// Can DefaultTun be built.
+	DefaultTun bool
+	// Can Tun's options be updated without its re-built.
+	DynTun bool
+	// Can DefaultTun's options be updated without its re-built.
+	DynDefaultTun bool
+	// Are custom names supported for regular Tun (not DefaultTun).
+	TunNames bool
+	// Are custom names supported for DefaultTun.
+	DefaultTunNames bool
+	// Is Strict mode supported for DefaultTun.
+	StrictMode bool
+}
+
+// System constructs System instances for a specific platform.
+type System interface {
+	// System closing should lead to closing all Tun and Network instances
+	// created via it.
 	io.Closer
+
+	// Features report info about supported features
+	Features() Features
 
 	// AllocIP returns an IP address allocator for the system.
 	AllocIP() subnet.IPAllocator
@@ -150,32 +227,106 @@ type SysBuilder interface {
 	AllocSubnet() subnet.SubnetAllocator
 
 	// ListRules returns a list of supported rule types and their descriptions.
-	ListRules() []RuleTypeInfo
+	ListRules() RulesInfo
 
 	// RuleVerify checks whether a rule is valid for its specified type.
 	// This is intended for UI validation hints.
 	RuleVerify(rule Rule) bool
 
 	// RuleCompl returns autocompletion suggestions for a partial rule value,
-	// intended for UI use. For example: Type="app", Partial="org.mozilla.fir"
+	// intended for UI use. For example: Type="app", Rule="org.mozilla.fir"
 	// might return []string{"org.mozilla.firefox"}.
 	RuleCompl(rule Rule) []string
 
-	// TunNameFormat returns the expected format string for TUN device names.
-	TunNameFormat() string
-	// TunNameVerify checks whether a TUN device name is valid.
-	TunNameVerify(name string) bool
+	// TunNameVerify checks whether provided name can be used as a Tun name.
+	TunNameVerify(name string) (valid bool, free bool)
 
-	// ConnInfo fetches network information about an incoming connection.
-	ConnInfo(c net.Conn) *NetInfo
-	// ConnRule matches an incoming connection against a rule.
-	ConnRule(c net.Conn, rule Rule) bool
+	// OutDNS is the interface for handling outgoing DNS requests.
+	// It should bypass any DefaultTun created via this System.
+	OutDNS() dns.Interface
 
-	// Build constructs a System instance with the specified options.
-	// Build may be called multiple times, but only one System should be used
-	// at a time. It is recommended that SysBuilder implementations close or
-	// stop artifacts from a previous build when a new one is created.
-	Build(opts BuildOpts) (*System, error)
+	// OutNet is an outbound Network interface. All traffic goes through it should
+	// bypass any DefaultTun instance built by this System.
+	// System implementations that cannot provide one should return
+	// gonnect.RejectNetwork.
+	OutNet() gonnect.Network
 
-	// TODO: Secondary tun factory interface
+	// LocalNet is a loopback Network interface. It should be limited to loopback
+	// addrs and domains pointing to them.
+	// System implementations that cannot provide one should return
+	// gonnect.RejectNetwork.
+	LocalNet() gonnect.Network
+
+	// BuildMatcher builds a new Matcher from provided rule. Built Matcher should
+	// Matcher instances created this way are intended to use for filtering
+	// traffic that comes from Tuns built by this System and for Connections
+	// accepted via LocalNet.
+	BuildMatcher(rule Rule) (Matcher, error)
+
+	// BuildDefaultTun constructs a DefaultTun instance with specified options.
+	// BuildDefaultTun may be called multiple times, but only one latest
+	// DefaultTun should be used at a time. It is recommended for System
+	// implementations to close previous DefaultTun and associated artifacts when
+	// a new one is created.
+	BuildDefaultTun(opts DefaultTunOpts) (DefaultTun, error)
+
+	VerifyDefaultTunOpts(opts DefaultTunOpts) error
+
+	// BuildTun constructs a tun.Tun instance with specified options.
+	// BuildTun may be not supported on some systems, check Features.
+	BuildTun(opts TunOpts) (tun.Tun, error)
+
+	VerifyTunOpts(opts TunOpts) error
+
+	// SetTunMTU updates MTU of provided Tun.
+	// It should work only for Tuns built via this System instance. For others
+	// ErrUnknownTun should be returned.
+	// If MTU is 0 or too low, implementation should use a sensible default.
+	// Dynamic Tun params update may not be available on some systems.
+	SetTunMTU(tun tun.Tun, MTU int) error
+
+	// SetTunAddrs updates list off addrs of provided Tun.
+	// It should work only for Tuns built via this System instance. For others
+	// ErrUnknownTun should be returned.
+	// Dynamic Tun params update may not be available on some systems.
+	SetTunAddrs(tun tun.Tun, addrs []string) error
+
+	// AddTunAddr updates list off addrs of provided Tun.
+	// It should work only for Tuns built via this System instance. For others
+	// ErrUnknownTun should be returned.
+	// Dynamic Tun params update may not be available on some systems.
+	AddTunAddr(tun tun.Tun, addr string) error
+
+	// GetTunAddrs returns list off addrs of provided Tun.
+	// It should work only for Tuns built via this System instance. For others
+	// ErrUnknownTun should be returned.
+	// Dynamic Tun params fetching may not be available on some systems.
+	GetTunAddrs(tun tun.Tun) ([]string, error)
+
+	// SetTunRoutes updates list off routes of provided Tun.
+	// It should work only for Tuns built via this System instance. For others
+	// ErrUnknownTun should be returned.
+	// Dynamic Tun params update may not be available on some systems.
+	SetTunRoutes(tun tun.Tun, routes []string) error
+
+	// AddTunRoute updates list off routes of provided Tun.
+	// It should work only for Tuns built via this System instance. For others
+	// ErrUnknownTun should be returned.
+	// Dynamic Tun params update may not be available on some systems.
+	AddTunRoute(tun tun.Tun, route string) error
+
+	// GetTunRotue returns list off routes of provided Tun.
+	// It should work only for Tuns built via this System instance. For others
+	// ErrUnknownTun should be returned.
+	// Dynamic Tun params fetching may not be available on some systems.
+	GetTunRotue(tun tun.Tun) ([]string, error)
+
+	// SetTunName updates name of provided Tun.
+	// It should work only for Tuns built via this System instance. For others
+	// ErrUnknownTun should be returned.
+	// SetTunName should not work with DefaultTun instances.
+	// Dynamic Tun params update may not be available on some systems.
+	// Also on some systems SetTunName may be available for regular Tuns but not
+	// for DefaultTun.
+	SetTunName(tun tun.Tun) ([]string, error)
 }

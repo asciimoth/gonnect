@@ -1,381 +1,280 @@
 package subnet
 
 import (
-	"math/big"
+	"bytes"
 	"net"
 	"sync"
 )
 
-// All methods of IPAllocator should be thread-safe.
+const maxFilteredAllocationAttempts = 1000
+
+// IPFilter decides whether an IP address may be allocated.
+// It returns true to allow the candidate and false to make the allocator skip
+// it and try another address.
+type IPFilter func(net.IP) bool
+
+// IPAllocator reserves, allocates, and frees IP addresses from owned subnets.
+// All methods are safe for concurrent use.
 type IPAllocator interface {
-	// Reserve marks an IP as reserved.
-	Reserve(ip net.IP)
+	// ReserveIP marks an IP address as reserved. If the same address is
+	// reserved multiple times, the same number of FreeIP calls is required
+	// before it can be allocated again.
+	ReserveIP(ip net.IP)
 
-	// Alloc returns a free IPv4 addr and marks it as reserved.
-	// It returns nil if there is no free IPv4 addrs available in this allocator.
-	Alloc4() net.IP
+	// AllocIP4 returns a free IPv4 address, a copy of the subnet it was
+	// allocated from, and marks the address as reserved.
+	// It returns nil IP and subnet values if this allocator does not own an IPv4
+	// subnet or there are no free IPv4 addresses available.
+	AllocIP4() (net.IP, *net.IPNet)
 
-	// Alloc returns a free IPv6 addr and marks it as reserved.
-	// It returns nil if there is no free IPv6 addrs available in this allocator.
-	Alloc6() net.IP
+	// AllocIP6 returns a free IPv6 address, a copy of the subnet it was
+	// allocated from, and marks the address as reserved.
+	// It returns nil IP and subnet values if this allocator does not own an IPv6
+	// subnet or there are no free IPv6 addresses available.
+	AllocIP6() (net.IP, *net.IPNet)
 
-	// Free removes the reserved mark from an IP. If the IP was not reserved,
-	// this is a no-op.
-	Free(ip net.IP)
+	// FreeIP decrements reserve counter for provided IP.
+	// If this IP was not reserved, FreeIP is a no-op.
+	FreeIP(ip net.IP)
 
 	// FreeAll removes all reserved marks, making all previously allocated IPs
 	// available again.
-	FreeAll()
+	FreeAllIP()
 }
 
-// ipAllocator implements IPAllocator using optional IPv4 and IPv6 subnets.
-type ipAllocator struct {
-	mu      sync.RWMutex
-	subnet4 *net.IPNet // optional IPv4 subnet
-	subnet6 *net.IPNet // optional IPv6 subnet
-	used4   map[string]struct{}
-	used6   map[string]struct{}
-	next4   *big.Int // next IPv4 address to try
-	next6   *big.Int // next IPv6 address to try
-}
-
-// NewIPAllocator creates a new IPAllocator with optional IPv4 and IPv6 subnets.
-// Either or both subnets can be nil.
-func NewIPAllocator(subnet4, subnet6 *net.IPNet) IPAllocator {
+// NewIPAllocator creates an IPAllocator that owns a copy of network.
+//
+// The allocator only returns addresses from the provided subnet and never
+// returns the first or last address in the range. For IPv4 these are the
+// network and broadcast addresses. The same rule is intentionally applied to
+// IPv6 so callers can rely on consistent reservation behavior.
+//
+// nil and malformed networks create an empty allocator whose allocation
+// methods return nil IP and subnet values.
+//
+// If filter is non-nil, allocation calls evaluate each otherwise available
+// candidate with the filter before reserving it. Rejected candidates are skipped
+// without being reserved. To avoid unbounded scans when the filter rejects every
+// candidate, each allocation call tries at most 1000 filtered candidates before
+// returning nil.
+//
+// Filters are called while the allocator lock is held. They should be fast and
+// must not call methods on the same allocator.
+func NewIPAllocator(network *net.IPNet, filter IPFilter) IPAllocator {
 	a := &ipAllocator{
-		used4: make(map[string]struct{}),
-		used6: make(map[string]struct{}),
+		reserved: make(map[string]int),
+		filter:   filter,
 	}
 
-	if subnet4 != nil {
-		a.subnet4 = copyIPNet(subnet4)
-		a.next4 = big.NewInt(0).SetBytes(subnet4.IP.To4())
+	if network == nil {
+		return a
 	}
 
-	if subnet6 != nil {
-		a.subnet6 = copyIPNet(subnet6)
-		a.next6 = big.NewInt(0).SetBytes(subnet6.IP)
+	ip, mask, bits, ok := normalizeIPNet(network)
+	if !ok {
+		return a
 	}
+
+	first, last := Range(&net.IPNet{IP: ip, Mask: mask})
+	a.network = &net.IPNet{IP: ip, Mask: mask}
+	a.bits = bits
+	a.first = normalizeIPForBits(first, bits)
+	a.last = normalizeIPForBits(last, bits)
+	a.next = Next(a.first)
 
 	return a
 }
 
-func (a *ipAllocator) Reserve(ip net.IP) {
+type ipAllocator struct {
+	mu       sync.Mutex
+	network  *net.IPNet
+	bits     int
+	first    net.IP
+	last     net.IP
+	next     net.IP
+	reserved map[string]int
+	filter   IPFilter
+}
+
+func (a *ipAllocator) ReserveIP(ip net.IP) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	if ip4 := ip.To4(); ip4 != nil {
-		a.used4[ip4.String()] = struct{}{}
-	} else {
-		a.used6[ip.String()] = struct{}{}
+	a.reserve(ip)
+}
+
+func (a *ipAllocator) AllocIP4() (net.IP, *net.IPNet) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if a.bits != 32 {
+		return nil, nil
+	}
+	return a.alloc()
+}
+
+func (a *ipAllocator) AllocIP6() (net.IP, *net.IPNet) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if a.bits != 128 {
+		return nil, nil
+	}
+	return a.alloc()
+}
+
+func (a *ipAllocator) FreeIP(ip net.IP) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	normalized := a.normalizeUsableIP(ip)
+	if normalized == nil {
+		return
+	}
+
+	key := ipMapKey(normalized)
+	count := a.reserved[key]
+	switch {
+	case count > 1:
+		a.reserved[key] = count - 1
+	case count == 1:
+		delete(a.reserved, key)
 	}
 }
 
-func (a *ipAllocator) Alloc4() net.IP {
+func (a *ipAllocator) FreeAllIP() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	if a.subnet4 == nil {
+	a.reserved = make(map[string]int)
+	if a.first != nil {
+		a.next = Next(a.first)
+	}
+}
+
+// alloc returns the first currently available usable address, the subnet it was
+// allocated from, and reserves the address. The caller must hold a.mu.
+func (a *ipAllocator) alloc() (net.IP, *net.IPNet) {
+	if a.network == nil || !isBeforeIP(a.first, a.last) {
+		return nil, nil
+	}
+
+	start := a.next
+	if start == nil || !a.isUsable(start) {
+		start = Next(a.first)
+	}
+
+	attempts := 0
+	for candidate := copyIP(start); a.isUsable(candidate); candidate = Next(candidate) {
+		if ip := a.tryAlloc(candidate, &attempts); ip != nil {
+			return ip, CopyIPNet(a.network)
+		}
+		if attempts >= maxFilteredAllocationAttempts {
+			return nil, nil
+		}
+	}
+
+	for candidate := Next(a.first); isBeforeIP(candidate, start); candidate = Next(candidate) {
+		if !a.isUsable(candidate) {
+			break
+		}
+		if ip := a.tryAlloc(candidate, &attempts); ip != nil {
+			return ip, CopyIPNet(a.network)
+		}
+		if attempts >= maxFilteredAllocationAttempts {
+			return nil, nil
+		}
+	}
+
+	return nil, nil
+}
+
+func (a *ipAllocator) tryAlloc(candidate net.IP, attempts *int) net.IP {
+	key := ipMapKey(candidate)
+	if a.reserved[key] != 0 {
 		return nil
 	}
-
-	ones, bits := a.subnet4.Mask.Size()
-	hostBits := bits - ones
-	totalHosts := new(
-		big.Int,
-	).Exp(big.NewInt(2), big.NewInt(int64(hostBits)), nil)
-
-	baseIP := big.NewInt(0).SetBytes(a.subnet4.IP.To4())
-	lastIP := big.NewInt(0).
-		Add(baseIP, new(big.Int).Sub(totalHosts, big.NewInt(1)))
-
-	for i := big.NewInt(0); i.Cmp(totalHosts) < 0; i.Add(i, big.NewInt(1)) {
-		candidate := big.NewInt(0).Add(baseIP, i)
-		candidate.Mod(candidate, totalHosts)
-		candidate.Add(candidate, baseIP)
-
-		ipBytes := candidate.Bytes()
-		ip := make(net.IP, 4)
-		// Pad to 4 bytes
-		copy(ip[4-len(ipBytes):], ipBytes)
-
-		if ip.Equal(a.subnet4.IP) {
-			continue // skip network address (first IP)
-		}
-
-		// Calculate last IP bytes
-		lastIPBytes := lastIP.Bytes()
-		lastIPNet := make(net.IP, 4)
-		copy(lastIPNet[4-len(lastIPBytes):], lastIPBytes)
-
-		if ip.Equal(lastIPNet) {
-			continue // skip broadcast address (last IP)
-		}
-
-		if _, used := a.used4[ip.String()]; !used {
-			a.used4[ip.String()] = struct{}{}
-			a.next4 = big.NewInt(0).Add(candidate, big.NewInt(1))
-			return ip
+	if a.filter != nil {
+		(*attempts)++
+		if !a.filter(copyIP(candidate)) {
+			return nil
 		}
 	}
-
-	return nil
+	a.reserved[key] = 1
+	a.next = Next(candidate)
+	return copyIP(candidate)
 }
 
-func (a *ipAllocator) Alloc6() net.IP {
-	a.mu.Lock()
-	defer a.mu.Unlock()
+// reserve records ip as unavailable if it belongs to this allocator's subnet.
+// Multiple reservations are reference-counted and require the same number of
+// FreeIP calls before the address can be allocated again. The caller must hold
+// a.mu.
+func (a *ipAllocator) reserve(ip net.IP) {
+	normalized := a.normalizeUsableIP(ip)
+	if normalized == nil {
+		return
+	}
+	a.reserved[ipMapKey(normalized)]++
+}
 
-	if a.subnet6 == nil {
+func (a *ipAllocator) normalizeUsableIP(ip net.IP) net.IP {
+	normalized := normalizeIPForBits(ip, a.bits)
+	if normalized == nil || !a.isUsable(normalized) {
 		return nil
 	}
-
-	ones, bits := a.subnet6.Mask.Size()
-	hostBits := bits - ones
-	totalHosts := new(
-		big.Int,
-	).Exp(big.NewInt(2), big.NewInt(int64(hostBits)), nil)
-
-	baseIP := big.NewInt(0).SetBytes(a.subnet6.IP)
-	lastIP := big.NewInt(0).
-		Add(baseIP, new(big.Int).Sub(totalHosts, big.NewInt(1)))
-
-	for i := big.NewInt(0); i.Cmp(totalHosts) < 0; i.Add(i, big.NewInt(1)) {
-		candidate := big.NewInt(0).Add(baseIP, i)
-		candidate.Mod(candidate, totalHosts)
-		candidate.Add(candidate, baseIP)
-
-		ipBytes := candidate.Bytes()
-		ip := make(net.IP, 16)
-		// Pad to 16 bytes
-		copy(ip[16-len(ipBytes):], ipBytes)
-
-		if ip.Equal(a.subnet6.IP) {
-			continue // skip subnet identifier (first IP)
-		}
-
-		// Calculate last IP bytes
-		lastIPBytes := lastIP.Bytes()
-		lastIPNet := make(net.IP, 16)
-		copy(lastIPNet[16-len(lastIPBytes):], lastIPBytes)
-
-		if ip.Equal(lastIPNet) {
-			continue // skip last IP
-		}
-
-		if _, used := a.used6[ip.String()]; !used {
-			a.used6[ip.String()] = struct{}{}
-			a.next6 = big.NewInt(0).Add(candidate, big.NewInt(1))
-			return ip
-		}
-	}
-
-	return nil
+	return normalized
 }
 
-func (a *ipAllocator) Free(ip net.IP) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
+func (a *ipAllocator) isUsable(ip net.IP) bool {
+	return a.network != nil &&
+		a.network.Contains(ip) &&
+		isBeforeIP(a.first, ip) &&
+		isBeforeIP(ip, a.last)
+}
 
-	if ip4 := ip.To4(); ip4 != nil {
-		delete(a.used4, ip4.String())
-	} else {
-		delete(a.used6, ip.String())
+func normalizeIPNet(network *net.IPNet) (net.IP, net.IPMask, int, bool) {
+	_, bits := network.Mask.Size()
+	if bits != 32 && bits != 128 {
+		return nil, nil, 0, false
+	}
+
+	ip := normalizeIPForBits(network.IP, bits)
+	if ip == nil {
+		return nil, nil, 0, false
+	}
+
+	mask := make(net.IPMask, len(network.Mask))
+	copy(mask, network.Mask)
+
+	return ip.Mask(mask), mask, bits, true
+}
+
+func normalizeIPForBits(ip net.IP, bits int) net.IP {
+	switch bits {
+	case 32:
+		return copyIP(ip.To4())
+	case 128:
+		return copyIP(ip.To16())
+	default:
+		return nil
 	}
 }
 
-func (a *ipAllocator) FreeAll() {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	a.used4 = make(map[string]struct{})
-	a.used6 = make(map[string]struct{})
-
-	if a.subnet4 != nil {
-		a.next4 = big.NewInt(0).SetBytes(a.subnet4.IP.To4())
-	}
-	if a.subnet6 != nil {
-		a.next6 = big.NewInt(0).SetBytes(a.subnet6.IP)
-	}
+func ipMapKey(ip net.IP) string {
+	return string(ip)
 }
 
-// Ensure interface is implemented at compile time
+func copyIP(ip net.IP) net.IP {
+	if ip == nil {
+		return nil
+	}
+	copied := make(net.IP, len(ip))
+	copy(copied, ip)
+	return copied
+}
+
+func isBeforeIP(left, right net.IP) bool {
+	return bytes.Compare(left, right) < 0
+}
+
 var _ IPAllocator = (*ipAllocator)(nil)
-var _ IPAllocator = (*randomIPAllocator)(nil)
-
-// RandomIPAllocatorConfig holds configuration for NewRandomIPAllocator.
-type RandomIPAllocatorConfig struct {
-	// IPv4Config is optional configuration for the IPv4 SubnetAllocator.
-	// If nil, a default random allocator is used.
-	IPv4Config *RandomAllocatorConfig
-	// IPv6Config is optional configuration for the IPv6 SubnetAllocator.
-	// If nil, a default random allocator is used.
-	IPv6Config *RandomAllocatorConfig
-}
-
-// randomIPAllocator implements IPAllocator using two SubnetAllocators
-// (one for IPv4, one for IPv6) that allocate new subnets on demand when
-// existing ones are full.
-type randomIPAllocator struct {
-	mu sync.Mutex
-
-	subAlloc4 SubnetAllocator
-	subAlloc6 SubnetAllocator
-
-	// Allocated subnets and their per-subnet IP allocators
-	subnets4 []subnetPool
-	subnets6 []subnetPool
-
-	// Global reservation tracking across all subnets
-	used4 map[string]struct{}
-	used6 map[string]struct{}
-}
-
-// subnetPool holds a subnet and its associated IP allocator.
-type subnetPool struct {
-	subnet *net.IPNet
-	alloc  IPAllocator
-}
-
-// NewRandomIPAllocator creates a new IPAllocator that uses two SubnetAllocators
-// to dynamically allocate subnets on demand. When existing subnets are full,
-// new subnets are allocated from the underlying SubnetAllocators.
-// Config is optional; pass nil for default behavior.
-func NewRandomIPAllocator(config *RandomIPAllocatorConfig) IPAllocator {
-	a := &randomIPAllocator{
-		subnets4: make([]subnetPool, 0),
-		subnets6: make([]subnetPool, 0),
-		used4:    make(map[string]struct{}),
-		used6:    make(map[string]struct{}),
-	}
-
-	if config != nil {
-		a.subAlloc4 = NewRandomAllocator(config.IPv4Config)
-		a.subAlloc6 = NewRandomAllocator(config.IPv6Config)
-	} else {
-		a.subAlloc4 = NewRandomAllocator(nil)
-		a.subAlloc6 = NewRandomAllocator(nil)
-	}
-
-	return a
-}
-
-func (a *randomIPAllocator) Reserve(ip net.IP) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	if ip4 := ip.To4(); ip4 != nil {
-		a.used4[ip4.String()] = struct{}{}
-	} else {
-		a.used6[ip.String()] = struct{}{}
-	}
-}
-
-func (a *randomIPAllocator) Alloc4() net.IP {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	// Try to allocate from existing subnets first
-	for i := range a.subnets4 {
-		ip := a.subnets4[i].alloc.Alloc4()
-		if ip != nil {
-			// Mark as used globally
-			a.used4[ip.String()] = struct{}{}
-			return ip
-		}
-	}
-
-	// No space in existing subnets, allocate a new subnet
-	newSubnet := a.subAlloc4.Alloc(0)
-	if newSubnet == nil {
-		return nil
-	}
-
-	// Create IP allocator for this subnet
-	pool := subnetPool{
-		subnet: newSubnet,
-		alloc:  NewIPAllocator(newSubnet, nil),
-	}
-	a.subnets4 = append(a.subnets4, pool)
-
-	// Try to allocate from the new subnet
-	ip := pool.alloc.Alloc4()
-	if ip != nil {
-		a.used4[ip.String()] = struct{}{}
-	}
-	return ip
-}
-
-func (a *randomIPAllocator) Alloc6() net.IP {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	// Try to allocate from existing subnets first
-	for i := range a.subnets6 {
-		ip := a.subnets6[i].alloc.Alloc6()
-		if ip != nil {
-			// Mark as used globally
-			a.used6[ip.String()] = struct{}{}
-			return ip
-		}
-	}
-
-	// No space in existing subnets, allocate a new subnet
-	newSubnet := a.subAlloc6.Alloc(0)
-	if newSubnet == nil {
-		return nil
-	}
-
-	// Create IP allocator for this subnet
-	pool := subnetPool{
-		subnet: newSubnet,
-		alloc:  NewIPAllocator(nil, newSubnet),
-	}
-	a.subnets6 = append(a.subnets6, pool)
-
-	// Try to allocate from the new subnet
-	ip := pool.alloc.Alloc6()
-	if ip != nil {
-		a.used6[ip.String()] = struct{}{}
-	}
-	return ip
-}
-
-func (a *randomIPAllocator) Free(ip net.IP) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	if ip4 := ip.To4(); ip4 != nil {
-		delete(a.used4, ip4.String())
-		// Also free from the subnet-level allocator
-		for i := range a.subnets4 {
-			a.subnets4[i].alloc.Free(ip)
-		}
-	} else {
-		delete(a.used6, ip.String())
-		// Also free from the subnet-level allocator
-		for i := range a.subnets6 {
-			a.subnets6[i].alloc.Free(ip)
-		}
-	}
-}
-
-func (a *randomIPAllocator) FreeAll() {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	a.used4 = make(map[string]struct{})
-	a.used6 = make(map[string]struct{})
-
-	// Free all subnet-level allocators
-	for i := range a.subnets4 {
-		a.subnets4[i].alloc.FreeAll()
-	}
-	for i := range a.subnets6 {
-		a.subnets6[i].alloc.FreeAll()
-	}
-
-	// Clear allocated subnets
-	a.subnets4 = make([]subnetPool, 0)
-	a.subnets6 = make([]subnetPool, 0)
-}

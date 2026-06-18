@@ -1,191 +1,387 @@
 package subnet
 
 import (
-	"crypto/rand"
+	"errors"
 	"math/big"
 	"net"
-	"slices"
+	"sort"
+	"strconv"
 	"sync"
 )
 
-// SubnetAllocator manages allocation of IP subnets in thread-safe way to
-// track which subnets are in use.
+// SubnetFilter decides whether a subnet may be allocated.
+// It returns true to allow the candidate and false to make the allocator skip
+// it and try another subnet.
+type SubnetFilter func(*net.IPNet) bool
+
+// SubnetAllocator reserves, allocates, and frees subnets from one owned parent
+// network. All methods are safe for concurrent use.
 type SubnetAllocator interface {
-	// Prefixes returns a list of unique prefix lengths supported by this allocator.
-	Prefixes() []int
+	// ReserveSubnet marks a subnet as reserved. If subnet was reserved multiple
+	// times same count of FreeSubnet calls should be needed to free it.
+	//
+	// Valid reserved subnets are tracked even when they are outside of the
+	// allocator's parent network. Outside reservations can still block future
+	// allocations if they overlap the parent, for example when reserving a
+	// supernet that contains the parent.
+	ReserveSubnet(subnet *net.IPNet)
 
-	// Reserve marks a subnet as reserved. If the subnet is not within any of the
-	// available subnets, the call is silently ignored.
-	Reserve(subnet *net.IPNet)
+	// AllocSubnet4 returns a free subnet with the provided prefix length and
+	// marks it as reserved.
+	// It returns nil if it is not possible to allocate subnet with this prefix.
+	AllocSubnet4(prefix int) *net.IPNet
 
-	// Alloc returns a free subnet with the provided prefix length and marks it as reserved.
-	// It returns nil if:
-	//   - The prefix length is not supported (not present in available subnets).
-	//   - All subnets with that prefix length are already reserved.
-	Alloc(prefix int) *net.IPNet
+	// AllocSubnet6 returns a free subnet with the provided prefix length and
+	// marks it as reserved.
+	// It returns nil if it is not possible to allocate subnet with this prefix.
+	AllocSubnet6(prefix int) *net.IPNet
 
-	// Free removes the reserved mark from a subnet. If the subnet was not reserved,
-	// this is a no-op.
-	Free(subnet *net.IPNet)
+	// FreeSubnet decrements reserve counter for provided subnet.
+	// If the subnet was not reserved, FreeSubnet is a no-op.
+	FreeSubnet(subnet *net.IPNet)
 
-	// FreeAll removes all reserved marks, making all previously allocated subnets
-	// available again.
-	FreeAll()
+	// FreeAllSubnets removes all reserved marks, making all previously allocated
+	// and reserved subnets available again.
+	FreeAllSubnets()
 }
 
-// subnetAllocator implements SubnetAllocator using a slice of available subnets
-// and a map for reservation tracking. Allocations are performed in order of
-// the available subnets list, returning the first unreserved match.
+// NewSubnetAllocator creates a SubnetAllocator that owns a copy of parent.
+//
+// The allocator only returns subnets inside parent. ReserveSubnet accepts any
+// valid IPv4 or IPv6 CIDR and keeps it in the reservation table even when it is
+// outside parent, because an outside subnet can still overlap parent by being a
+// broader supernet. nil and malformed parents create an empty allocator whose
+// allocation methods return nil.
+//
+// If filter is non-nil, allocation calls evaluate each otherwise available
+// candidate with the filter before reserving it. Rejected candidates are skipped
+// without being reserved. To avoid unbounded scans when the filter rejects every
+// candidate, each allocation call tries at most 1000 filtered candidates before
+// returning nil.
+//
+// Filters are called while the allocator lock is held. They should be fast and
+// must not call methods on the same allocator.
+func NewSubnetAllocator(
+	parent *net.IPNet,
+	filter SubnetFilter,
+) SubnetAllocator {
+	a := &subnetAllocator{
+		reserved: make(map[string]*reservedSubnet),
+		filter:   filter,
+	}
+
+	if parent == nil {
+		return a
+	}
+
+	ip, mask, bits, ok := normalizeIPNet(parent)
+	if !ok {
+		return a
+	}
+
+	parent = &net.IPNet{IP: ip, Mask: mask}
+	first, last := Range(parent)
+	a.parent = parent
+	a.bits = bits
+	a.parentStart = ipToInt(normalizeIPForBits(first, bits))
+	a.parentEnd = ipToInt(normalizeIPForBits(last, bits))
+
+	return a
+}
+
 type subnetAllocator struct {
-	mu        sync.RWMutex
-	available []*net.IPNet          // all available subnets provided at creation
-	reserved  map[string]*net.IPNet // reserved subnets keyed by CIDR string
-	prefixes  []int                 // sorted unique prefix lengths
+	mu          sync.Mutex
+	parent      *net.IPNet
+	bits        int
+	parentStart *big.Int
+	parentEnd   *big.Int
+	reserved    map[string]*reservedSubnet
+	filter      SubnetFilter
 }
 
-// NewAllocator creates a new SubnetAllocator with the provided available subnets.
-// The allocator will only support prefix lengths that are present in the
-// available subnets. The available slice is copied internally; modifications
-// to the original slice after creation have no effect on the allocator.
-func NewAllocator(available []*net.IPNet) SubnetAllocator {
-	// Collect unique prefixes
-	prefixSet := make(map[int]struct{})
-	for _, subnet := range available {
-		ones, _ := subnet.Mask.Size()
-		prefixSet[ones] = struct{}{}
-	}
-
-	prefixes := make([]int, 0, len(prefixSet))
-	for p := range prefixSet {
-		prefixes = append(prefixes, p)
-	}
-	slices.Sort(prefixes)
-
-	// Copy available subnets
-	avail := make([]*net.IPNet, len(available))
-	for i, s := range available {
-		avail[i] = copyIPNet(s)
-	}
-
-	return &subnetAllocator{
-		available: avail,
-		reserved:  make(map[string]*net.IPNet),
-		prefixes:  prefixes,
-	}
+type reservedSubnet struct {
+	network *net.IPNet
+	bits    int
+	prefix  int
+	start   *big.Int
+	end     *big.Int
+	count   int
 }
 
-func (a *subnetAllocator) Prefixes() []int {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-
-	result := make([]int, len(a.prefixes))
-	copy(result, a.prefixes)
-	return result
-}
-
-func (a *subnetAllocator) Reserve(subnet *net.IPNet) {
+func (a *subnetAllocator) ReserveSubnet(subnet *net.IPNet) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	a.reserve(subnet)
 }
 
-func (a *subnetAllocator) Alloc(prefixLen int) *net.IPNet {
+func (a *subnetAllocator) AllocSubnet4(prefix int) *net.IPNet {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	// Find first available subnet that can contain the requested prefix
-	for _, avail := range a.available {
-		availPrefix, _ := avail.Mask.Size()
-		// Skip if requested prefix is smaller than available (can't fit)
-		// Special case: prefixLen 0 means "any", so allocate the whole subnet
-		if prefixLen != 0 && prefixLen < availPrefix {
-			continue
-		}
-
-		// For prefix 0, allocate the entire available subnet
-		targetPrefix := prefixLen
-		if targetPrefix == 0 {
-			targetPrefix = availPrefix
-		}
-
-		// Try to find an unreserved subnet at the requested prefix length
-		// within this available subnet
-		result := a.allocFromSubnet(avail, targetPrefix)
-		if result != nil {
-			return result
-		}
+	if a.bits != 32 {
+		return nil
 	}
-
-	return nil
+	return a.alloc(prefix)
 }
 
-func (a *subnetAllocator) Free(subnet *net.IPNet) {
+func (a *subnetAllocator) AllocSubnet6(prefix int) *net.IPNet {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	key := subnet.String()
+	if a.bits != 128 {
+		return nil
+	}
+	return a.alloc(prefix)
+}
+
+func (a *subnetAllocator) FreeSubnet(subnet *net.IPNet) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	normalized := normalizeSubnet(subnet)
+	if normalized == nil {
+		return
+	}
+
+	key := subnetMapKey(normalized.network, normalized.bits, normalized.prefix)
+	reserved := a.reserved[key]
+	if reserved == nil {
+		return
+	}
+	if reserved.count > 1 {
+		reserved.count--
+		return
+	}
 	delete(a.reserved, key)
 }
 
-func (a *subnetAllocator) FreeAll() {
+func (a *subnetAllocator) FreeAllSubnets() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	a.reserved = make(map[string]*net.IPNet)
+	a.reserved = make(map[string]*reservedSubnet)
 }
 
-// allocFromSubnet tries to allocate a subnet with the given prefix length
-// from the provided available subnet. Returns nil if all sub-slots are reserved.
-func (a *subnetAllocator) allocFromSubnet(
-	avail *net.IPNet,
-	prefixLen int,
-) *net.IPNet {
-	availPrefix, _ := avail.Mask.Size()
-
-	// If the available subnet itself is reserved, can't allocate from it
-	if a.isReserved(avail) {
+// alloc returns the first parent-contained subnet at prefix that does not
+// overlap any active reservation. The caller must hold a.mu.
+func (a *subnetAllocator) alloc(prefix int) *net.IPNet {
+	parentPrefix, ok := a.validPrefix(prefix)
+	if !ok || prefix < parentPrefix {
 		return nil
 	}
 
-	// If requesting the same prefix as available, return it
-	if prefixLen == availPrefix {
-		a.reserve(avail)
-		return copyIPNet(avail)
-	}
+	size := subnetSize(a.bits, prefix)
+	candidateStart := new(big.Int).Set(a.parentStart)
+	candidateEnd := subnetEnd(candidateStart, size)
+	blockers := a.sortedBlockers()
+	attempts := 0
 
-	// Calculate how many subnets of the requested size fit in the available subnet
-	diff := prefixLen - availPrefix
-	if diff < 0 || diff >= 32 {
-		return nil
-	}
-	numSubnets := 1 << uint(diff)
-
-	// Try each possible subnet slot
-	for i := range numSubnets {
-		candidate := extendIPNet(avail, prefixLen-availPrefix, i)
-		if !a.isReserved(candidate) {
-			a.reserve(candidate)
-			return candidate
+	for {
+		if candidateEnd.Cmp(a.parentEnd) > 0 {
+			return nil
 		}
+
+		advanced := false
+		for _, blocker := range blockers {
+			if blocker.end.Cmp(candidateStart) < 0 {
+				continue
+			}
+			if blocker.start.Cmp(candidateEnd) > 0 {
+				break
+			}
+
+			nextStart := alignUp(
+				new(big.Int).Add(blocker.end, big.NewInt(1)),
+				size,
+			)
+			if nextStart.Cmp(candidateStart) <= 0 {
+				nextStart = new(big.Int).Add(candidateStart, size)
+			}
+			candidateStart = nextStart
+			candidateEnd = subnetEnd(candidateStart, size)
+			advanced = true
+			break
+		}
+		if advanced {
+			continue
+		}
+
+		network := &net.IPNet{
+			IP:   intToIP(candidateStart, a.bits),
+			Mask: net.CIDRMask(prefix, a.bits),
+		}
+		if a.filter != nil {
+			attempts++
+			if !a.filter(CopyIPNet(network)) {
+				if attempts >= maxFilteredAllocationAttempts {
+					return nil
+				}
+				candidateStart = new(big.Int).Add(candidateStart, size)
+				candidateEnd = subnetEnd(candidateStart, size)
+				continue
+			}
+		}
+		a.reserve(network)
+		return CopyIPNet(network)
+	}
+}
+
+// reserve records subnet as unavailable. It accepts every valid normalized
+// IPv4 or IPv6 subnet, including subnets outside the allocator's parent.
+// The caller must hold a.mu.
+func (a *subnetAllocator) reserve(subnet *net.IPNet) {
+	normalized := normalizeSubnet(subnet)
+	if normalized == nil {
+		return
 	}
 
-	return nil
+	key := subnetMapKey(normalized.network, normalized.bits, normalized.prefix)
+	if existing := a.reserved[key]; existing != nil {
+		existing.count++
+		return
+	}
+
+	a.reserved[key] = normalized
+}
+
+func (a *subnetAllocator) validPrefix(prefix int) (int, bool) {
+	if a.parent == nil || prefix < 0 || prefix > a.bits {
+		return 0, false
+	}
+	parentPrefix, bits := a.parent.Mask.Size()
+	return parentPrefix, bits == a.bits
+}
+
+func (a *subnetAllocator) sortedBlockers() []*reservedSubnet {
+	blockers := make([]*reservedSubnet, 0, len(a.reserved))
+	for _, reserved := range a.reserved {
+		if reserved.bits != a.bits {
+			continue
+		}
+		if reserved.end.Cmp(a.parentStart) < 0 ||
+			reserved.start.Cmp(a.parentEnd) > 0 {
+			continue
+		}
+		blockers = append(blockers, reserved)
+	}
+
+	sort.Slice(blockers, func(i, j int) bool {
+		cmp := blockers[i].start.Cmp(blockers[j].start)
+		if cmp != 0 {
+			return cmp < 0
+		}
+		return blockers[i].end.Cmp(blockers[j].end) < 0
+	})
+
+	return blockers
+}
+
+func normalizeSubnet(subnet *net.IPNet) *reservedSubnet {
+	if subnet == nil {
+		return nil
+	}
+
+	ip, mask, bits, ok := normalizeIPNet(subnet)
+	if !ok {
+		return nil
+	}
+
+	prefix, _ := mask.Size()
+	network := &net.IPNet{IP: ip, Mask: mask}
+	first, last := Range(network)
+
+	return &reservedSubnet{
+		network: network,
+		bits:    bits,
+		prefix:  prefix,
+		start:   ipToInt(normalizeIPForBits(first, bits)),
+		end:     ipToInt(normalizeIPForBits(last, bits)),
+		count:   1,
+	}
+}
+
+func subnetMapKey(network *net.IPNet, bits, prefix int) string {
+	return strconv.Itoa(
+		bits,
+	) + "/" + strconv.Itoa(
+		prefix,
+	) + "/" + ipMapKey(
+		network.IP,
+	)
+}
+
+func ipToInt(ip net.IP) *big.Int {
+	return new(big.Int).SetBytes(ip)
+}
+
+func intToIP(value *big.Int, bits int) net.IP {
+	size := bits / 8
+	bytes := value.Bytes()
+	if len(bytes) > size {
+		bytes = bytes[len(bytes)-size:]
+	}
+	ip := make(net.IP, size)
+	copy(ip[size-len(bytes):], bytes)
+	return ip
+}
+
+func subnetSize(bits, prefix int) *big.Int {
+	shift := uint(bits - prefix) //nolint:gosec // prefix is validated.
+	return new(
+		big.Int,
+	).Lsh(big.NewInt(1), shift)
+}
+
+func subnetEnd(start, size *big.Int) *big.Int {
+	return new(big.Int).Sub(new(big.Int).Add(start, size), big.NewInt(1))
+}
+
+func alignUp(value, size *big.Int) *big.Int {
+	remainder := new(big.Int).Mod(value, size)
+	if remainder.Sign() == 0 {
+		return value
+	}
+	return new(big.Int).Add(value, new(big.Int).Sub(size, remainder))
 }
 
 // extendIPNet creates a subnet by extending the given network to a more specific
 // prefix. numBits is how many additional bits to add, and index is which subnet
 // to return (0 to 2^numBits-1).
-func extendIPNet(base *net.IPNet, numBits int, index int) *net.IPNet {
-	ip := make(net.IP, len(base.IP))
-	copy(ip, base.IP)
+func ExtendIPNet(base *net.IPNet, numBits int, index int) (*net.IPNet, error) {
+	if base == nil {
+		return nil, errors.New("base network cannot be nil")
+	}
+
+	ip, _, bits, ok := normalizeIPNet(base)
+	if !ok {
+		return nil, errors.New("invalid base network")
+	}
 
 	basePrefix, _ := base.Mask.Size()
+	if numBits < 0 {
+		return nil, errors.New("numBits cannot be negative")
+	}
 	targetPrefix := basePrefix + numBits
+	if targetPrefix > bits {
+		return nil, errors.New("numBits exceeds address size")
+	}
+	if index < 0 {
+		return nil, errors.New("index cannot be negative")
+	}
+
+	indexValue := big.NewInt(int64(index))
+	subnetCount := new(
+		big.Int,
+	).Lsh(big.NewInt(1), uint(numBits))
+	//nolint:gosec // numBits is validated.
+	if indexValue.Cmp(subnetCount) >= 0 {
+		return nil, errors.New("index out of range")
+	}
 
 	// Add index bits to the IP starting from the bit position after the base prefix
 	for i := range numBits {
-		if index&(1<<uint(numBits-1-i)) != 0 { //nolint:gosec // numBits is small, safe for shift
+		if indexValue.Bit(numBits-1-i) != 0 {
 			bitPosition := basePrefix + i
 			byteIdx := bitPosition / 8
 			bitIdx := 7 - (bitPosition % 8)
@@ -193,23 +389,12 @@ func extendIPNet(base *net.IPNet, numBits int, index int) *net.IPNet {
 		}
 	}
 
-	mask := net.CIDRMask(targetPrefix, len(ip)*8)
-	return &net.IPNet{IP: ip, Mask: mask}
-}
-
-// reserve marks a subnet as reserved (caller must hold write lock).
-func (a *subnetAllocator) reserve(subnet *net.IPNet) {
-	a.reserved[subnet.String()] = copyIPNet(subnet)
-}
-
-// isReserved checks if a subnet is reserved (caller must hold write lock).
-func (a *subnetAllocator) isReserved(subnet *net.IPNet) bool {
-	_, ok := a.reserved[subnet.String()]
-	return ok
+	mask := net.CIDRMask(targetPrefix, bits)
+	return &net.IPNet{IP: ip, Mask: mask}, nil
 }
 
 // copyIPNet creates a deep copy of a net.IPNet.
-func copyIPNet(n *net.IPNet) *net.IPNet {
+func CopyIPNet(n *net.IPNet) *net.IPNet {
 	ip := make(net.IP, len(n.IP))
 	copy(ip, n.IP)
 	mask := make(net.IPMask, len(n.Mask))
@@ -226,153 +411,4 @@ type RandomAllocatorConfig struct {
 	Filter func(*net.IPNet) bool
 }
 
-// randomSubnetAllocator implements SubnetAllocator by randomly generating
-// /24 subnets within 10.0.0.0/8. It avoids values 0-24 for the second and
-// third octets to reduce collision with common private network ranges.
-type randomSubnetAllocator struct {
-	mu       sync.RWMutex
-	reserved map[string]*net.IPNet // reserved subnets keyed by CIDR string
-	filter   func(*net.IPNet) bool // optional filter callback
-}
-
-// NewRandomAllocator creates a SubnetAllocator that randomly allocates /24
-// subnets within 10.0.0.0/8, avoiding 0-24 values for second and third octets.
-// The config parameter is optional; pass nil for default behavior.
-func NewRandomAllocator(config *RandomAllocatorConfig) SubnetAllocator {
-	var filter func(*net.IPNet) bool
-	if config != nil {
-		filter = config.Filter
-	}
-
-	return &randomSubnetAllocator{
-		reserved: make(map[string]*net.IPNet),
-		filter:   filter,
-	}
-}
-
-func (a *randomSubnetAllocator) Prefixes() []int {
-	return []int{24}
-}
-
-func (a *randomSubnetAllocator) Reserve(subnet *net.IPNet) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	// Only reserve if it's a valid /24 IPv4 subnet within our range
-	if !isValidRandomSubnet(subnet) {
-		return
-	}
-
-	a.reserved[subnet.String()] = copyIPNet(subnet)
-}
-
-func (a *randomSubnetAllocator) Alloc(prefixLen int) *net.IPNet {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	// Only support /24
-	if prefixLen != 0 && prefixLen != 24 {
-		return nil
-	}
-
-	// Try to generate a random valid subnet
-	// Use a reasonable max attempts to avoid infinite loops
-	const maxAttempts = 1000
-
-	for range maxAttempts {
-		candidate := generateRandomSubnet()
-		if candidate == nil {
-			continue
-		}
-
-		// Check if already reserved
-		if _, ok := a.reserved[candidate.String()]; ok {
-			continue
-		}
-
-		// Apply filter if provided
-		if a.filter != nil && !a.filter(candidate) {
-			continue
-		}
-
-		// Reserve and return
-		a.reserved[candidate.String()] = candidate
-		return copyIPNet(candidate)
-	}
-
-	return nil
-}
-
-func (a *randomSubnetAllocator) Free(subnet *net.IPNet) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	key := subnet.String()
-	delete(a.reserved, key)
-}
-
-func (a *randomSubnetAllocator) FreeAll() {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	a.reserved = make(map[string]*net.IPNet)
-}
-
-// isValidRandomSubnet checks if a subnet is a valid /24 IPv4 subnet
-// within the 10.0.0.0/8 range with octets in valid ranges.
-func isValidRandomSubnet(subnet *net.IPNet) bool {
-	if subnet == nil {
-		return false
-	}
-
-	// Must be IPv4
-	ip4 := subnet.IP.To4()
-	if ip4 == nil {
-		return false
-	}
-
-	// Must be /24
-	ones, _ := subnet.Mask.Size()
-	if ones != 24 {
-		return false
-	}
-
-	// Must be within 10.0.0.0/8
-	if ip4[0] != 10 {
-		return false
-	}
-
-	// Second and third octets must be > 24
-	if ip4[1] <= 24 || ip4[2] <= 24 {
-		return false
-	}
-
-	return true
-}
-
-// generateRandomSubnet creates a random /24 subnet within 10.0.0.0/8
-// with second and third octets in range 25-254.
-func generateRandomSubnet() *net.IPNet {
-	// Generate random second octet (25-254)
-	secondOctet, err := rand.Int(rand.Reader, big.NewInt(230))
-	if err != nil {
-		return nil
-	}
-	secondOctet = secondOctet.Add(secondOctet, big.NewInt(25))
-
-	// Generate random third octet (25-254)
-	thirdOctet, err := rand.Int(rand.Reader, big.NewInt(230))
-	if err != nil {
-		return nil
-	}
-	thirdOctet = thirdOctet.Add(thirdOctet, big.NewInt(25))
-
-	ip := net.IP{10, byte(secondOctet.Uint64()), byte(thirdOctet.Uint64()), 0}
-	mask := net.CIDRMask(24, 32)
-
-	return &net.IPNet{IP: ip, Mask: mask}
-}
-
-// Ensure interfaces are implemented at compile time
 var _ SubnetAllocator = (*subnetAllocator)(nil)
-var _ SubnetAllocator = (*randomSubnetAllocator)(nil)

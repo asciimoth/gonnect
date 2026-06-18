@@ -11,42 +11,227 @@ import (
 	"net"
 )
 
-// Some well known CIDRs. May overlap.
-// Most info is from [here].
-// TODO: Add more well known subnets.
+// Some well-known CIDRs that are likely to collide with local,
+// container, VM, VPN, Kubernetes, cloud, or overlay-network usage.
 //
-// [here]: https://blog.benjojo.co.uk/post/picking-unused-rfc1918-ip-space
+// Major sources:
+//   - IANA IPv4/IPv6 Special-Purpose Address Registries.
+//   - RFC1918 / RFC4193.
+//   - Docker, Kubernetes, k3s, Podman, minikube docs.
+//   - Common router, VM, VPN, and overlay-network defaults.
 var (
-	CIDRLocal          = MustCIDR("127.0.0.0/8")
-	CIDRCommonDefault1 = MustCIDR("192.168.1.0/24")
-	CIDRCommonDefault2 = MustCIDR("192.168.0.0/24")
-	CIDRCommonDefault3 = MustCIDR("192.168.2.0/24")
-	CIDRFritzBox1      = MustCIDR("192.168.178.0/24")
-	CIDRFritzBox2      = MustCIDR("192.168.188.0/24")
-	CIDRTpLink1        = MustCIDR("192.168.68.0/24")
-	CIDRTpLink2        = MustCIDR("192.168.50.0/24")
-	CIDRHuawei1        = MustCIDR("192.168.100.0/24")
-	CIDRHuawei2        = MustCIDR("192.168.3.0/24")
-	CIDRHuawei3        = MustCIDR("192.168.8.0/24")
-	CIDRZyxel1         = MustCIDR("192.168.4.0/24")
-	CIDRZyxel2         = MustCIDR("192.168.10.0/24")
-	CIDRGoogleWifi     = MustCIDR("192.168.86.0/24")
-	CIDRMotorola       = MustCIDR("192.168.10.0/24")
-
-	// From Yggdrasil doc:
 	//
-	//   Yggdrasil uses the 200::/7 region of the IPv6 network space.
-	//   This region was set aside for NSAP-mapped IPv6 addresses in RFC1888,
-	//   which was (AFAIK) never used and eventually deprecated in RFC4048
-	//   (with further explanation in RFC4548).
-	CIDRYggdrasilNetwork = MustCIDR("200::/7")
-
-	// CJDNS use [ULA] address space.
+	// IPv4 special-use / non-ordinary networks.
+	// These are not all "private-use"; many should never be allocated
+	// by a normal private-network allocator.
 	//
-	// [ULA]: https://en.wikipedia.org/wiki/Unique_local_address
-	CIDRHyperboria = MustCIDR("FC00::/8")
 
-	CIDRMycelium = MustCIDR("400::/7")
+	CIDRIPv4ThisNetwork = MustCIDR(
+		"0.0.0.0/8",
+	) // "This network"; not usable as ordinary host/network space.
+	CIDRIPv4Loopback  = MustCIDR("127.0.0.0/8") // Loopback.
+	CIDRIPv4LinkLocal = MustCIDR(
+		"169.254.0.0/16",
+	) // IPv4 link-local/APIPA.
+	CIDRIPv4Multicast = MustCIDR("224.0.0.0/4") // IPv4 multicast.
+	CIDRIPv4Reserved  = MustCIDR(
+		"240.0.0.0/4",
+	) // Reserved by protocol.
+	CIDRIPv4LimitedBroadcast = MustCIDR("255.255.255.255/32")
+	CIDRIPv4SharedAddress    = MustCIDR(
+		"100.64.0.0/10",
+	) // Shared Address Space / CGNAT; also used by Tailscale.
+	CIDRIPv4Benchmarking = MustCIDR(
+		"198.18.0.0/15",
+	) // Benchmarking, not RFC1918 private-use.
+	CIDRIPv4Documentation1 = MustCIDR("192.0.2.0/24")    // TEST-NET-1.
+	CIDRIPv4Documentation2 = MustCIDR("198.51.100.0/24") // TEST-NET-2.
+	CIDRIPv4Documentation3 = MustCIDR("203.0.113.0/24")  // TEST-NET-3.
+
+	//
+	// Very common home/SOHO router defaults.
+	// Most are useful only if your parent is 192.168.0.0/16.
+	//
+
+	CIDRRouterDefault1921680 = MustCIDR("192.168.0.0/24")
+	CIDRRouterDefault1921681 = MustCIDR("192.168.1.0/24")
+	CIDRRouterDefault1921682 = MustCIDR("192.168.2.0/24")
+	CIDRRouterDefault1921683 = MustCIDR(
+		"192.168.3.0/24",
+	) // Huawei and others.
+	CIDRRouterDefault1921684 = MustCIDR(
+		"192.168.4.0/24",
+	) // Zyxel and others.
+	CIDRRouterDefault1921688 = MustCIDR(
+		"192.168.8.0/24",
+	) // Huawei / GL.iNet-style defaults.
+	CIDRRouterDefault19216810 = MustCIDR(
+		"192.168.10.0/24",
+	) // Zyxel/Motorola/etc.; replaces duplicate Zyxel2/Motorola vars.
+	CIDRRouterDefault19216831 = MustCIDR(
+		"192.168.31.0/24",
+	) // Xiaomi/MiWiFi-style default.
+	CIDRRouterDefault19216850 = MustCIDR(
+		"192.168.50.0/24",
+	) // TP-Link/ASUS/Xiaomi-style defaults.
+	CIDRRouterDefault19216868 = MustCIDR(
+		"192.168.68.0/24",
+	) // TP-Link Deco-style default.
+	CIDRRouterDefault19216886 = MustCIDR(
+		"192.168.86.0/24",
+	) // Google/Nest Wifi.
+	CIDRRouterDefault19216888 = MustCIDR(
+		"192.168.88.0/24",
+	) // MikroTik default.
+	CIDRRouterDefault192168100 = MustCIDR(
+		"192.168.100.0/24",
+	) // Cable modem / Huawei-style management LAN.
+	CIDRRouterDefault192168178 = MustCIDR("192.168.178.0/24") // FRITZ!Box.
+	CIDRRouterDefault192168188 = MustCIDR(
+		"192.168.188.0/24",
+	) // FRITZ!Box/repeater-style defaults.
+
+	//
+	// Common local VM / desktop virtualization / container-host networks.
+	//
+
+	CIDRVirtualBoxHostOnly = MustCIDR(
+		"192.168.56.0/24",
+	) // VirtualBox host-only default.
+	CIDRLibvirtDefault = MustCIDR(
+		"192.168.122.0/24",
+	) // libvirt default NAT network.
+	CIDRDockerBridge = MustCIDR(
+		"172.17.0.0/16",
+	) // Classic docker0 bridge.
+	CIDRDockerDesktopMac = MustCIDR(
+		"192.168.65.0/24",
+	) // Common Docker Desktop internal subnet; treat as heuristic.
+	CIDRPodmanDefault = MustCIDR(
+		"10.88.0.0/16",
+	) // Podman root bridge default.
+
+	// Docker's documented default address pools cover these shapes.
+	// If you ever allocate from 172.16.0.0/12, it is often simplest to
+	// avoid all of 172.17.0.0/16 through 172.31.0.0/16 or avoid the whole
+	// 172.16.0.0/12 parent entirely.
+	CIDRDockerPool17217 = MustCIDR("172.17.0.0/16")
+	CIDRDockerPool17218 = MustCIDR("172.18.0.0/15")
+	CIDRDockerPool17220 = MustCIDR("172.20.0.0/14")
+	CIDRDockerPool17224 = MustCIDR("172.24.0.0/14")
+	CIDRDockerPool17228 = MustCIDR("172.28.0.0/14")
+	CIDRDockerPool192   = MustCIDR(
+		"192.168.0.0/16",
+	) // Too broad for default banning if parent is 192.168/16.
+
+	//
+	// Kubernetes / local cluster / CNI defaults.
+	//
+
+	CIDRKubeAdmServices = MustCIDR(
+		"10.96.0.0/12",
+	) // kubeadm default Service CIDR.
+	CIDRK3sPods     = MustCIDR("10.42.0.0/16") // k3s default pod CIDR.
+	CIDRK3sServices = MustCIDR("10.43.0.0/16") // k3s default service CIDR.
+	CIDRK3s         = MustCIDR(
+		"10.42.0.0/15",
+	) // Aggregate of k3s pods+services.
+	CIDRKindFlannelPods = MustCIDR(
+		"10.244.0.0/16",
+	) // kind/flannel-style pod CIDR.
+	CIDRMinikubeDocker = MustCIDR("192.168.49.0/24")
+	CIDRMinikubeVM     = MustCIDR("192.168.59.0/24")
+	CIDRMinikubeKVM2   = MustCIDR("192.168.39.0/24")
+	CIDRCalicoDefault  = MustCIDR(
+		"192.168.0.0/16",
+	) // Calico default pool in many manifests; too broad for default banning.
+
+	//
+	// VPN / overlay-ish IPv4 defaults.
+	//
+
+	CIDROpenVPNDefault = MustCIDR(
+		"10.8.0.0/24",
+	) // OpenVPN examples commonly use 10.8.0.0/24.
+	CIDROpenVPNBroad = MustCIDR(
+		"10.8.0.0/16",
+	) // Optional broader exclusion.
+	CIDRTailscaleCGNAT = MustCIDR(
+		"100.64.0.0/10",
+	) // Same as Shared Address Space; Tailscale uses this by default.
+
+	//
+	// Common cloud defaults.
+	// These are useful if your project often runs on developer laptops
+	// that VPN into cloud networks. Some are very broad; make them optional.
+	//
+
+	CIDRCommon10LANs = MustCIDR(
+		"10.0.0.0/15",
+	) // Covers very common 10.0.0.0/16 and 10.1.0.0/16 LAN/VNet defaults.
+	CIDRAzureDefault = MustCIDR(
+		"10.0.0.0/16",
+	) // Azure examples/default CLI VNet address space; already covered above.
+	CIDRAWSDefaultVPC = MustCIDR("172.31.0.0/16") // AWS default VPC.
+	CIDRGCPAutoMode   = MustCIDR(
+		"10.128.0.0/9",
+	) // GCP auto-mode VPC range; large/aggressive optional exclusion.
+
+	//
+	// IPv6 special-use / non-ordinary networks.
+	// If your IPv6 parent is a random fdxx:xxxx:xxxx::/48 ULA,
+	// most of these do not overlap, except fd00-derived examples.
+	//
+
+	CIDRIPv6Unspecified    = MustCIDR("::/128")
+	CIDRIPv6Loopback       = MustCIDR("::1/128")
+	CIDRIPv6IPv4Mapped     = MustCIDR("::ffff:0:0/96")
+	CIDRIPv6NAT64WellKnown = MustCIDR("64:ff9b::/96")
+	CIDRIPv6NAT64Local     = MustCIDR("64:ff9b:1::/48")
+	CIDRIPv6DiscardOnly    = MustCIDR("100::/64")
+	CIDRIPv6Dummy          = MustCIDR("100:0:0:1::/64")
+	CIDRIPv6Teredo         = MustCIDR("2001::/32")
+	CIDRIPv6Benchmarking   = MustCIDR("2001:2::/48")
+	CIDRIPv6Documentation  = MustCIDR("2001:db8::/32")
+	CIDRIPv6Documentation2 = MustCIDR("3fff::/20")
+	CIDRIPv66to4           = MustCIDR("2002::/16")
+	CIDRIPv6SRv6SIDs       = MustCIDR("5f00::/16")
+	CIDRIPv6LinkLocal      = MustCIDR("fe80::/10")
+	CIDRIPv6Multicast      = MustCIDR("ff00::/8")
+
+	// ULA handling:
+	//   fc00::/7 is the whole ULA block.
+	//   fd00::/8 is the normal locally-assigned half used for random ULA /48s.
+	//   fc00::/8 is not normally used by RFC4193 local generation, but cjdns/
+	//   Hyperboria-style overlays use it.
+	//
+	// Do NOT ban fd00::/8 if your allocator's IPv6 parent is a random ULA /48.
+	CIDRIPv6ULA         = MustCIDR("fc00::/7")
+	CIDRIPv6ULALocal    = MustCIDR("fd00::/8")
+	CIDRHyperboriaCJDNS = MustCIDR(
+		"fc00::/8",
+	) // cjdns/Hyperboria overlay usage.
+
+	//
+	// IPv6 overlay networks that intentionally use unusual global-unicast-looking
+	// space. These matter only if your allocator can allocate from broad IPv6
+	// parents outside ULA.
+	//
+
+	CIDRYggdrasilNetwork = MustCIDR(
+		"200::/7",
+	) // Yggdrasil; includes 200::/8 node addrs and 300::/8 routed prefixes.
+	CIDRMycelium = MustCIDR("400::/7") // Mycelium overlay network.
+
+	//
+	// Local Kubernetes IPv6 examples/defaults.
+	// These only matter if your ULA parent could overlap them; a random ULA /48
+	// almost certainly will not.
+	//
+
+	CIDRKindIPv6Services = MustCIDR(
+		"fd00:10:96::/112",
+	) // kind IPv6 service subnet default.
 )
 
 func MustCIDR(s string) net.IPNet {
@@ -376,69 +561,6 @@ func IPIndex(network *net.IPNet, i *big.Int) (net.IP, error) {
 	}
 
 	return resultIP, nil
-}
-
-// Subnets returns all subnets of the given network with the specified prefix length.
-// The prefix must be greater than or equal to the network's current prefix length
-// and less than or equal to the maximum (32 for IPv4, 128 for IPv6).
-// Returns an error if the prefix is invalid.
-func Subnets(network *net.IPNet, prefix *big.Int) ([]*net.IPNet, error) {
-	ones, bits := network.Mask.Size()
-
-	// Convert prefix to int
-	if !prefix.IsInt64() || prefix.Sign() < 0 {
-		return nil, errors.New("invalid prefix length")
-	}
-
-	newPrefix := int(prefix.Int64())
-
-	// Validate prefix range
-	if newPrefix < ones || newPrefix > bits {
-		return nil, errors.New("prefix length out of range")
-	}
-
-	// Calculate number of subnets: 2^(newPrefix - ones)
-	//nolint:gosec // newPrefix-ones and bits-newPrefix validated to be in range
-	subnetBits := uint(newPrefix - ones)
-	numSubnets := big.NewInt(1)
-	numSubnets.Lsh(numSubnets, subnetBits)
-
-	// Calculate the size of each subnet in terms of host addresses
-	hostBits := uint(bits - newPrefix) //nolint:gosec // validated in range
-	subnetSize := big.NewInt(1)
-	subnetSize.Lsh(subnetSize, hostBits)
-
-	// Generate all subnets
-	result := make([]*net.IPNet, 0, numSubnets.Uint64())
-	newMask := net.CIDRMask(newPrefix, bits)
-
-	currentIP := big.NewInt(0).SetBytes(network.IP)
-	for range numSubnets.Uint64() {
-		ipBytes := currentIP.Bytes()
-		if len(ipBytes) < len(network.IP) {
-			padded := make([]byte, len(network.IP))
-			copy(padded[len(network.IP)-len(ipBytes):], ipBytes)
-			ipBytes = padded
-		}
-
-		subnet := &net.IPNet{
-			IP:   make(net.IP, len(ipBytes)),
-			Mask: newMask,
-		}
-		copy(subnet.IP, ipBytes)
-
-		// Normalize to IPv4 if applicable
-		if network.IP.To4() != nil {
-			subnet.IP = subnet.IP.To4()
-		}
-
-		result = append(result, subnet)
-
-		// Move to next subnet
-		currentIP.Add(currentIP, subnetSize)
-	}
-
-	return result, nil
 }
 
 // Extend creates a supernet of the given network by reducing the prefix length

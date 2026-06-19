@@ -6,8 +6,11 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -138,6 +141,99 @@ func nativePickIP(ips []net.IP, prefer int) net.IP {
 	return ips[0]
 }
 
+func nativeIPMatchesNetwork(ip netip.Addr, network string) bool {
+	family := nativeFamilyFromNetwork(network)
+	return family == "ip" ||
+		(family == "ip4" && ip.Is4()) ||
+		(family == "ip6" && ip.Is6())
+}
+
+func nativePortNetwork(network string) string {
+	if strings.HasPrefix(network, "tcp") {
+		return "tcp"
+	}
+	if strings.HasPrefix(network, "udp") {
+		return "udp"
+	}
+	return network
+}
+
+func nativeHostsPaths() []string {
+	if runtime.GOOS != "windows" {
+		return []string{"/etc/hosts"}
+	}
+
+	var paths []string
+	for _, root := range []string{os.Getenv("SystemRoot"), os.Getenv("WINDIR")} {
+		if root != "" {
+			paths = append(
+				paths,
+				filepath.Join(root, "System32", "drivers", "etc", "hosts"),
+			)
+		}
+	}
+	return paths
+}
+
+func nativeAppendLocalhostIPs(ips []netip.Addr, network string) []netip.Addr {
+	if ip := netip.MustParseAddr(
+		"127.0.0.1",
+	); nativeIPMatchesNetwork(
+		ip,
+		network,
+	) {
+		ips = append(ips, ip)
+	}
+	if ip := netip.MustParseAddr("::1"); nativeIPMatchesNetwork(ip, network) {
+		ips = append(ips, ip)
+	}
+	return ips
+}
+
+func nativeLookupHostLocal(host, network string) []netip.Addr {
+	name := strings.TrimSuffix(strings.ToLower(host), ".")
+	var ips []netip.Addr
+	if name == "localhost" {
+		ips = nativeAppendLocalhostIPs(ips, network)
+	}
+
+	seen := make(map[netip.Addr]bool, len(ips))
+	for _, ip := range ips {
+		seen[ip] = true
+	}
+
+	for _, path := range nativeHostsPaths() {
+		data, err := os.ReadFile(path) //nolint
+		if err != nil {
+			continue
+		}
+		for line := range strings.SplitSeq(string(data), "\n") {
+			if i := strings.IndexByte(line, '#'); i >= 0 {
+				line = line[:i]
+			}
+			fields := strings.Fields(line)
+			if len(fields) < 2 {
+				continue
+			}
+			ip, err := netip.ParseAddr(fields[0])
+			if err != nil || !nativeIPMatchesNetwork(ip, network) {
+				continue
+			}
+			for _, alias := range fields[1:] {
+				if strings.TrimSuffix(strings.ToLower(alias), ".") != name {
+					continue
+				}
+				if !seen[ip] {
+					ips = append(ips, ip)
+					seen[ip] = true
+				}
+				break
+			}
+		}
+	}
+	return ips
+}
+
 // NativeConfig holds configuration options for building a Network.
 type NativeConfig struct {
 	// Filter is an optional filter function that can reject network operations.
@@ -207,10 +303,12 @@ func (c NativeConfig) Build() *NativeNetwork {
 //
 //	n := DetachNetwork(NativeConfig{}.Build(), nil)
 type NativeNetwork struct {
+	mu sync.RWMutex
+
 	// filter is an optional function to reject network operations.
 	filter Filter
 	// resolver is the DNS resolver used for lookups.
-	resolver *net.Resolver
+	resolver Resolver
 	// dialer is used for establishing connections.
 	dialer net.Dialer
 	// listenCfg configures listen operations.
@@ -222,6 +320,14 @@ type NativeNetwork struct {
 
 func (n *NativeNetwork) IsNative() bool {
 	return true
+}
+
+// SetResolver replaces the resolver used for lookups. Passing nil restores the
+// default resolver.
+func (n *NativeNetwork) SetResolver(res Resolver) {
+	n.mu.Lock()
+	n.resolver = res
+	n.mu.Unlock()
 }
 
 // LookupIP looks up the host and returns a slice of its IPv4 and IPv6 addresses.
@@ -458,6 +564,60 @@ func (n *NativeNetwork) Dial(
 	return n.dialer.DialContext(ctx, network, address)
 }
 
+// DialNoResolver establishes a connection like Dial, but it never performs DNS
+// resolution. Raw IP:port addresses are dialed directly. Host names are only
+// accepted when they can be resolved from local host data without network
+// requests.
+func (n *NativeNetwork) DialNoResolver(
+	ctx context.Context,
+	network, address string,
+) (net.Conn, error) {
+	if _, err := netip.ParseAddrPort(address); err == nil {
+		return n.Dial(ctx, network, address)
+	}
+
+	err := n.doFilter(network, address, actionDial)
+	if err != nil {
+		return nil, err
+	}
+
+	host, serv, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, err
+	}
+
+	port, err := strconv.Atoi(serv)
+	if err != nil {
+		port, err = LookupPortOffline(nativePortNetwork(network), serv)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	ip, err := netip.ParseAddr(host)
+	if err == nil {
+		if !nativeIPMatchesNetwork(ip, network) {
+			return nil, nativeNoSuchHost(host, "local")
+		}
+		return n.Dial(
+			ctx,
+			network,
+			net.JoinHostPort(ip.String(), strconv.Itoa(port)),
+		)
+	}
+
+	ips := nativeLookupHostLocal(host, network)
+	if len(ips) == 0 {
+		return nil, nativeNoSuchHost(host, "local")
+	}
+
+	return n.Dial(
+		ctx,
+		network,
+		net.JoinHostPort(ips[0].String(), strconv.Itoa(port)),
+	)
+}
+
 // Listen announces on the specified network and address.
 // It resolves the address, applies filtering, and creates a listener.
 func (n *NativeNetwork) Listen(
@@ -686,7 +846,10 @@ func (n *NativeNetwork) dialInternal(
 }
 
 // getResolver returns the configured resolver or net.DefaultResolver if none is set.
-func (n *NativeNetwork) getResolver() *net.Resolver {
+func (n *NativeNetwork) getResolver() Resolver {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+
 	if n.resolver == nil {
 		return net.DefaultResolver
 	}
@@ -695,19 +858,21 @@ func (n *NativeNetwork) getResolver() *net.Resolver {
 
 // getListenCfg returns the configured listen config or a default one if none is set.
 func (n *NativeNetwork) getListenCfg() *net.ListenConfig {
+	cfg := &net.ListenConfig{}
 	if n.listenCfg == nil {
-		return &net.ListenConfig{}
+		return cfg
 	}
-	return n.listenCfg
+	cfg.Control = n.listenCfg.Control
+	cfg.KeepAlive = n.listenCfg.KeepAlive
+	cfg.KeepAliveConfig = n.listenCfg.KeepAliveConfig
+	return cfg
 }
 
-// getListenCfgWith returns a copy of the configured listen config with fields
-// from ListenConfig overlaid on top.
+// getListenCfgWith returns a copy of the configured listen config with the
+// provided ListenConfig merged into it.
 func (n *NativeNetwork) getListenCfgWith(lc *ListenConfig) *net.ListenConfig {
 	cfg := *n.getListenCfg()
-	if lc != nil && lc.Control != nil {
-		cfg.Control = lc.Control
-	}
+	cfg.Control = lc.MergeNet(n.getListenCfg()).Control
 	return &cfg
 }
 

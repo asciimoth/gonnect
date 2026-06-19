@@ -362,3 +362,46 @@ type ListenConfig struct {
 	// call it with nil syscall.RawConn if they are not wrapping real syscalls.
 	Control func(network, address string, c syscall.RawConn) error
 }
+
+// Merge returns a new ListenConfig that applies this config's Control callback
+// followed by other.Control. Neither input config is modified.
+func (lc *ListenConfig) Merge(other *ListenConfig) *ListenConfig {
+	merged := &ListenConfig{}
+	if lc == nil && other == nil {
+		return merged
+	}
+
+	var controls []func(network, address string, c syscall.RawConn) error
+	if lc != nil && lc.Control != nil {
+		controls = append(controls, lc.Control)
+	}
+	if other != nil && other.Control != nil {
+		controls = append(controls, other.Control)
+	}
+	if len(controls) == 0 {
+		return merged
+	}
+
+	merged.Control = func(
+		network, address string,
+		c syscall.RawConn,
+	) error {
+		for _, control := range controls {
+			if err := control(network, address, c); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return merged
+}
+
+func (lc *ListenConfig) MergeNet(other *net.ListenConfig) *ListenConfig {
+	var otherConf *ListenConfig
+	if other != nil {
+		otherConf = &ListenConfig{
+			Control: other.Control,
+		}
+	}
+	return lc.Merge(otherConf)
+}

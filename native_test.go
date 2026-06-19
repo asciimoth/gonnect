@@ -3,7 +3,9 @@ package gonnect_test
 
 import (
 	"context"
+	"errors"
 	"net"
+	"strconv"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -31,6 +33,68 @@ func TestNativeNetworkHTTP(t *testing.T) {
 		Addr:    "127.0.0.1:0",
 	}
 	gt.RunSimpleHTTPForNetworks(t, pair, pair)
+}
+
+func TestNativeNetworkDialNoResolver(t *testing.T) {
+	t.Parallel()
+
+	var resolverDials atomic.Int32
+	n := gonnect.NativeConfig{
+		ResolverCfg: &gonnect.ResolverCfg{
+			Dial: func(context.Context, string, string) (net.Conn, error) {
+				resolverDials.Add(1)
+				return nil, errors.New("resolver dial should not be used")
+			},
+		},
+	}.Build()
+
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen error = %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_ = conn.Close()
+		}
+	}()
+
+	conn, err := n.DialNoResolver(
+		context.Background(),
+		"tcp4",
+		ln.Addr().String(),
+	)
+	if err != nil {
+		t.Fatalf("DialNoResolver IP error = %v", err)
+	}
+	_ = conn.Close()
+
+	port := ln.Addr().(*net.TCPAddr).Port
+	conn, err = n.DialNoResolver(
+		context.Background(),
+		"tcp4",
+		net.JoinHostPort("localhost", strconv.Itoa(port)),
+	)
+	if err != nil {
+		t.Fatalf("DialNoResolver localhost error = %v", err)
+	}
+	_ = conn.Close()
+
+	if _, err := n.DialNoResolver(
+		context.Background(),
+		"tcp4",
+		"no-such-host.example.invalid:80",
+	); err == nil {
+		t.Fatal("DialNoResolver unresolved host returned nil error")
+	}
+
+	if got := resolverDials.Load(); got != 0 {
+		t.Fatalf("resolver dial calls = %d, want 0", got)
+	}
 }
 
 func TestNativeNetworkUdpPingPong(t *testing.T) {
@@ -86,16 +150,18 @@ func TestNativeNetworkInterfaceMulticastAddrs(t *testing.T) {
 	}
 }
 
-func TestNativeNetworkListenPacketConfig_UsesCallSpecificControl(t *testing.T) {
+func TestNativeNetworkListenPacketConfig_MergesControls(t *testing.T) {
 	t.Parallel()
 
 	var defaultCalls atomic.Int32
 	var listenCalls atomic.Int32
+	var order []string
 
 	n := gonnect.NativeConfig{
 		ListenCfg: &net.ListenConfig{
 			Control: func(network, address string, c syscall.RawConn) error {
 				defaultCalls.Add(1)
+				order = append(order, "default")
 				return nil
 			},
 		},
@@ -104,6 +170,7 @@ func TestNativeNetworkListenPacketConfig_UsesCallSpecificControl(t *testing.T) {
 	pc, err := n.ListenPacketConfig(context.Background(), &gonnect.ListenConfig{
 		Control: func(network, address string, c syscall.RawConn) error {
 			listenCalls.Add(1)
+			order = append(order, "listen")
 			return nil
 		},
 	}, "udp4", "127.0.0.1:0")
@@ -115,8 +182,14 @@ func TestNativeNetworkListenPacketConfig_UsesCallSpecificControl(t *testing.T) {
 	if got := listenCalls.Load(); got == 0 {
 		t.Fatal("ListenPacketConfig() did not invoke call-specific Control")
 	}
-	if got := defaultCalls.Load(); got != 0 {
-		t.Fatalf("ListenPacketConfig() invoked default Control %d times", got)
+	if got := defaultCalls.Load(); got == 0 {
+		t.Fatal("ListenPacketConfig() did not invoke default Control")
+	}
+	if len(order) != 2 || order[0] != "listen" || order[1] != "default" {
+		t.Fatalf(
+			"ListenPacketConfig() Control order = %#v, want listen then default",
+			order,
+		)
 	}
 
 	addr, ok := pc.LocalAddr().(*net.UDPAddr)
@@ -133,16 +206,18 @@ func TestNativeNetworkListenPacketConfig_UsesCallSpecificControl(t *testing.T) {
 	}
 }
 
-func TestNativeNetworkListenUDPConfig_UsesCallSpecificControl(t *testing.T) {
+func TestNativeNetworkListenUDPConfig_MergesControls(t *testing.T) {
 	t.Parallel()
 
 	var defaultCalls atomic.Int32
 	var listenCalls atomic.Int32
+	var order []string
 
 	n := gonnect.NativeConfig{
 		ListenCfg: &net.ListenConfig{
 			Control: func(network, address string, c syscall.RawConn) error {
 				defaultCalls.Add(1)
+				order = append(order, "default")
 				return nil
 			},
 		},
@@ -151,6 +226,7 @@ func TestNativeNetworkListenUDPConfig_UsesCallSpecificControl(t *testing.T) {
 	uc, err := n.ListenUDPConfig(context.Background(), &gonnect.ListenConfig{
 		Control: func(network, address string, c syscall.RawConn) error {
 			listenCalls.Add(1)
+			order = append(order, "listen")
 			return nil
 		},
 	}, "udp4", "127.0.0.1:0")
@@ -162,8 +238,14 @@ func TestNativeNetworkListenUDPConfig_UsesCallSpecificControl(t *testing.T) {
 	if got := listenCalls.Load(); got == 0 {
 		t.Fatal("ListenUDPConfig() did not invoke call-specific Control")
 	}
-	if got := defaultCalls.Load(); got != 0 {
-		t.Fatalf("ListenUDPConfig() invoked default Control %d times", got)
+	if got := defaultCalls.Load(); got == 0 {
+		t.Fatal("ListenUDPConfig() did not invoke default Control")
+	}
+	if len(order) != 2 || order[0] != "listen" || order[1] != "default" {
+		t.Fatalf(
+			"ListenUDPConfig() Control order = %#v, want listen then default",
+			order,
+		)
 	}
 
 	addr, ok := uc.LocalAddr().(*net.UDPAddr)

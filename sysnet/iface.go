@@ -42,22 +42,17 @@ type RulesInfo struct {
 	// TunRules that can be used in Exclude or Include lists for DefaultTun.
 	TunRules []RuleTypeInfo
 
-	// Rules that can be used in Matchers with IP packets come from Tuns.
-	IPMatcherRules []RuleTypeInfo
-
-	// Rules that can be used in Matchers with Connections accepted via LocalNet.
-	ConnMatcherRules []RuleTypeInfo
+	// Rules that can be used in Matchers.
+	MatcherRules []RuleTypeInfo
 }
 
 func (r *RulesInfo) Copy() RulesInfo {
 	rules := RulesInfo{
-		TunRules:         make([]RuleTypeInfo, len(r.TunRules)),
-		IPMatcherRules:   make([]RuleTypeInfo, len(r.IPMatcherRules)),
-		ConnMatcherRules: make([]RuleTypeInfo, len(r.ConnMatcherRules)),
+		TunRules:     make([]RuleTypeInfo, len(r.TunRules)),
+		MatcherRules: make([]RuleTypeInfo, len(r.MatcherRules)),
 	}
 	copy(rules.TunRules, r.TunRules)
-	copy(rules.IPMatcherRules, r.IPMatcherRules)
-	copy(rules.ConnMatcherRules, r.ConnMatcherRules)
+	copy(rules.MatcherRules, r.MatcherRules)
 	return rules
 }
 
@@ -131,24 +126,6 @@ type DefaultTunOpts struct {
 	Include []Rule
 }
 
-// TunOpts specifies configuration options for building a regular Tun.
-type TunOpts struct {
-	// TunAddrs specifies the addresses that should be owned by the TUN device,
-	// for example: "10.0.0.2/32".
-	// Loopback addrs passed here should be ignored.
-	// If TunAddrs is void, there will be no
-	TunAddrs []string
-
-	// TunRoutes specifies the extra routes that should be owned by the TUN device,
-	// for example: "0.0.0.0/0" and "::/0" for all routes.
-	// Loopback subnets passed here should be ignored.
-	TunRoutes []string
-
-	// MTU specifies the initial MTU for the TUN device. If MTU is 0 or too low,
-	// implementation should use a sensible default.
-	MTU int
-}
-
 func (b *DefaultTunOpts) Copy() DefaultTunOpts {
 	c := DefaultTunOpts{
 		MTU:    b.MTU,
@@ -174,6 +151,42 @@ func (b *DefaultTunOpts) Copy() DefaultTunOpts {
 	if b.Include != nil {
 		c.Include = make([]Rule, len(b.Include))
 		copy(c.Include, b.Include)
+	}
+
+	return c
+}
+
+// TunOpts specifies configuration options for building a regular Tun.
+type TunOpts struct {
+	// TunAddrs specifies the addresses that should be owned by the TUN device,
+	// for example: "10.0.0.2/32".
+	// Loopback addrs passed here should be ignored.
+	// If TunAddrs is void, there will be no
+	TunAddrs []string
+
+	// TunRoutes specifies the extra routes that should be owned by the TUN device,
+	// for example: "0.0.0.0/0" and "::/0" for all routes.
+	// Loopback subnets passed here should be ignored.
+	TunRoutes []string
+
+	// MTU specifies the initial MTU for the TUN device. If MTU is 0 or too low,
+	// implementation should use a sensible default.
+	MTU int
+}
+
+func (b *TunOpts) Copy() DefaultTunOpts {
+	c := DefaultTunOpts{
+		MTU: b.MTU,
+	}
+
+	if b.TunAddrs != nil {
+		c.TunAddrs = make([]string, len(b.TunAddrs))
+		copy(c.TunAddrs, b.TunAddrs)
+	}
+
+	if b.TunRoutes != nil {
+		c.TunRoutes = make([]string, len(b.TunRoutes))
+		copy(c.TunRoutes, b.TunRoutes)
 	}
 
 	return c
@@ -249,12 +262,15 @@ type System interface {
 
 	// OutNet is an outbound Network interface. All traffic goes through it should
 	// bypass any DefaultTun instance built by this System.
+	// In some System implementations OutNet MAY be a same Network instance with
+	// LocalNet but users should not assume or expect this.
 	// System implementations that cannot provide one should return
 	// gonnect.RejectNetwork.
 	OutNet() gonnect.Network
 
-	// LocalNet is a loopback Network interface. It should be limited to loopback
-	// addrs and domains pointing to them.
+	// LocalNet is a loopback Network interface.
+	// In some System implementations LocalNet MAY be a same Network instance with
+	// OutNet but users should not assume or expect this.
 	// System implementations that cannot provide one should return
 	// gonnect.RejectNetwork.
 	LocalNet() gonnect.Network

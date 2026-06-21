@@ -346,5 +346,5 @@ type System interface {
 	// Dynamic Tun params update may not be available on some systems.
 	// Also on some systems SetTunName may be available for regular Tuns but not
 	// for DefaultTun.
-	SetTunName(tun tun.Tun) ([]string, error)
+	SetTunName(tun tun.Tun, name string) ([]string, error)
 }

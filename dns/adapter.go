@@ -157,10 +157,31 @@ type Resolver struct {
 
 func NewResolver(d Interface) *Resolver { return &Resolver{DNS: d} }
 
+func literalIP(network, host string) (net.IP, bool, error) {
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return nil, false, nil // nolint
+	}
+	if strings.HasSuffix(network, "4") && !addr.Is4() {
+		return nil, true, dnsErr(host)
+	}
+	if strings.HasSuffix(network, "6") && !addr.Is6() {
+		return nil, true, dnsErr(host)
+	}
+	return net.IP(append([]byte(nil), addr.AsSlice()...)), true, nil
+}
+
 func (r *Resolver) LookupIP(
 	ctx context.Context,
 	network, host string,
 ) ([]net.IP, error) {
+	if ip, ok, err := literalIP(network, host); ok || err != nil {
+		if err != nil {
+			return nil, err
+		}
+		return []net.IP{ip}, nil
+	}
+
 	var out []net.IP
 	if !strings.HasSuffix(network, "6") {
 		rrs, err := r.lookup(ctx, TypeA, host)

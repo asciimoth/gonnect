@@ -17,6 +17,7 @@ import (
 	"net/netip"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -328,6 +329,34 @@ func TestResolverConsumerRecordTypes(t *testing.T) {
 	}
 }
 
+func TestResolverLookupIPNumericLiteralDoesNotQueryDNS(t *testing.T) {
+	dns := newCountingNameErrorDNS()
+	defer dns.Close()
+	res := NewResolver(dns)
+
+	ips, err := res.LookupIP(context.Background(), "ip", "127.0.0.1")
+	if err != nil || len(ips) != 1 || !ips[0].Equal(net.ParseIP("127.0.0.1")) {
+		t.Fatalf("LookupIP IPv4 literal = %v, %v", ips, err)
+	}
+
+	ips, err = res.LookupIP(context.Background(), "ip6", "::1")
+	if err != nil || len(ips) != 1 || !ips[0].Equal(net.ParseIP("::1")) {
+		t.Fatalf("LookupIP IPv6 literal = %v, %v", ips, err)
+	}
+
+	if _, err := res.LookupIP(
+		context.Background(),
+		"ip6",
+		"127.0.0.1",
+	); err == nil {
+		t.Fatal("LookupIP incompatible literal returned nil error")
+	}
+
+	if got := dns.calls.Load(); got != 0 {
+		t.Fatalf("DNS calls for numeric literals = %d, want 0", got)
+	}
+}
+
 func TestCacheAttachDetachReattach(t *testing.T) {
 	storage := NewMemoryStorage()
 	cache := NewCache(
@@ -629,6 +658,25 @@ func (fakeResolver) LookupTXT(
 type staticDNS struct {
 	p *provider
 }
+
+type countingNameErrorDNS struct {
+	p     *provider
+	calls atomic.Int32
+}
+
+func newCountingNameErrorDNS() *countingNameErrorDNS {
+	d := &countingNameErrorDNS{}
+	d.p = newProvider(func(root context.Context, req Request) {
+		d.calls.Add(1)
+		resp := responseFor(req.Message)
+		resp.RCode = RCodeNameError
+		sendResponse(req, resp, nil)
+	})
+	return d
+}
+
+func (d *countingNameErrorDNS) Requests() chan<- Request { return d.p.Requests() }
+func (d *countingNameErrorDNS) Close() error             { return d.p.Close() }
 
 func newStaticDNS() *staticDNS {
 	s := &staticDNS{}

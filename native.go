@@ -148,6 +148,17 @@ func nativeIPMatchesNetwork(ip netip.Addr, network string) bool {
 		(family == "ip6" && ip.Is6())
 }
 
+func nativeIPLiteral(host, network string) (net.IP, bool, error) {
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return nil, false, nil // nolint
+	}
+	if !nativeIPMatchesNetwork(addr, network) {
+		return nil, true, nativeNoSuchHost(host, "local")
+	}
+	return net.IP(append([]byte(nil), addr.AsSlice()...)), true, nil
+}
+
 func nativePortNetwork(network string) string {
 	if strings.HasPrefix(network, "tcp") {
 		return "tcp"
@@ -893,12 +904,17 @@ func (n *NativeNetwork) resolveAddr(
 	resolver := n.getResolver()
 	ipNet := nativeFamilyFromNetwork(network) // "ip","ip4" or "ip6"
 
-	ips, err := resolver.LookupIP(ctx, ipNet, host)
+	ip, ok, err := nativeIPLiteral(host, ipNet)
 	if err != nil {
 		return nil, 0, err
 	}
-
-	ip := nativePickIP(ips, n.preferIP)
+	if !ok {
+		ips, err := resolver.LookupIP(ctx, ipNet, host)
+		if err != nil {
+			return nil, 0, err
+		}
+		ip = nativePickIP(ips, n.preferIP)
+	}
 
 	port, err := strconv.Atoi(serv)
 	if err != nil {

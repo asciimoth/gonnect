@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/asciimoth/gonnect"
+	gdns "github.com/asciimoth/gonnect/dns"
 	gt "github.com/asciimoth/gonnect/testing"
 )
 
@@ -97,6 +98,38 @@ func TestNativeNetworkDialNoResolver(t *testing.T) {
 	}
 }
 
+func TestNativeNetworkNumericIPDoesNotUseResolver(t *testing.T) {
+	t.Parallel()
+
+	dns := newNativeNameErrorDNS()
+	t.Cleanup(func() { _ = dns.Close() })
+
+	n := gonnect.NativeConfig{}.Build()
+	n.SetResolver(gdns.NewResolver(dns))
+
+	ln, err := n.Listen(context.Background(), "tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen numeric IP error = %v", err)
+	}
+	_ = ln.Close()
+
+	if got := dns.calls.Load(); got != 0 {
+		t.Fatalf("resolver calls after numeric Listen = %d, want 0", got)
+	}
+
+	if _, _, err := n.LookupNetAddr(
+		context.Background(),
+		"tcp6",
+		"127.0.0.1:0",
+	); err == nil {
+		t.Fatal("LookupNetAddr incompatible numeric IP returned nil error")
+	}
+
+	if got := dns.calls.Load(); got != 0 {
+		t.Fatalf("resolver calls after incompatible literal = %d, want 0", got)
+	}
+}
+
 func TestNativeNetworkUdpPingPong(t *testing.T) {
 	pair := gt.NetAddrPair{
 		Network: gonnect.NativeConfig{}.Build(),
@@ -148,6 +181,35 @@ func TestNativeNetworkInterfaceMulticastAddrs(t *testing.T) {
 			)
 		}
 	}
+}
+
+type nativeNameErrorDNS struct {
+	ch    chan gdns.Request
+	calls atomic.Int32
+}
+
+func newNativeNameErrorDNS() *nativeNameErrorDNS {
+	d := &nativeNameErrorDNS{ch: make(chan gdns.Request)}
+	go func() {
+		for req := range d.ch {
+			d.calls.Add(1)
+			req.Reply <- gdns.Response{
+				Message: &gdns.Message{
+					ID:       req.Message.ID,
+					Response: true,
+					RCode:    gdns.RCodeNameError,
+				},
+			}
+		}
+	}()
+	return d
+}
+
+func (d *nativeNameErrorDNS) Requests() chan<- gdns.Request { return d.ch }
+
+func (d *nativeNameErrorDNS) Close() error {
+	close(d.ch)
+	return nil
 }
 
 func TestNativeNetworkListenPacketConfig_MergesControls(t *testing.T) {

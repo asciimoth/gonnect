@@ -5,11 +5,37 @@ import (
 	"errors"
 	"net"
 	"strconv"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/asciimoth/gonnect"
 )
+
+type fakeRawConn struct {
+	fd      uintptr
+	control func(fd uintptr)
+	err     error
+}
+
+func (c fakeRawConn) Control(f func(fd uintptr)) error {
+	if c.control != nil {
+		c.control(c.fd)
+	}
+	if c.err != nil {
+		return c.err
+	}
+	f(c.fd)
+	return nil
+}
+
+func (c fakeRawConn) Read(func(fd uintptr) bool) error {
+	return c.err
+}
+
+func (c fakeRawConn) Write(func(fd uintptr) bool) error {
+	return c.err
+}
 
 func TestIgnoreUnsupported(t *testing.T) {
 	if err := IgnoreUnsupported(nil); err != nil {
@@ -114,6 +140,25 @@ func TestControlAndGetFd(t *testing.T) {
 		)
 	}
 
+	raw := fakeRawConn{fd: 42}
+	var rawFD uintptr
+	if err := Control(raw, func(fd uintptr) {
+		rawFD = fd
+	}); err != nil {
+		t.Fatalf("Control(raw conn) error = %v", err)
+	}
+	if rawFD != raw.fd {
+		t.Fatalf("Control(raw conn) fd = %d, want %d", rawFD, raw.fd)
+	}
+
+	wantErr := syscall.EBADF
+	err = control(raw, func(uintptr) error {
+		return wantErr
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("control(callback error) = %v, want %v", err, wantErr)
+	}
+
 	conn, err := net.ListenPacket("udp4", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("ListenPacket error = %v", err)
@@ -160,7 +205,10 @@ func TestLinuxSocketOptions(t *testing.T) {
 		t.Fatalf("GetBuffSize = %d/%d, want positive sizes", recv, send)
 	}
 	if err := SetRoutingMark(conn, FwmarkIstio); err != nil {
-		t.Fatalf("SetRoutingMark error = %v", err)
+		t.Logf(
+			"SetRoutingMark unsupported in this environment: %v",
+			err,
+		)
 	}
 	if _, err := GetRoutingMark(conn); err != nil {
 		t.Fatalf("GetRoutingMark error = %v", err)

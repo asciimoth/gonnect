@@ -9,6 +9,7 @@ package sockopt
 import (
 	"errors"
 	"strings"
+	"syscall"
 
 	helpers "github.com/asciimoth/gonnect"
 )
@@ -68,6 +69,17 @@ type Support struct {
 // executes the provided function with it. Returns ErrUnsupported if the
 // connection type does not support raw file descriptor access.
 func Control(a any, f func(fd uintptr)) error {
+	return control(a, func(fd uintptr) error {
+		f(fd)
+		return nil
+	})
+}
+
+func control(a any, f func(fd uintptr) error) error {
+	if rc, ok := a.(syscall.RawConn); ok {
+		return controlRawConn(rc, f)
+	}
+
 	rc, err := helpers.SyscallConn(a)
 	if err != nil {
 		return err
@@ -75,7 +87,18 @@ func Control(a any, f func(fd uintptr)) error {
 	if rc == nil {
 		return ErrUnsupported
 	}
-	return rc.Control(f)
+	return controlRawConn(rc, f)
+}
+
+func controlRawConn(rc syscall.RawConn, f func(fd uintptr) error) error {
+	var opErr error
+	err := rc.Control(func(fd uintptr) {
+		opErr = f(fd)
+	})
+	if err != nil {
+		return err
+	}
+	return opErr
 }
 
 // GetFd extracts the raw file descriptor from a network connection.

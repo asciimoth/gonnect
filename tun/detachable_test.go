@@ -200,6 +200,40 @@ func TestDetachedTunWrappedCloseUnblocksPendingWrite(t *testing.T) {
 	assertAsyncErr(t, "pending Write after wrapped Close", errCh, os.ErrClosed)
 }
 
+func TestDetachedTunIsNativeCachedFromWrappedTun(t *testing.T) {
+	base := newEventTun(1500)
+	base.SetNative(true)
+	wrapper := tun.Detach(base)
+	child := tun.Detach(wrapper)
+	t.Cleanup(func() {
+		closeTestTun(t, child)
+		closeTestTun(t, wrapper)
+		closeTestTun(t, base)
+	})
+
+	if !wrapper.IsNative() {
+		t.Fatal(
+			"DetachedTun IsNative() = false, want wrapped Tun native status",
+		)
+	}
+	if !child.IsNative() {
+		t.Fatal(
+			"nested DetachedTun IsNative() = false, want parent native status",
+		)
+	}
+
+	base.SetNative(false)
+	if !wrapper.IsNative() {
+		t.Fatal("DetachedTun IsNative() changed after construction")
+	}
+	if !child.IsNative() {
+		t.Fatal("nested DetachedTun IsNative() changed after construction")
+	}
+	if got := base.NativeCalls(); got != 1 {
+		t.Fatalf("wrapped Tun IsNative() calls = %d, want 1", got)
+	}
+}
+
 func TestNestedDetachedTunParentCloseUnblocksPendingChildRead(t *testing.T) {
 	base := newEventTun(1500)
 	defer closeTestTun(t, base)
@@ -407,15 +441,17 @@ func TestNestedDetachedTunLongChainMTUUpdatePropagation(t *testing.T) {
 }
 
 type eventTun struct {
-	mu     sync.RWMutex
-	mtu    int
-	events chan tun.Event
-	in     *tun.Channel
-	out    *tun.Channel
-	reads  chan struct{}
-	writes chan struct{}
-	done   chan struct{}
-	once   sync.Once
+	mu          sync.RWMutex
+	mtu         int
+	events      chan tun.Event
+	in          *tun.Channel
+	out         *tun.Channel
+	reads       chan struct{}
+	writes      chan struct{}
+	done        chan struct{}
+	once        sync.Once
+	native      bool
+	nativeCalls int
 }
 
 func newEventTun(mtu int) *eventTun {
@@ -432,7 +468,12 @@ func newEventTun(mtu int) *eventTun {
 
 func (t *eventTun) File() *os.File { return nil }
 
-func (t *eventTun) IsNative() bool { return false }
+func (t *eventTun) IsNative() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.nativeCalls++
+	return t.native
+}
 
 func (t *eventTun) Read(
 	bufs [][]byte,
@@ -487,6 +528,18 @@ func (t *eventTun) SetMTU(mtu int) {
 	t.mtu = mtu
 	t.mu.Unlock()
 	t.events <- tun.EventMTUUpdate
+}
+
+func (t *eventTun) SetNative(native bool) {
+	t.mu.Lock()
+	t.native = native
+	t.mu.Unlock()
+}
+
+func (t *eventTun) NativeCalls() int {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.nativeCalls
 }
 
 func (t *eventTun) Send(packet []byte) error {

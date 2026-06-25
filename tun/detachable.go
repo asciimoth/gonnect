@@ -103,6 +103,7 @@ type DetachedTun struct {
 	mwo           int
 	batch         int
 	readLen       int
+	native        bool
 	pool          bufpool.Pool
 }
 
@@ -132,6 +133,7 @@ func Detach(t Tun, pools ...bufpool.Pool) *DetachedTun {
 		mro:       t.MRO(),
 		mwo:       t.MWO(),
 		batch:     t.BatchSize(),
+		native:    t.IsNative(),
 		pool:      pool,
 	}
 	if d.batch <= 0 {
@@ -167,6 +169,7 @@ func detachSource(
 		mro:       t.MRO(),
 		mwo:       t.MWO(),
 		batch:     t.BatchSize(),
+		native:    t.IsNative(),
 		pool:      pool,
 	}
 	if d.batch <= 0 {
@@ -195,6 +198,7 @@ func detachNested(parent *DetachedTun, pool bufpool.Pool) *DetachedTun {
 		mwo:       parent.mwo,
 		batch:     parent.batch,
 		readLen:   parent.readLen,
+		native:    parent.native,
 		pool:      pool,
 	}
 	d.startLocked()
@@ -268,7 +272,7 @@ func (d *DetachedTun) Close() error {
 
 func (d *DetachedTun) File() *os.File { return d.wrapped.File() }
 
-func (d *DetachedTun) IsNative() bool { return false }
+func (d *DetachedTun) IsNative() bool { return d.native }
 
 func (d *DetachedTun) MWO() int { return d.mwo }
 

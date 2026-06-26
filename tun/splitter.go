@@ -90,7 +90,7 @@ type Splitter struct {
 	backend     *splitterBackend
 	router      SplitRouter
 	frontends   [splitterFrontendCount]*SplitFrontend
-	writes      chan detachedTunWrite
+	writes      chan *detachedTunWrite
 	mro         int
 	mwo         int
 	mtu         int
@@ -127,7 +127,7 @@ func NewSplitter(pools ...bufpool.Pool) *Splitter {
 	pool := optionalPool(pools)
 	s := &Splitter{
 		done:   make(chan struct{}),
-		writes: make(chan detachedTunWrite, channelBufferSize()),
+		writes: make(chan *detachedTunWrite, channelBufferSize()),
 		mro:    splitterDefaultOffset,
 		mwo:    splitterDefaultOffset,
 		mtu:    splitterDefaultMTU,
@@ -463,11 +463,16 @@ func (s *Splitter) writePump() {
 	for {
 		select {
 		case <-s.done:
+			drainDetachedTunWrites(s.writes, ErrSplitterClosed)
 			return
 		case req := <-s.writes:
-			n, err := s.writeToBackend(req.bufs, req.offset)
-			putBuffers(req.pool, req.bufs)
-			req.resp <- detachedTunWriteResult{n: n, err: err}
+			bufs, ok := req.take()
+			if !ok {
+				continue
+			}
+			n, err := s.writeToBackend(bufs, req.offset)
+			req.release()
+			req.respond(n, err)
 		}
 	}
 }
@@ -738,20 +743,23 @@ func (f *SplitFrontend) Write(bufs [][]byte, offset int) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	req := detachedTunWrite{
-		bufs:   cloneWriteBufs(f.s.pool, bufs, offset),
-		offset: offset,
-		pool:   f.s.pool,
-		resp:   make(chan detachedTunWriteResult, 1),
-	}
 	select {
 	case <-done:
-		putBuffers(req.pool, req.bufs)
 		return 0, ErrSplitterFrontendDown
-	case writes <- req:
+	default:
+	}
+	req := newDetachedTunWrite(f.s.pool, bufs, offset)
+	if err := enqueueDetachedTunWrite(
+		writes,
+		done,
+		req,
+		ErrSplitterFrontendDown,
+	); err != nil {
+		return 0, err
 	}
 	select {
 	case <-done:
+		req.cancel(ErrSplitterFrontendDown)
 		return 0, ErrSplitterFrontendDown
 	case res := <-req.resp:
 		return res.n, res.err
@@ -801,7 +809,7 @@ func (f *SplitFrontend) channels() (
 }
 
 func (f *SplitFrontend) writeChannel() (
-	chan<- detachedTunWrite,
+	chan<- *detachedTunWrite,
 	<-chan struct{},
 	error,
 ) {
@@ -819,7 +827,7 @@ func (f *SplitFrontend) writeChannel() (
 
 func (f *SplitFrontend) sourceSnapshot() (
 	<-chan detachedTunRead,
-	chan<- detachedTunWrite,
+	chan<- *detachedTunWrite,
 	<-chan struct{},
 	error,
 ) {

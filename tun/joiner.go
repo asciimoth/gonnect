@@ -75,7 +75,7 @@ type Joiner struct {
 	eventMu     sync.RWMutex
 	eventClosed bool
 	reads       chan detachedTunRead
-	writes      chan detachedTunWrite
+	writes      chan *detachedTunWrite
 	pending     []joinerPending
 	defaultTun  *joinerNested
 	secondaries map[Tun]*joinerNested
@@ -95,7 +95,7 @@ func NewJoiner(pools ...bufpool.Pool) *Joiner {
 		done:        make(chan struct{}),
 		events:      make(chan Event, 8),
 		reads:       make(chan detachedTunRead, channelBufferSize()),
-		writes:      make(chan detachedTunWrite, channelBufferSize()),
+		writes:      make(chan *detachedTunWrite, channelBufferSize()),
 		secondaries: make(map[Tun]*joinerNested),
 		nested:      make(map[Tun]*joinerNested),
 		routes:      make(map[string]*joinerNested),
@@ -343,13 +343,14 @@ func (j *Joiner) Close() error {
 			_ = n.t.Close()
 		}
 		j.wg.Wait()
+		drainDetachedTunReads(j.reads)
 	})
 	return nil
 }
 
 func (j *Joiner) sourceSnapshot() (
 	<-chan detachedTunRead,
-	chan<- detachedTunWrite,
+	chan<- *detachedTunWrite,
 	<-chan struct{},
 	error,
 ) {
@@ -492,11 +493,16 @@ func (j *Joiner) writePump() {
 	for {
 		select {
 		case <-j.done:
+			drainDetachedTunWrites(j.writes, ErrJoinerClosed)
 			return
 		case req := <-j.writes:
-			n, err := j.Write(req.bufs, req.offset)
-			putBuffers(req.pool, req.bufs)
-			req.resp <- detachedTunWriteResult{n: n, err: err}
+			bufs, ok := req.take()
+			if !ok {
+				continue
+			}
+			n, err := j.Write(bufs, req.offset)
+			req.release()
+			req.respond(n, err)
 		}
 	}
 }

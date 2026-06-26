@@ -38,10 +38,12 @@ type detachedTunRead struct {
 }
 
 type detachedTunWrite struct {
+	mu     sync.Mutex
 	bufs   [][]byte
 	offset int
 	pool   bufpool.Pool
 	resp   chan detachedTunWriteResult
+	taken  bool
 }
 
 type detachedTunWriteResult struct {
@@ -52,7 +54,7 @@ type detachedTunWriteResult struct {
 type tunChannelSource interface {
 	sourceSnapshot() (
 		<-chan detachedTunRead,
-		chan<- detachedTunWrite,
+		chan<- *detachedTunWrite,
 		<-chan struct{},
 		error,
 	)
@@ -90,14 +92,15 @@ type DetachedTun struct {
 	parentDone    <-chan struct{}
 	ownsPumps     bool
 	reads         chan detachedTunRead
-	writes        chan detachedTunWrite
+	writes        chan *detachedTunWrite
 	readSrc       <-chan detachedTunRead
-	writeSrc      chan<- detachedTunWrite
+	writeSrc      chan<- *detachedTunWrite
 	events        chan Event
 	eventMu       sync.RWMutex
 	eventClosed   bool
 	eventSubs     map[chan Event]struct{}
 	once          sync.Once
+	wg            sync.WaitGroup
 	mtu           int
 	mro           int
 	mwo           int
@@ -260,8 +263,13 @@ func (d *DetachedTun) Close() error {
 			d.gen++
 			close(d.done)
 		}
+		reads := d.reads
+		ownsPumps := d.ownsPumps
 		d.closed = true
 		d.mu.Unlock()
+		if ownsPumps {
+			drainDetachedTunReads(reads)
+		}
 		if wasUp {
 			d.sendEvent(EventDown)
 		}
@@ -335,20 +343,23 @@ func (d *DetachedTun) Write(bufs [][]byte, offset int) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	req := detachedTunWrite{
-		bufs:   cloneWriteBufs(d.pool, bufs, offset),
-		offset: offset,
-		pool:   d.pool,
-		resp:   make(chan detachedTunWriteResult, 1),
-	}
 	select {
 	case <-done:
-		putBuffers(req.pool, req.bufs)
 		return 0, ErrDetachedTunDown
-	case writes <- req:
+	default:
+	}
+	req := newDetachedTunWrite(d.pool, bufs, offset)
+	if err := enqueueDetachedTunWrite(
+		writes,
+		done,
+		req,
+		ErrDetachedTunDown,
+	); err != nil {
+		return 0, err
 	}
 	select {
 	case <-done:
+		req.cancel(ErrDetachedTunDown)
 		return 0, ErrDetachedTunDown
 	case res := <-req.resp:
 		return res.n, res.err
@@ -360,15 +371,15 @@ func (d *DetachedTun) startLocked() {
 	if d.ownsPumps {
 		d.effectiveDone = d.done
 		d.reads = make(chan detachedTunRead, channelBufferSize())
-		d.writes = make(chan detachedTunWrite, channelBufferSize())
+		d.writes = make(chan *detachedTunWrite, channelBufferSize())
 		d.readSrc = d.reads
 		d.writeSrc = d.writes
 		gen := d.gen
 		done := d.done
 		reads := d.reads
 		writes := d.writes
-		go d.readPump(gen, done, reads)
-		go d.writePump(gen, done, writes)
+		d.wg.Go(func() { d.readPump(gen, done, reads) })
+		d.wg.Go(func() { d.writePump(gen, done, writes) })
 		return
 	}
 	_ = d.refreshNestedLocked()
@@ -428,7 +439,7 @@ func (d *DetachedTun) channels() (
 }
 
 func (d *DetachedTun) writeChannel() (
-	chan<- detachedTunWrite,
+	chan<- *detachedTunWrite,
 	<-chan struct{},
 	error,
 ) {
@@ -468,7 +479,7 @@ func (d *DetachedTun) stateErr() error {
 
 func (d *DetachedTun) sourceSnapshot() (
 	<-chan detachedTunRead,
-	chan<- detachedTunWrite,
+	chan<- *detachedTunWrite,
 	<-chan struct{},
 	error,
 ) {
@@ -491,7 +502,7 @@ func (d *DetachedTun) sourceSnapshot() (
 func (d *DetachedTun) readPump(
 	gen uint64,
 	done <-chan struct{},
-	reads chan<- detachedTunRead,
+	reads chan detachedTunRead,
 ) {
 	bufs := make([][]byte, d.batch)
 	sizes := make([]int, d.batch)
@@ -507,6 +518,9 @@ func (d *DetachedTun) readPump(
 			}
 			select {
 			case <-done:
+				if d.isClosed() {
+					drainDetachedTunReads(reads)
+				}
 			case reads <- detachedTunRead{err: err}:
 			}
 			return
@@ -529,12 +543,19 @@ func (d *DetachedTun) readPump(
 		select {
 		case <-done:
 			putBuffers(d.pool, packets)
+			if d.isClosed() {
+				drainDetachedTunReads(reads)
+			}
 			return
 		case reads <- detachedTunRead{
 			bufs:  packets,
 			sizes: sizes[:n],
 			pool:  d.pool,
 		}:
+			if d.isClosed() {
+				drainDetachedTunReads(reads)
+				return
+			}
 		}
 	}
 }
@@ -560,21 +581,28 @@ func (d *DetachedTun) forwardStaleRead(packets [][]byte) {
 func (d *DetachedTun) writePump(
 	gen uint64,
 	done <-chan struct{},
-	writes <-chan detachedTunWrite,
+	writes <-chan *detachedTunWrite,
 ) {
 	for {
 		select {
 		case <-done:
+			drainDetachedTunWrites(writes, ErrDetachedTunDown)
 			return
 		case req := <-writes:
-			n, err := d.wrapped.Write(req.bufs, req.offset)
-			putBuffers(req.pool, req.bufs)
+			bufs, ok := req.take()
+			if !ok {
+				continue
+			}
+			n, err := d.wrapped.Write(bufs, req.offset)
+			req.release()
 			if !d.generationActive(gen) {
-				req.resp <- detachedTunWriteResult{err: ErrDetachedTunDown}
+				req.respond(0, ErrDetachedTunDown)
+				drainDetachedTunWrites(writes, ErrDetachedTunDown)
 				return
 			}
-			req.resp <- detachedTunWriteResult{n: n, err: err}
+			req.respond(n, err)
 			if err != nil {
+				drainDetachedTunWrites(writes, err)
 				return
 			}
 		}
@@ -585,6 +613,12 @@ func (d *DetachedTun) generationActive(gen uint64) bool {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	return d.up && !d.closed && d.gen == gen
+}
+
+func (d *DetachedTun) isClosed() bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.closed
 }
 
 func closedChan(ch <-chan struct{}) bool {
@@ -626,8 +660,13 @@ func (d *DetachedTun) closeFromWrapped(down bool) {
 				close(d.done)
 			}
 		}
+		reads := d.reads
+		ownsPumps := d.ownsPumps
 		d.closed = true
 		d.mu.Unlock()
+		if ownsPumps {
+			drainDetachedTunReads(reads)
+		}
 		if wasUp && !down {
 			d.sendEvent(EventDown)
 		}
@@ -709,4 +748,105 @@ func cloneWriteBufs(pool bufpool.Pool, bufs [][]byte, offset int) [][]byte {
 		copy(out[i][offset:], bufs[i][offset:])
 	}
 	return out
+}
+
+func newDetachedTunWrite(
+	pool bufpool.Pool,
+	bufs [][]byte,
+	offset int,
+) *detachedTunWrite {
+	return &detachedTunWrite{
+		bufs:   cloneWriteBufs(pool, bufs, offset),
+		offset: offset,
+		pool:   pool,
+		resp:   make(chan detachedTunWriteResult, 1),
+	}
+}
+
+func enqueueDetachedTunWrite(
+	writes chan<- *detachedTunWrite,
+	done <-chan struct{},
+	req *detachedTunWrite,
+	err error,
+) error {
+	select {
+	case <-done:
+		req.cancel(err)
+		return err
+	case writes <- req:
+		return nil
+	}
+}
+
+func drainDetachedTunWrites(
+	writes <-chan *detachedTunWrite,
+	err error,
+) {
+	for {
+		select {
+		case req, ok := <-writes:
+			if !ok {
+				return
+			}
+			req.cancel(err)
+		default:
+			return
+		}
+	}
+}
+
+func drainDetachedTunReads(reads <-chan detachedTunRead) {
+	for {
+		select {
+		case req, ok := <-reads:
+			if !ok {
+				return
+			}
+			putBuffers(req.pool, req.bufs)
+		default:
+			return
+		}
+	}
+}
+
+func (req *detachedTunWrite) take() ([][]byte, bool) {
+	req.mu.Lock()
+	defer req.mu.Unlock()
+	if req.taken || req.bufs == nil {
+		return nil, false
+	}
+	req.taken = true
+	return req.bufs, true
+}
+
+func (req *detachedTunWrite) release() {
+	req.mu.Lock()
+	bufs := req.bufs
+	pool := req.pool
+	req.bufs = nil
+	req.mu.Unlock()
+
+	putBuffers(pool, bufs)
+}
+
+func (req *detachedTunWrite) cancel(err error) {
+	req.mu.Lock()
+	if req.taken || req.bufs == nil {
+		req.mu.Unlock()
+		return
+	}
+	bufs := req.bufs
+	pool := req.pool
+	req.bufs = nil
+	req.mu.Unlock()
+
+	putBuffers(pool, bufs)
+	req.respond(0, err)
+}
+
+func (req *detachedTunWrite) respond(n int, err error) {
+	select {
+	case req.resp <- detachedTunWriteResult{n: n, err: err}:
+	default:
+	}
 }

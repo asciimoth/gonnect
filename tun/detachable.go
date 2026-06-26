@@ -38,12 +38,14 @@ type detachedTunRead struct {
 }
 
 type detachedTunWrite struct {
-	mu     sync.Mutex
-	bufs   [][]byte
-	offset int
-	pool   bufpool.Pool
-	resp   chan detachedTunWriteResult
-	taken  bool
+	mu         sync.Mutex
+	bufs       [][]byte
+	offset     int
+	pool       bufpool.Pool
+	owner      *DetachedTun
+	resp       chan detachedTunWriteResult
+	taken      bool
+	finishOnce sync.Once
 }
 
 type detachedTunWriteResult struct {
@@ -101,6 +103,9 @@ type DetachedTun struct {
 	eventSubs     map[chan Event]struct{}
 	once          sync.Once
 	wg            sync.WaitGroup
+	waitMu        sync.Mutex
+	waitCond      *sync.Cond
+	pendingWrites int
 	mtu           int
 	mro           int
 	mwo           int
@@ -139,6 +144,7 @@ func Detach(t Tun, pools ...bufpool.Pool) *DetachedTun {
 		native:    t.IsNative(),
 		pool:      pool,
 	}
+	d.waitCond = sync.NewCond(&d.waitMu)
 	if d.batch <= 0 {
 		d.batch = 1
 	}
@@ -175,6 +181,7 @@ func detachSource(
 		native:    t.IsNative(),
 		pool:      pool,
 	}
+	d.waitCond = sync.NewCond(&d.waitMu)
 	if d.batch <= 0 {
 		d.batch = 1
 	}
@@ -204,6 +211,7 @@ func detachNested(parent *DetachedTun, pool bufpool.Pool) *DetachedTun {
 		native:    parent.native,
 		pool:      pool,
 	}
+	d.waitCond = sync.NewCond(&d.waitMu)
 	d.startLocked()
 	d.startEventPump(parent.subscribeEvents())
 	d.sendEvent(EventUp)
@@ -278,6 +286,24 @@ func (d *DetachedTun) Close() error {
 	return nil
 }
 
+// Wait waits until this detached wrapper no longer owns buffers allocated from
+// the pool passed to Detach.
+//
+// Wait is intended to be called after Close, usually after the wrapped Tun has
+// also been closed or otherwise unblocked. If one of this wrapper's pumps, or a
+// parent/source pump servicing this wrapper's write request, is blocked in the
+// wrapped Tun, Wait may block until that operation returns.
+//
+// Wait is safe to call multiple times.
+func (d *DetachedTun) Wait() {
+	d.wg.Wait()
+	d.waitMu.Lock()
+	defer d.waitMu.Unlock()
+	for d.pendingWrites > 0 {
+		d.waitCond.Wait()
+	}
+}
+
 func (d *DetachedTun) File() *os.File { return d.wrapped.File() }
 
 func (d *DetachedTun) IsNative() bool { return d.native }
@@ -339,16 +365,10 @@ func (d *DetachedTun) Write(bufs [][]byte, offset int) (int, error) {
 	if offset < 0 {
 		return 0, errors.New("tun: negative write offset")
 	}
-	writes, done, err := d.writeChannel()
+	writes, done, req, err := d.writeRequest(bufs, offset)
 	if err != nil {
 		return 0, err
 	}
-	select {
-	case <-done:
-		return 0, ErrDetachedTunDown
-	default:
-	}
-	req := newDetachedTunWrite(d.pool, bufs, offset)
 	if err := enqueueDetachedTunWrite(
 		writes,
 		done,
@@ -364,6 +384,33 @@ func (d *DetachedTun) Write(bufs [][]byte, offset int) (int, error) {
 	case res := <-req.resp:
 		return res.n, res.err
 	}
+}
+
+func (d *DetachedTun) writeRequest(
+	bufs [][]byte,
+	offset int,
+) (
+	chan<- *detachedTunWrite,
+	<-chan struct{},
+	*detachedTunWrite,
+	error,
+) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.closed {
+		return nil, nil, nil, ErrDetachedTunClosed
+	}
+	if !d.up {
+		return nil, nil, nil, ErrDetachedTunDown
+	}
+	if !d.ownsPumps {
+		if err := d.refreshNestedLocked(); err != nil {
+			return nil, nil, nil, err
+		}
+	}
+	d.addPendingWrite()
+	req := newDetachedTunWrite(d, d.pool, bufs, offset)
+	return d.writeSrc, d.effectiveDone, req, nil
 }
 
 func (d *DetachedTun) startLocked() {
@@ -438,25 +485,19 @@ func (d *DetachedTun) channels() (
 	return d.readSrc, d.effectiveDone, nil
 }
 
-func (d *DetachedTun) writeChannel() (
-	chan<- *detachedTunWrite,
-	<-chan struct{},
-	error,
-) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.closed {
-		return nil, nil, ErrDetachedTunClosed
+func (d *DetachedTun) addPendingWrite() {
+	d.waitMu.Lock()
+	d.pendingWrites++
+	d.waitMu.Unlock()
+}
+
+func (d *DetachedTun) finishPendingWrite() {
+	d.waitMu.Lock()
+	d.pendingWrites--
+	if d.pendingWrites == 0 {
+		d.waitCond.Broadcast()
 	}
-	if !d.up {
-		return nil, nil, ErrDetachedTunDown
-	}
-	if !d.ownsPumps {
-		if err := d.refreshNestedLocked(); err != nil {
-			return nil, nil, err
-		}
-	}
-	return d.writeSrc, d.effectiveDone, nil
+	d.waitMu.Unlock()
 }
 
 func (d *DetachedTun) stateErr() error {
@@ -751,6 +792,7 @@ func cloneWriteBufs(pool bufpool.Pool, bufs [][]byte, offset int) [][]byte {
 }
 
 func newDetachedTunWrite(
+	owner *DetachedTun,
 	pool bufpool.Pool,
 	bufs [][]byte,
 	offset int,
@@ -759,6 +801,7 @@ func newDetachedTunWrite(
 		bufs:   cloneWriteBufs(pool, bufs, offset),
 		offset: offset,
 		pool:   pool,
+		owner:  owner,
 		resp:   make(chan detachedTunWriteResult, 1),
 	}
 }
@@ -827,6 +870,7 @@ func (req *detachedTunWrite) release() {
 	req.mu.Unlock()
 
 	putBuffers(pool, bufs)
+	req.finish()
 }
 
 func (req *detachedTunWrite) cancel(err error) {
@@ -841,7 +885,16 @@ func (req *detachedTunWrite) cancel(err error) {
 	req.mu.Unlock()
 
 	putBuffers(pool, bufs)
+	req.finish()
 	req.respond(0, err)
+}
+
+func (req *detachedTunWrite) finish() {
+	req.finishOnce.Do(func() {
+		if req.owner != nil {
+			req.owner.finishPendingWrite()
+		}
+	})
 }
 
 func (req *detachedTunWrite) respond(n int, err error) {

@@ -38,7 +38,7 @@ func TestDetachedTunQueuedWriteBuffersReturnedOnClose(t *testing.T) {
 	}
 	base.waitWriteFinished(t, "detached base write", 1)
 	base.waitReadFinished(t, "detached base read", 1)
-	d.wg.Wait()
+	d.Wait()
 
 	pool.Close()
 }
@@ -95,6 +95,7 @@ func TestJoinerQueuedWriteBuffersReturnedOnClose(t *testing.T) {
 		if err := d.Close(); err != nil {
 			t.Fatalf("detached Joiner Close() error = %v", err)
 		}
+		d.Wait()
 		assertWriteDone(t, "joiner first write", first)
 		assertWriteDone(t, "joiner second write", second)
 
@@ -119,9 +120,60 @@ func TestDetachedTunQueuedReadBuffersReturnedOnClose(t *testing.T) {
 	if err := base.Close(); err != nil {
 		t.Fatalf("base Close() error = %v", err)
 	}
-	d.wg.Wait()
+	d.Wait()
 
 	pool.Close()
+}
+
+func TestDetachedTunWaitBlocksUntilReadPumpUnblocked(t *testing.T) {
+	pool := bufpool.NewTestDebugPool(t)
+	base := newBlockingWriteTun(1, 1500, 0, 0)
+	d := Detach(base, pool)
+
+	base.waitReadStarted(t, "detached base read", 1)
+	if err := d.Close(); err != nil {
+		t.Fatalf("DetachedTun.Close() error = %v", err)
+	}
+	waitDone := waitDetachedTunAsync(d)
+	assertWaitBlocked(t, "DetachedTun.Wait before base close", waitDone)
+
+	if err := base.Close(); err != nil {
+		t.Fatalf("base Close() error = %v", err)
+	}
+	assertWaitDone(t, "DetachedTun.Wait after base close", waitDone)
+
+	pool.Close()
+}
+
+func TestNestedDetachedTunWriteBuffersReturnedAfterChildWait(t *testing.T) {
+	parentPool := bufpool.NewTestDebugPool(t)
+	childPool := bufpool.NewTestDebugPool(t)
+	base := newBlockingWriteTun(1, 1500, 0, 0)
+	parent := Detach(base, parentPool)
+	child := Detach(parent, childPool)
+
+	base.waitReadStarted(t, "parent base read", 1)
+	write := writeTunAsync(child, "nested")
+	base.waitWriteStarted(t, "nested child write", 1)
+
+	if err := child.Close(); err != nil {
+		t.Fatalf("child Close() error = %v", err)
+	}
+	assertWriteDone(t, "nested child write", write)
+	waitDone := waitDetachedTunAsync(child)
+	assertWaitBlocked(t, "child Wait before base close", waitDone)
+
+	if err := base.Close(); err != nil {
+		t.Fatalf("base Close() error = %v", err)
+	}
+	assertWaitDone(t, "child Wait after base close", waitDone)
+	childPool.Close()
+
+	if err := parent.Close(); err != nil {
+		t.Fatalf("parent Close() error = %v", err)
+	}
+	parent.Wait()
+	parentPool.Close()
 }
 
 func TestJoinerQueuedReadBuffersReturnedOnClose(t *testing.T) {
@@ -394,6 +446,41 @@ func waitQueueLen(
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatalf("%s queue len = %d, want at least %d", label, queueLen(), want)
+}
+
+func waitDetachedTunAsync(d *DetachedTun) <-chan struct{} {
+	ch := make(chan struct{})
+	go func() {
+		d.Wait()
+		close(ch)
+	}()
+	return ch
+}
+
+func assertWaitBlocked(
+	t *testing.T,
+	label string,
+	ch <-chan struct{},
+) {
+	t.Helper()
+	select {
+	case <-ch:
+		t.Fatalf("%s returned early", label)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func assertWaitDone(
+	t *testing.T,
+	label string,
+	ch <-chan struct{},
+) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("%s timed out", label)
+	}
 }
 
 func signalRegressionEvent(ch chan<- struct{}) {

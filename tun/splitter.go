@@ -748,7 +748,7 @@ func (f *SplitFrontend) Write(bufs [][]byte, offset int) (int, error) {
 		return 0, ErrSplitterFrontendDown
 	default:
 	}
-	req := newDetachedTunWrite(f.s.pool, bufs, offset)
+	req := newDetachedTunWrite(nil, f.s.pool, bufs, offset)
 	if err := enqueueDetachedTunWrite(
 		writes,
 		done,

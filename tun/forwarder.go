@@ -4,6 +4,7 @@ import (
 	"sync"
 
 	"github.com/asciimoth/bufpool"
+	"github.com/asciimoth/gonnect"
 )
 
 type frwPkg struct {
@@ -32,7 +33,8 @@ type Forwarder struct {
 
 	stopped bool
 
-	pool bufpool.Pool
+	pool    bufpool.Pool
+	spawner gonnect.Spawner
 
 	tunRead, tunWrite Tun
 
@@ -45,21 +47,30 @@ type Forwarder struct {
 // It starts the reader and writer goroutines.
 // The forwarder initially has no TUN devices
 // and must be configured via SetReadTun and SetWriteTun.
-func NewForwarder(pool bufpool.Pool) *Forwarder {
+func NewForwarder(pool bufpool.Pool, spawner gonnect.Spawner) *Forwarder {
 	frw := &Forwarder{
-		pool: pool,
+		pool:    pool,
+		spawner: spawner,
 
 		chCfgRead:  make(chan *frwCfg, 2),
 		chCfgWrite: make(chan *frwCfg, 2),
 
 		sendCh: make(chan frwPkg, channelBufferSize()),
 	}
-	frw.wg.Go(func() {
+	if err := spawnWg(spawner, func() {
 		frwReader(frw.chCfgRead, frw.sendCh, pool)
-	})
-	frw.wg.Go(func() {
+	}, &frw.wg, "tun.Forwarder.reader"); err != nil {
+		frw.stopped = true
+		return frw
+	}
+	if err := spawnWg(spawner, func() {
 		frwWriter(frw.chCfgWrite, frw.sendCh, pool)
-	})
+	}, &frw.wg, "tun.Forwarder.writer"); err != nil {
+		close(frw.chCfgRead)
+		frw.wg.Wait()
+		frw.stopped = true
+		return frw
+	}
 	return frw
 }
 

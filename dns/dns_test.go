@@ -164,8 +164,8 @@ func TestWireRecordTypes(t *testing.T) {
 
 func TestDetachedChainCancelsWithoutClosingUpstream(t *testing.T) {
 	up := newBlockingDNS()
-	d1 := Detach(up)
-	d2 := Detach(d1)
+	d1 := Detach(up, nil)
+	d2 := Detach(d1, nil)
 	defer up.Close()
 	defer d1.Close()
 
@@ -191,9 +191,9 @@ func TestDetachedChainCancelsWithoutClosingUpstream(t *testing.T) {
 }
 
 func TestResolverAdapterChain(t *testing.T) {
-	root := NewResolverProvider(gonnect.NewLoopbackNetwok(), time.Second)
+	root := NewResolverProvider(gonnect.NewLoopbackNetwok(), time.Second, nil)
 	res1 := NewResolver(root)
-	prov2 := NewResolverProvider(res1, time.Second)
+	prov2 := NewResolverProvider(res1, time.Second, nil)
 	res2 := NewResolver(prov2)
 	defer root.Close()
 	defer prov2.Close()
@@ -208,7 +208,7 @@ func TestResolverAdapterChain(t *testing.T) {
 }
 
 func TestResolverProviderRecordTypesAndErrors(t *testing.T) {
-	provider := NewResolverProvider(fakeResolver{}, time.Second)
+	provider := NewResolverProvider(fakeResolver{}, time.Second, nil)
 	defer provider.Close()
 	cases := []uint16{
 		TypeA,
@@ -360,8 +360,9 @@ func TestResolverLookupIPNumericLiteralDoesNotQueryDNS(t *testing.T) {
 func TestCacheAttachDetachReattach(t *testing.T) {
 	storage := NewMemoryStorage()
 	cache := NewCache(
-		NewResolverProvider(gonnect.NewLoopbackNetwok(), time.Second),
+		NewResolverProvider(gonnect.NewLoopbackNetwok(), time.Second, nil),
 		storage,
+		nil,
 	)
 	defer cache.Close()
 
@@ -378,7 +379,9 @@ func TestCacheAttachDetachReattach(t *testing.T) {
 	if !errors.Is(err, ErrNoUpstream) {
 		t.Fatalf("miss after detach error = %v", err)
 	}
-	cache.Attach(NewResolverProvider(gonnect.NewLoopbackNetwok(), time.Second))
+	cache.Attach(
+		NewResolverProvider(gonnect.NewLoopbackNetwok(), time.Second, nil),
+	)
 	resp, err = Query(context.Background(), cache, aQuery("localhost."))
 	if err != nil || len(resp.Answers) == 0 {
 		t.Fatalf("query after reattach resp=%#v err=%v", resp, err)
@@ -414,8 +417,8 @@ func TestMemoryStorageExpiryDeleteAndNoCache(t *testing.T) {
 
 func TestLoopbackClientServerCacheTree(t *testing.T) {
 	ln := gonnect.NewLoopbackNetwok()
-	base := NewResolverProvider(ln, time.Second)
-	cache := NewCache(base, NewMemoryStorage())
+	base := NewResolverProvider(ln, time.Second, nil)
+	cache := NewCache(base, NewMemoryStorage(), nil)
 	defer base.Close()
 	defer cache.Close()
 
@@ -423,17 +426,18 @@ func TestLoopbackClientServerCacheTree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := NewServer(pc, cache)
+	server := NewServer(pc, cache, nil)
 	defer server.Close()
 
-	client := NewClient(ln.Dial, "udp://127.0.0.1:5353")
+	client := NewClient(ln.Dial, nil, "udp://127.0.0.1:5353")
 	defer client.Close()
 
 	resolverBranch := NewResolverProvider(
 		gonnect.NewLoopbackNetwok(),
 		time.Second,
+		nil,
 	)
-	tree := NewCache(client, NewMemoryStorage())
+	tree := NewCache(client, NewMemoryStorage(), nil)
 	defer resolverBranch.Close()
 	defer tree.Close()
 
@@ -456,17 +460,17 @@ func TestLoopbackClientServerCacheTree(t *testing.T) {
 
 func TestClientTCPAndServerDetach(t *testing.T) {
 	ln := gonnect.NewLoopbackNetwok()
-	upstream := NewResolverProvider(ln, time.Second)
+	upstream := NewResolverProvider(ln, time.Second, nil)
 	defer upstream.Close()
 
 	pc, err := ln.ListenPacket(context.Background(), "udp4", "127.0.0.1:5354")
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := NewServer(pc, upstream)
+	server := NewServer(pc, upstream, nil)
 	defer server.Close()
 	server.Detach()
-	client := NewClient(ln.Dial, "udp://127.0.0.1:5354")
+	client := NewClient(ln.Dial, nil, "udp://127.0.0.1:5354")
 	resp, err := Query(context.Background(), client, aQuery("localhost."))
 	if err != nil || resp.RCode != RCodeServerFailure {
 		t.Fatalf("detached server resp=%#v err=%v", resp, err)
@@ -479,14 +483,14 @@ func TestClientTCPAndServerDetach(t *testing.T) {
 	}
 	defer lnr.Close()
 	go serveOneTCP(t, lnr, upstream)
-	tcpClient := NewClient(ln.Dial, "tcp://127.0.0.1:5355")
+	tcpClient := NewClient(ln.Dial, nil, "tcp://127.0.0.1:5355")
 	defer tcpClient.Close()
 	resp, err = Query(context.Background(), tcpClient, aQuery("localhost."))
 	if err != nil || len(resp.Answers) == 0 {
 		t.Fatalf("tcp client resp=%#v err=%v", resp, err)
 	}
 
-	bad := NewClient(ln.Dial, "bogus://127.0.0.1:53")
+	bad := NewClient(ln.Dial, nil, "bogus://127.0.0.1:53")
 	defer bad.Close()
 	if _, err = Query(
 		context.Background(),
@@ -499,7 +503,7 @@ func TestClientTCPAndServerDetach(t *testing.T) {
 
 func TestClientDoTUsesCustomTLSConfig(t *testing.T) {
 	ln := gonnect.NewLoopbackNetwok()
-	upstream := NewResolverProvider(ln, time.Second)
+	upstream := NewResolverProvider(ln, time.Second, nil)
 	defer upstream.Close()
 
 	cert, roots := testTLSCert(t, "dns.test")
@@ -510,7 +514,7 @@ func TestClientDoTUsesCustomTLSConfig(t *testing.T) {
 	defer lnr.Close()
 	go serveOneTLS(t, lnr, upstream, cert)
 
-	client := NewClient(ln.Dial, "dot://127.0.0.1:5361")
+	client := NewClient(ln.Dial, nil, "dot://127.0.0.1:5361")
 	client.TLSConfig = &tls.Config{
 		RootCAs:    roots,
 		ServerName: "dns.test",
@@ -557,7 +561,7 @@ func newBlockingDNS() *blockingDNS {
 		case <-req.Context.Done():
 			sendResponse(req, nil, req.Context.Err())
 		}
-	})
+	}, nil)
 	return b
 }
 
@@ -671,7 +675,7 @@ func newCountingNameErrorDNS() *countingNameErrorDNS {
 		resp := responseFor(req.Message)
 		resp.RCode = RCodeNameError
 		sendResponse(req, resp, nil)
-	})
+	}, nil)
 	return d
 }
 
@@ -690,7 +694,7 @@ func newStaticDNS() *staticDNS {
 		}
 		resp.Answers = staticAnswers(q)
 		sendResponse(req, resp, nil)
-	})
+	}, nil)
 	return s
 }
 

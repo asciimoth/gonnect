@@ -3,6 +3,7 @@ package gonnect
 import (
 	"net"
 	"strconv"
+	"sync"
 )
 
 var (
@@ -19,6 +20,34 @@ type NetworkInterface interface {
 	Flags() net.Flags
 	Addrs() ([]net.Addr, error)
 	MulticastAddrs() ([]net.Addr, error)
+}
+
+// Spawner should be used instead of spawning goroutines directly with the go
+// keyword or using waitgroups directly for long-running tasks or tasks whose
+// lifecycle is worth logging or tracking.
+//
+// Spawner should not be used to track short-lived goroutines like ones spawned
+// only to drain a channel.
+//
+// Spawner should always be passed to code directly as a function or method
+// argument, or as a struct field. There should not be a global spawner.
+//
+// A passed Spawner instance may be nil. In that case direct spawning should be
+// used instead.
+type Spawner interface {
+	// Spawn runs worker in a new goroutine.
+	// It returns worker id (only some implementations support it) and error.
+	// Name is optional worker metadata. Pass an empty string for unnamed workers.
+	Spawn(worker func(), name string) (uint64, error)
+
+	// SpawnWg runs worker in a new goroutine and also tracks it in waitgroup.
+	// It returns worker id (only some implementations support it) and error.
+	// Name is optional worker metadata. Pass an empty string for unnamed workers.
+	SpawnWg(
+		worker func(),
+		waitgroup *sync.WaitGroup,
+		name string,
+	) (uint64, error)
 }
 
 func WrapNativeInterfaces(in []net.Interface) []NetworkInterface {

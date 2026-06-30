@@ -16,20 +16,20 @@ import (
 
 func TestDetachedNetwork_Compliance(t *testing.T) {
 	gt.RunNetworkErrorComplianceTests(t, func() gt.Network {
-		return gonnect.DetachNetwork(gonnect.NativeConfig{}.Build(), nil)
+		return gonnect.DetachNetwork(gonnect.NativeConfig{}.Build(), nil, nil)
 	})
 }
 
 func TestDetachedNetwork_Stoppable(t *testing.T) {
 	gt.RunStoppableNetworkTests(t, func() gt.UpDownNetwork {
-		return gonnect.DetachNetwork(gonnect.NativeConfig{}.Build(), nil)
+		return gonnect.DetachNetwork(gonnect.NativeConfig{}.Build(), nil, nil)
 	}, "127.0.0.1:0")
 }
 
 func TestDetachedNetworkTcpPingPong(t *testing.T) {
 	base := gonnect.NativeConfig{}.Build()
 	pair := gt.NetAddrPair{
-		Network: gonnect.DetachNetwork(base, nil),
+		Network: gonnect.DetachNetwork(base, nil, nil),
 		Addr:    "127.0.0.1:0",
 	}
 	gt.RunTcpPingPongForNetworks(t, pair, pair)
@@ -38,7 +38,7 @@ func TestDetachedNetworkTcpPingPong(t *testing.T) {
 func TestDetachedNetworkHTTP(t *testing.T) {
 	base := gonnect.NativeConfig{}.Build()
 	pair := gt.NetAddrPair{
-		Network: gonnect.DetachNetwork(base, nil),
+		Network: gonnect.DetachNetwork(base, nil, nil),
 		Addr:    "127.0.0.1:0",
 	}
 	gt.RunSimpleHTTPForNetworks(t, pair, pair)
@@ -47,7 +47,7 @@ func TestDetachedNetworkHTTP(t *testing.T) {
 func TestDetachedNetworkUdpPingPong(t *testing.T) {
 	base := gonnect.NativeConfig{}.Build()
 	pair := gt.NetAddrPair{
-		Network: gonnect.DetachNetwork(base, nil),
+		Network: gonnect.DetachNetwork(base, nil, nil),
 		Addr:    "127.0.0.1:0",
 	}
 	gt.RunUdpPingPongForNetworks(t, pair, pair)
@@ -55,7 +55,7 @@ func TestDetachedNetworkUdpPingPong(t *testing.T) {
 
 func TestDetachedNetworkDownDoesNotStopWrappedNetwork(t *testing.T) {
 	base := gonnect.NativeConfig{}.Build()
-	wrapper := gonnect.DetachNetwork(base, nil)
+	wrapper := gonnect.DetachNetwork(base, nil, nil)
 
 	if err := wrapper.Down(); err != nil {
 		t.Fatalf("wrapper Down() error = %v", err)
@@ -70,8 +70,8 @@ func TestDetachedNetworkDownDoesNotStopWrappedNetwork(t *testing.T) {
 
 func TestDetachedNetworkWrappersAreIndependent(t *testing.T) {
 	base := gonnect.NativeConfig{}.Build()
-	a := gonnect.DetachNetwork(base, nil)
-	b := gonnect.DetachNetwork(base, nil)
+	a := gonnect.DetachNetwork(base, nil, nil)
+	b := gonnect.DetachNetwork(base, nil, nil)
 
 	if err := a.Down(); err != nil {
 		t.Fatalf("first wrapper Down() error = %v", err)
@@ -98,7 +98,7 @@ func (c *testCloser) closes() int32 {
 }
 
 func TestDetachedNetworkSubscribeCloser(t *testing.T) {
-	wrapper := gonnect.DetachNetwork(gonnect.NativeConfig{}.Build(), nil)
+	wrapper := gonnect.DetachNetwork(gonnect.NativeConfig{}.Build(), nil, nil)
 	kept := &testCloser{}
 	removed := &testCloser{}
 
@@ -131,7 +131,7 @@ func TestDetachedNetworkSubscribeCloser(t *testing.T) {
 }
 
 func TestDetachedNetworkSubscribeCloserWhenClosed(t *testing.T) {
-	wrapper := gonnect.DetachNetwork(gonnect.NativeConfig{}.Build(), nil)
+	wrapper := gonnect.DetachNetwork(gonnect.NativeConfig{}.Build(), nil, nil)
 	if err := wrapper.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
 	}
@@ -168,7 +168,7 @@ func TestDetachedNetworkDownCancelsParallelBlockedDials(t *testing.T) {
 		Network: gonnect.NativeConfig{}.Build(),
 		entered: make(chan struct{}, 2),
 	}
-	wrapper := gonnect.DetachNetwork(wrapped, nil)
+	wrapper := gonnect.DetachNetwork(wrapped, nil, nil)
 
 	var wg sync.WaitGroup
 	errs := make(chan error, 2)
@@ -230,7 +230,7 @@ func TestDetachedNetworkDownCancelsBlockedLookup(t *testing.T) {
 		Network: gonnect.NativeConfig{}.Build(),
 		entered: make(chan struct{}, 1),
 	}
-	wrapper := gonnect.DetachNetwork(wrapped, nil)
+	wrapper := gonnect.DetachNetwork(wrapped, nil, nil)
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -290,7 +290,7 @@ func TestDetachedNetworkCloseCancelsContextIgnoringDialAndListen(
 		delay:   time.Second,
 		entered: make(chan string, 2),
 	}
-	wrapper := gonnect.DetachNetwork(wrapped, nil)
+	wrapper := gonnect.DetachNetwork(wrapped, nil, nil)
 
 	dialErr := make(chan error, 1)
 	go func() {
@@ -356,7 +356,7 @@ func TestDetachedNetworkCloseCancelsContextIgnoringLookup(t *testing.T) {
 		delay:   time.Second,
 		entered: make(chan struct{}, 1),
 	}
-	wrapper := gonnect.DetachNetwork(wrapped, nil)
+	wrapper := gonnect.DetachNetwork(wrapped, nil, nil)
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -507,7 +507,7 @@ func (r *detachedResolver) LookupTXT(
 func TestDetachedNetworkRoutesLookupsToResolver(t *testing.T) {
 	ctx := context.Background()
 	resolver := &detachedResolver{}
-	wrapper := gonnect.DetachNetwork(&gonnect.RejectNetwork{}, resolver)
+	wrapper := gonnect.DetachNetwork(&gonnect.RejectNetwork{}, resolver, nil)
 
 	lookupCalls := []struct {
 		name string
@@ -692,7 +692,7 @@ func (n *detachedCaptureNetwork) ListenMulticastUDP(
 func TestDetachedNetworkResolverPreResolvesAddresses(t *testing.T) {
 	ctx := context.Background()
 	wrapped := newDetachedCaptureNetwork()
-	wrapper := gonnect.DetachNetwork(wrapped, &detachedResolver{})
+	wrapper := gonnect.DetachNetwork(wrapped, &detachedResolver{}, nil)
 	named := "host.test:service"
 	resolved := "192.0.2.10:8080"
 
@@ -812,7 +812,7 @@ func TestDetachedNetworkResolverLeavesIPLiteralHosts(t *testing.T) {
 	ctx := context.Background()
 	wrapped := newDetachedCaptureNetwork()
 	resolver := &detachedResolver{}
-	wrapper := gonnect.DetachNetwork(wrapped, resolver)
+	wrapper := gonnect.DetachNetwork(wrapped, resolver, nil)
 
 	_, err := wrapper.Dial(ctx, "tcp", "127.0.0.1:service")
 	if !errors.Is(err, errDetachedCapture) {
@@ -852,6 +852,7 @@ func TestDetachedNetworkResolverNotUsedWhenStopped(t *testing.T) {
 			wrapper := gonnect.DetachNetwork(
 				newDetachedCaptureNetwork(),
 				resolver,
+				nil,
 			)
 			if err := tt.stop(wrapper); err != nil {
 				t.Fatalf("%s wrapper error = %v", tt.name, err)

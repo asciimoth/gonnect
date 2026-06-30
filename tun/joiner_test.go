@@ -10,7 +10,7 @@ import (
 )
 
 func TestJoinerMetadataAndMTUEvents(t *testing.T) {
-	j := NewJoiner(testDebugPool(t))
+	j := NewJoiner(nil, testDebugPool(t))
 	defer j.Close()
 
 	if got := j.MRO(); got != 256 {
@@ -71,7 +71,7 @@ func TestJoinerMetadataAndMTUEvents(t *testing.T) {
 }
 
 func TestJoinerRoutesByLearnedIPSource(t *testing.T) {
-	j := NewJoiner(testDebugPool(t))
+	j := NewJoiner(nil, testDebugPool(t))
 	defer j.Close()
 
 	def := newMockTun(4, 1500, 0, 0)
@@ -116,7 +116,7 @@ func TestJoinerRoutesByLearnedIPSource(t *testing.T) {
 }
 
 func TestJoinerWritesLargeBatchToSameRoute(t *testing.T) {
-	j := NewJoiner(testDebugPool(t))
+	j := NewJoiner(nil, testDebugPool(t))
 	defer j.Close()
 
 	def := newMockTun(64, 1500, 0, 0)
@@ -159,7 +159,7 @@ func TestJoinerWritesLargeBatchToSameRoute(t *testing.T) {
 }
 
 func TestJoinerWritesLargeBatchToMultipleRoutes(t *testing.T) {
-	j := NewJoiner(testDebugPool(t))
+	j := NewJoiner(nil, testDebugPool(t))
 	defer j.Close()
 
 	def := newMockTun(64, 1500, 0, 0)
@@ -239,7 +239,7 @@ func TestJoinerWritesLargeBatchToMultipleRoutes(t *testing.T) {
 }
 
 func TestJoinerReadBuffersRemainingPackets(t *testing.T) {
-	j := NewJoiner(testDebugPool(t))
+	j := NewJoiner(nil, testDebugPool(t))
 	defer j.Close()
 
 	sec := newMockTun(4, 1500, 0, 0)
@@ -264,7 +264,7 @@ func TestJoinerReadBuffersRemainingPackets(t *testing.T) {
 }
 
 func TestJoinerRejectsSmallOffsets(t *testing.T) {
-	j := NewJoiner(testDebugPool(t))
+	j := NewJoiner(nil, testDebugPool(t))
 	defer j.Close()
 
 	buf := make([]byte, j.MRO()+64)
@@ -291,7 +291,7 @@ func TestJoinerRejectsSmallOffsets(t *testing.T) {
 }
 
 func TestJoinerDetachClosesTunAndForgetsRoutes(t *testing.T) {
-	j := NewJoiner(testDebugPool(t))
+	j := NewJoiner(nil, testDebugPool(t))
 	defer j.Close()
 
 	def := newMockTun(4, 1500, 0, 0)
@@ -308,7 +308,7 @@ func TestJoinerDetachClosesTunAndForgetsRoutes(t *testing.T) {
 	_ = readJoinerPacket(t, j)
 
 	if err := j.Detach(sec); err != nil {
-		t.Fatalf("Detach() error = %v", err)
+		t.Fatalf("Detach(, nil) error = %v", err)
 	}
 	sec.mu.Lock()
 	closed := sec.closed
@@ -330,7 +330,7 @@ func TestJoinerDetachClosesTunAndForgetsRoutes(t *testing.T) {
 }
 
 func TestJoinerAutoDetachesTerminalReadError(t *testing.T) {
-	j := NewJoiner(testDebugPool(t))
+	j := NewJoiner(nil, testDebugPool(t))
 	defer j.Close()
 
 	sec := newMockTun(4, 1200, 0, 0)
@@ -356,14 +356,14 @@ func TestJoinerAutoDetachesTerminalReadError(t *testing.T) {
 }
 
 func TestDetachJoinerUsesJoinerDataPath(t *testing.T) {
-	j := NewJoiner(testDebugPool(t))
+	j := NewJoiner(nil, testDebugPool(t))
 	defer j.Close()
 
 	sec := newMockTun(4, 1500, 0, 0)
 	if err := j.AttachSecondary(sec); err != nil {
 		t.Fatalf("AttachSecondary() error = %v", err)
 	}
-	d := Detach(j)
+	d := Detach(j, nil, nil)
 	defer d.Close()
 
 	learned := ipv4Packet([4]byte{10, 0, 0, 8}, [4]byte{10, 0, 0, 1})
@@ -394,7 +394,7 @@ func TestDetachJoinerUsesJoinerDataPath(t *testing.T) {
 }
 
 func TestJoinerSwitchesBetweenPipeAndDetachedNestedTuns(t *testing.T) {
-	j := NewJoiner(testDebugPool(t))
+	j := NewJoiner(nil, testDebugPool(t))
 	defer j.Close()
 
 	pipeNested1, peer1 := Pipe(2, 1400, 5, 7)
@@ -412,7 +412,7 @@ func TestJoinerSwitchesBetweenPipeAndDetachedNestedTuns(t *testing.T) {
 	)
 
 	detachedNested, detachedPeer := Pipe(3, 1300, 4, 6)
-	detached := Detach(detachedNested)
+	detached := Detach(detachedNested, nil, nil)
 	defer detached.Close()
 	if err := j.AttachDefault(detached); err != nil {
 		t.Fatalf("AttachDefault(detached) error = %v", err)
@@ -443,18 +443,18 @@ func TestJoinerSwitchesBetweenPipeAndDetachedNestedTuns(t *testing.T) {
 }
 
 func TestJoinerDetachedTunComplexTopologyStateEventsAndFlow(t *testing.T) {
-	inner := NewJoiner(testDebugPool(t))
+	inner := NewJoiner(nil, testDebugPool(t))
 	defer inner.Close()
-	outer := NewJoiner(testDebugPool(t))
+	outer := NewJoiner(nil, testDebugPool(t))
 	defer outer.Close()
 
 	innerDefault := newMockTun(3, 1400, 0, 0)
 	edge := newMockTun(5, 1300, 0, 0)
 	outerDefault := newMockTun(2, 1450, 0, 0)
 
-	edgeRoot := Detach(edge)
+	edgeRoot := Detach(edge, nil, nil)
 	assertTunEvent(t, "edgeRoot initial", edgeRoot.Events(), EventUp)
-	edgeChild := Detach(edgeRoot)
+	edgeChild := Detach(edgeRoot, nil, nil)
 	assertTunEvent(t, "edgeChild initial", edgeChild.Events(), EventUp)
 
 	if err := inner.AttachDefault(innerDefault); err != nil {
@@ -471,7 +471,7 @@ func TestJoinerDetachedTunComplexTopologyStateEventsAndFlow(t *testing.T) {
 	assertTunMTU(t, "inner after edge attach", inner, 1300)
 	assertTunBatch(t, "inner after edge attach", inner, 5)
 
-	innerDetached := Detach(inner)
+	innerDetached := Detach(inner, nil, nil)
 	assertTunEvent(t, "innerDetached initial", innerDetached.Events(), EventUp)
 
 	if err := outer.AttachDefault(outerDefault); err != nil {
@@ -582,7 +582,7 @@ func TestJoinerDetachedTunComplexTopologyStateEventsAndFlow(t *testing.T) {
 	assertTunBatch(t, "inner after edgeChild close", inner, 3)
 	assertTunBatch(t, "outer after edgeChild close", outer, 5)
 
-	replacement := Detach(edgeRoot)
+	replacement := Detach(edgeRoot, nil, nil)
 	assertTunEvent(t, "replacement initial", replacement.Events(), EventUp)
 	if err := inner.AttachSecondary(replacement); err != nil {
 		t.Fatalf("inner AttachSecondary(replacement) error = %v", err)

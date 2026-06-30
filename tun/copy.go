@@ -2,23 +2,32 @@ package tun
 
 import (
 	"sync"
+
+	"github.com/asciimoth/gonnect"
 )
 
 // Copy copies packets bidirectionally between two Tun implementations.
 // It uses the batch nature of the Tun interface for optimal performance.
 // Copy blocks until one of the Tuns is closed or encounters an error,
 // then closes both Tuns and returns the first error encountered (if any).
-func Copy(a, b Tun) error {
+func Copy(a, b Tun, spawner gonnect.Spawner) error {
 	errCh := make(chan error, 2)
 	var wg sync.WaitGroup
-	wg.Go(func() {
+	if err := spawnWg(spawner, func() {
 		defer a.Close() // nolint
 		errCh <- copyOneWay(a, b, max(a.MRO(), b.MWO()))
-	})
-	wg.Go(func() {
+	}, &wg, "tun.Copy.a-to-b"); err != nil {
+		return err
+	}
+	if err := spawnWg(spawner, func() {
 		defer b.Close() // nolint
 		errCh <- copyOneWay(b, a, max(b.MRO(), a.MWO()))
-	})
+	}, &wg, "tun.Copy.b-to-a"); err != nil {
+		_ = a.Close()
+		_ = b.Close()
+		wg.Wait()
+		return err
+	}
 	wg.Wait()
 	close(errCh)
 	_ = a.Close()

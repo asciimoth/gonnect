@@ -9,7 +9,7 @@ import (
 )
 
 func TestRouterRejectsWithoutCallbackOrValidBackend(t *testing.T) {
-	r := NewRouter()
+	r := NewRouter(nil)
 	defer r.Close()
 	backend := newNamedDNS("blue")
 	defer backend.Close()
@@ -61,7 +61,7 @@ func TestRouterRejectsWithoutCallbackOrValidBackend(t *testing.T) {
 }
 
 func TestRouterAttachDetachReattachBackends(t *testing.T) {
-	r := NewRouter()
+	r := NewRouter(nil)
 	defer r.Close()
 	blue1 := newNamedDNS("blue-1")
 	blue2 := newNamedDNS("blue-2")
@@ -115,9 +115,9 @@ func TestRouterAttachDetachReattachBackends(t *testing.T) {
 }
 
 func TestRouterComplexDynamicTopology(t *testing.T) {
-	root := NewRouter()
-	east := NewRouter()
-	west := NewRouter()
+	root := NewRouter(nil)
+	east := NewRouter(nil)
+	west := NewRouter(nil)
 	eastA := newNamedDNS("east-a")
 	eastB := newNamedDNS("east-b")
 	westA := newNamedDNS("west-a")
@@ -245,7 +245,7 @@ func TestRouterComplexDynamicTopology(t *testing.T) {
 }
 
 func TestRouterMutationsCancelInFlightRequests(t *testing.T) {
-	r := NewRouter()
+	r := NewRouter(nil)
 	up := newControlledDNS()
 	defer r.Close()
 	defer up.Close()
@@ -320,7 +320,7 @@ func newNamedDNS(name string) *namedDNS {
 			},
 		}
 		sendResponse(req, resp, nil)
-	})
+	}, nil)
 	return d
 }
 

@@ -35,6 +35,7 @@ var _ interface {
 type DetachedNetwork struct {
 	wrapped Network
 	res     Resolver
+	spawner Spawner
 
 	mu      sync.Mutex
 	up      bool
@@ -60,10 +61,11 @@ type DetachedNetwork struct {
 // ports are passed through unchanged. Resolution is attempted only after the
 // wrapper is confirmed to be up and open, so down or closed wrappers return the
 // same lifecycle errors regardless of whether a resolver is installed.
-func DetachNetwork(n Network, res Resolver) *DetachedNetwork {
+func DetachNetwork(n Network, res Resolver, spawner Spawner) *DetachedNetwork {
 	dn := &DetachedNetwork{
 		wrapped:   n,
 		res:       res,
+		spawner:   spawner,
 		up:        true,
 		gen:       1,
 		done:      make(chan struct{}),
@@ -225,6 +227,7 @@ func (n *DetachedNetwork) Dial(
 		return nil, err
 	}
 	c, err := runDetachedOp(
+		n.spawner,
 		ctx,
 		done,
 		func(ctx context.Context) (net.Conn, error) {
@@ -254,6 +257,7 @@ func (n *DetachedNetwork) Listen(
 		return nil, err
 	}
 	l, err := runDetachedOp(
+		n.spawner,
 		ctx,
 		done,
 		func(ctx context.Context) (net.Listener, error) {
@@ -282,6 +286,7 @@ func (n *DetachedNetwork) PacketDial(
 		return nil, err
 	}
 	c, err := runDetachedOp(
+		n.spawner,
 		ctx,
 		done,
 		func(ctx context.Context) (PacketConn, error) {
@@ -310,6 +315,7 @@ func (n *DetachedNetwork) ListenPacket(
 		return nil, err
 	}
 	c, err := runDetachedOp(
+		n.spawner,
 		ctx,
 		done,
 		func(ctx context.Context) (PacketConn, error) {
@@ -342,6 +348,7 @@ func (n *DetachedNetwork) DialTCP(
 		return nil, err
 	}
 	c, err := runDetachedOp(
+		n.spawner,
 		ctx,
 		done,
 		func(ctx context.Context) (TCPConn, error) {
@@ -370,6 +377,7 @@ func (n *DetachedNetwork) ListenTCP(
 		return nil, err
 	}
 	l, err := runDetachedOp(
+		n.spawner,
 		ctx,
 		done,
 		func(ctx context.Context) (TCPListener, error) {
@@ -402,6 +410,7 @@ func (n *DetachedNetwork) DialUDP(
 		return nil, err
 	}
 	c, err := runDetachedOp(
+		n.spawner,
 		ctx,
 		done,
 		func(ctx context.Context) (UDPConn, error) {
@@ -430,6 +439,7 @@ func (n *DetachedNetwork) ListenUDP(
 		return nil, err
 	}
 	c, err := runDetachedOp(
+		n.spawner,
 		ctx,
 		done,
 		func(ctx context.Context) (UDPConn, error) {
@@ -460,6 +470,7 @@ func (n *DetachedNetwork) ListenPacketConfig(
 		return nil, err
 	}
 	c, err := runDetachedOp(
+		n.spawner,
 		ctx,
 		done,
 		func(ctx context.Context) (PacketConn, error) {
@@ -490,6 +501,7 @@ func (n *DetachedNetwork) ListenUDPConfig(
 		return nil, err
 	}
 	c, err := runDetachedOp(
+		n.spawner,
 		ctx,
 		done,
 		func(ctx context.Context) (UDPConn, error) {
@@ -518,6 +530,7 @@ func (n *DetachedNetwork) ListenMulticastUDP(
 		return nil, err
 	}
 	c, err := runDetachedOp(
+		n.spawner,
 		ctx,
 		done,
 		func(ctx context.Context) (MulticastPacketConn, error) {
@@ -541,6 +554,7 @@ func (n *DetachedNetwork) LookupIP(
 	}
 	defer cancel()
 	return runDetachedOp(
+		n.spawner,
 		ctx,
 		done,
 		func(ctx context.Context) ([]net.IP, error) {
@@ -563,6 +577,7 @@ func (n *DetachedNetwork) LookupIPAddr(
 	}
 	defer cancel()
 	return runDetachedOp(
+		n.spawner,
 		ctx,
 		done,
 		func(ctx context.Context) ([]net.IPAddr, error) {
@@ -585,6 +600,7 @@ func (n *DetachedNetwork) LookupNetIP(
 	}
 	defer cancel()
 	return runDetachedOp(
+		n.spawner,
 		ctx,
 		done,
 		func(ctx context.Context) ([]netip.Addr, error) {
@@ -607,6 +623,7 @@ func (n *DetachedNetwork) LookupHost(
 	}
 	defer cancel()
 	return runDetachedOp(
+		n.spawner,
 		ctx,
 		done,
 		func(ctx context.Context) ([]string, error) {
@@ -629,6 +646,7 @@ func (n *DetachedNetwork) LookupAddr(
 	}
 	defer cancel()
 	return runDetachedOp(
+		n.spawner,
 		ctx,
 		done,
 		func(ctx context.Context) ([]string, error) {
@@ -650,12 +668,18 @@ func (n *DetachedNetwork) LookupCNAME(
 		return "", err
 	}
 	defer cancel()
-	return runDetachedOp(ctx, done, func(ctx context.Context) (string, error) {
-		if n.res != nil {
-			return n.res.LookupCNAME(ctx, host)
-		}
-		return n.wrapped.LookupCNAME(ctx, host)
-	}, func(string) {})
+	return runDetachedOp(
+		n.spawner,
+		ctx,
+		done,
+		func(ctx context.Context) (string, error) {
+			if n.res != nil {
+				return n.res.LookupCNAME(ctx, host)
+			}
+			return n.wrapped.LookupCNAME(ctx, host)
+		},
+		func(string) {},
+	)
 }
 
 func (n *DetachedNetwork) LookupPort(
@@ -667,12 +691,18 @@ func (n *DetachedNetwork) LookupPort(
 		return 0, err
 	}
 	defer cancel()
-	return runDetachedOp(ctx, done, func(ctx context.Context) (int, error) {
-		if n.res != nil {
-			return n.res.LookupPort(ctx, network, service)
-		}
-		return n.wrapped.LookupPort(ctx, network, service)
-	}, func(int) {})
+	return runDetachedOp(
+		n.spawner,
+		ctx,
+		done,
+		func(ctx context.Context) (int, error) {
+			if n.res != nil {
+				return n.res.LookupPort(ctx, network, service)
+			}
+			return n.wrapped.LookupPort(ctx, network, service)
+		},
+		func(int) {},
+	)
 }
 
 func (n *DetachedNetwork) LookupTXT(
@@ -685,6 +715,7 @@ func (n *DetachedNetwork) LookupTXT(
 	}
 	defer cancel()
 	return runDetachedOp(
+		n.spawner,
 		ctx,
 		done,
 		func(ctx context.Context) ([]string, error) {
@@ -707,6 +738,7 @@ func (n *DetachedNetwork) LookupMX(
 	}
 	defer cancel()
 	return runDetachedOp(
+		n.spawner,
 		ctx,
 		done,
 		func(ctx context.Context) ([]*net.MX, error) {
@@ -729,6 +761,7 @@ func (n *DetachedNetwork) LookupNS(
 	}
 	defer cancel()
 	return runDetachedOp(
+		n.spawner,
 		ctx,
 		done,
 		func(ctx context.Context) ([]*net.NS, error) {
@@ -751,6 +784,7 @@ func (n *DetachedNetwork) LookupSRV(
 	}
 	defer cancel()
 	result, err := runDetachedOp(
+		n.spawner,
 		ctx,
 		done,
 		func(ctx context.Context) (struct {
@@ -1207,16 +1241,20 @@ type detachedOpResult[T any] struct {
 }
 
 func runDetachedOp[T any](
+	spawner Spawner,
 	ctx context.Context,
 	wrapperDone <-chan struct{},
 	call func(context.Context) (T, error),
 	closeLate func(T),
 ) (T, error) {
 	ch := make(chan detachedOpResult[T], 1)
-	go func() {
+	if err := spawn(spawner, func() {
 		value, err := call(ctx)
 		ch <- detachedOpResult[T]{value: value, err: err}
-	}()
+	}, "gonnect.DetachedNetwork.operation"); err != nil {
+		var zero T
+		return zero, err
+	}
 
 	var zero T
 	select {

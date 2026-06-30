@@ -22,7 +22,7 @@ func TestCopy(t *testing.T) {
 
 			var wg sync.WaitGroup
 			wg.Go(func() {
-				_ = tun.Copy(tun2, tun3)
+				_ = tun.Copy(tun2, tun3, nil)
 			})
 			defer wg.Wait()
 

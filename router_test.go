@@ -18,7 +18,7 @@ import (
 
 func TestRouter_Compliance(t *testing.T) {
 	gt.RunNetworkErrorComplianceTests(t, func() gt.Network {
-		r := gonnect.NewRouter()
+		r := gonnect.NewRouter(nil)
 		if err := r.Attach(1, &gonnect.RejectNetwork{}); err != nil {
 			t.Fatalf("Attach() error = %v", err)
 		}
@@ -28,7 +28,7 @@ func TestRouter_Compliance(t *testing.T) {
 
 func TestRouter_Stoppable(t *testing.T) {
 	gt.RunStoppableNetworkTests(t, func() gt.UpDownNetwork {
-		r := gonnect.NewRouter()
+		r := gonnect.NewRouter(nil)
 		if err := r.Attach(1, gonnect.NativeConfig{}.Build()); err != nil {
 			t.Fatalf("Attach() error = %v", err)
 		}
@@ -160,7 +160,7 @@ func requireRouterUp(t *testing.T, r *gonnect.Router, want bool) {
 }
 
 func TestRouterAutoUpDownFromSlots(t *testing.T) {
-	r := gonnect.NewRouter()
+	r := gonnect.NewRouter(nil)
 	requireRouterUp(t, r, false)
 
 	watcher := &lifecycleUpDown{}
@@ -208,7 +208,7 @@ func TestRouterAutoUpDownFromSlots(t *testing.T) {
 }
 
 func TestRouterAutoStateAggregatesAllSlots(t *testing.T) {
-	r := gonnect.NewRouter()
+	r := gonnect.NewRouter(nil)
 	downBackend := newRouterLifecycleBackend(false)
 	upBackend := newRouterLifecycleBackend(true)
 	if err := r.Attach(1, downBackend); err != nil {
@@ -233,7 +233,7 @@ func TestRouterAutoStateAggregatesAllSlots(t *testing.T) {
 }
 
 func TestRouterSlotReplacementKeepsAutoStateScoped(t *testing.T) {
-	r := gonnect.NewRouter()
+	r := gonnect.NewRouter(nil)
 	oldBackend := newRouterLifecycleBackend(true)
 	if err := r.Attach(1, oldBackend); err != nil {
 		t.Fatalf("Attach old backend error = %v", err)
@@ -269,7 +269,7 @@ func TestRouterSlotReplacementKeepsAutoStateScoped(t *testing.T) {
 }
 
 func TestRouterForcedDownIndependentFromSlotAutoState(t *testing.T) {
-	r := gonnect.NewRouter()
+	r := gonnect.NewRouter(nil)
 	backend := newRouterLifecycleBackend(true)
 	if err := r.Attach(1, backend); err != nil {
 		t.Fatalf("Attach() error = %v", err)
@@ -313,7 +313,7 @@ func TestRouterForcedDownIndependentFromSlotAutoState(t *testing.T) {
 }
 
 func TestRouterBackendCloseDoesNotCloseRouter(t *testing.T) {
-	r := gonnect.NewRouter()
+	r := gonnect.NewRouter(nil)
 	backend := newRouterLifecycleBackend(true)
 	if err := r.Attach(1, backend); err != nil {
 		t.Fatalf("Attach() error = %v", err)
@@ -355,7 +355,7 @@ func TestRouterBackendCloseDoesNotCloseRouter(t *testing.T) {
 
 func TestRouterDefaultTCPRoute(t *testing.T) {
 	ctx := context.Background()
-	r := gonnect.NewRouter()
+	r := gonnect.NewRouter(nil)
 	if err := r.Attach(1, gonnect.NewLoopbackNetwok()); err != nil {
 		t.Fatalf("Attach() error = %v", err)
 	}
@@ -407,7 +407,7 @@ func TestRouterDefaultTCPRoute(t *testing.T) {
 
 func TestRouterReplaceBackendClosesSlotObjects(t *testing.T) {
 	ctx := context.Background()
-	r := gonnect.NewRouter()
+	r := gonnect.NewRouter(nil)
 	if err := r.Attach(1, gonnect.NewLoopbackNetwok()); err != nil {
 		t.Fatalf("Attach() error = %v", err)
 	}
@@ -449,7 +449,7 @@ func TestRouterReplaceBackendClosesSlotObjects(t *testing.T) {
 
 func TestRouterUDPListenRoutesEachPacketAndReattaches(t *testing.T) {
 	ctx := context.Background()
-	r := gonnect.NewRouter()
+	r := gonnect.NewRouter(nil)
 	cfg := &testRouterCfg{udpSlotByPort: map[string]int{
 		"30001": 1,
 		"30002": 2,
@@ -513,7 +513,7 @@ func TestRouterUDPListenRoutesEachPacketAndReattaches(t *testing.T) {
 
 func TestRouterUDPConnCompatibilityMethods(t *testing.T) {
 	ctx := context.Background()
-	r := gonnect.NewRouter()
+	r := gonnect.NewRouter(nil)
 	r.SetCfg(&testRouterCfg{udpSlotByPort: map[string]int{"30100": 1}})
 	backend := gonnect.NewLoopbackNetwok()
 	if err := r.Attach(1, backend); err != nil {
@@ -637,7 +637,7 @@ func TestRouterUDPConnCompatibilityMethods(t *testing.T) {
 func TestRouterRejectsMissingAndInvalidSlotsLikeRejectNetwork(t *testing.T) {
 	ctx := context.Background()
 	reject := &gonnect.RejectNetwork{}
-	r := gonnect.NewRouter()
+	r := gonnect.NewRouter(nil)
 	r.SetCfg(testRouterCfg{tcpSlot: 2, udpSlot: 17})
 	if err := r.Attach(1, reject); err != nil {
 		t.Fatalf("Attach(1) error = %v", err)
@@ -664,7 +664,7 @@ func TestRouterRejectsMissingAndInvalidSlotsLikeRejectNetwork(t *testing.T) {
 
 func TestRouterLookupRoutesThroughConfig(t *testing.T) {
 	ctx := context.Background()
-	r := gonnect.NewRouter()
+	r := gonnect.NewRouter(nil)
 	r.SetCfg(testRouterCfg{lookupSlot: 2})
 	if err := r.Attach(1, &gonnect.RejectNetwork{}); err != nil {
 		t.Fatalf("Attach(1) error = %v", err)
@@ -689,7 +689,7 @@ func TestRouterLookupRoutesThroughConfig(t *testing.T) {
 
 func TestRouterResolverOverridesLookupAndPreResolvesDial(t *testing.T) {
 	ctx := context.Background()
-	r := gonnect.NewRouter()
+	r := gonnect.NewRouter(nil)
 	cfg := &recordingRouterCfg{testRouterCfg: testRouterCfg{lookupSlot: 16}}
 	r.SetCfg(cfg)
 	r.SetResolver(&routerTestResolver{
@@ -757,7 +757,7 @@ func TestRouterResolverOverridesLookupAndPreResolvesDial(t *testing.T) {
 }
 
 func TestRouterSubscribeCloser(t *testing.T) {
-	r := gonnect.NewRouter()
+	r := gonnect.NewRouter(nil)
 	closer := &routerTestCloser{}
 	unsubscribe, err := r.SubscribeCloser(closer)
 	if err != nil {

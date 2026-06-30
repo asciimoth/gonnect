@@ -16,7 +16,7 @@ const queuedWriteLeakRaceIterations = 64
 func TestDetachedTunQueuedWriteBuffersReturnedOnClose(t *testing.T) {
 	pool := bufpool.NewTestDebugPool(t)
 	base := newBlockingWriteTun(1, 1500, 0, 0)
-	d := Detach(base, pool)
+	d := Detach(base, nil, pool)
 
 	base.waitReadStarted(t, "detached base read", 1)
 	first := writeTunAsync(d, "first")
@@ -47,7 +47,7 @@ func TestSplitterQueuedWriteBuffersReturnedOnClose(t *testing.T) {
 	for range queuedWriteLeakRaceIterations {
 		pool := bufpool.NewTestDebugPool(t)
 		base := newBlockingWriteTun(1, 1500, 0, 0)
-		s := NewSplitter(pool)
+		s := NewSplitter(nil, pool)
 		f := s.Get(1)
 		if err := s.Attach(base); err != nil {
 			t.Fatalf("Splitter.Attach() error = %v", err)
@@ -75,11 +75,11 @@ func TestJoinerQueuedWriteBuffersReturnedOnClose(t *testing.T) {
 	for range queuedWriteLeakRaceIterations {
 		pool := bufpool.NewTestDebugPool(t)
 		base := newBlockingWriteTun(1, 1500, 0, 0)
-		j := NewJoiner(pool)
+		j := NewJoiner(nil, pool)
 		if err := j.AttachDefault(base); err != nil {
 			t.Fatalf("Joiner.AttachDefault() error = %v", err)
 		}
-		d := Detach(j, pool)
+		d := Detach(j, nil, pool)
 
 		base.waitReadStarted(t, "joiner nested read", 1)
 		first := writeTunAsync(d, "first")
@@ -106,7 +106,7 @@ func TestJoinerQueuedWriteBuffersReturnedOnClose(t *testing.T) {
 func TestDetachedTunQueuedReadBuffersReturnedOnClose(t *testing.T) {
 	pool := bufpool.NewTestDebugPool(t)
 	base := newQueuedReadTun(1, 1500, 0, 0)
-	d := Detach(base, pool)
+	d := Detach(base, nil, pool)
 
 	base.waitReadStarted(t, "detached base read", 1)
 	base.queueRead([]byte("queued-read"))
@@ -128,7 +128,7 @@ func TestDetachedTunQueuedReadBuffersReturnedOnClose(t *testing.T) {
 func TestDetachedTunWaitBlocksUntilReadPumpUnblocked(t *testing.T) {
 	pool := bufpool.NewTestDebugPool(t)
 	base := newBlockingWriteTun(1, 1500, 0, 0)
-	d := Detach(base, pool)
+	d := Detach(base, nil, pool)
 
 	base.waitReadStarted(t, "detached base read", 1)
 	if err := d.Close(); err != nil {
@@ -149,8 +149,8 @@ func TestNestedDetachedTunWriteBuffersReturnedAfterChildWait(t *testing.T) {
 	parentPool := bufpool.NewTestDebugPool(t)
 	childPool := bufpool.NewTestDebugPool(t)
 	base := newBlockingWriteTun(1, 1500, 0, 0)
-	parent := Detach(base, parentPool)
-	child := Detach(parent, childPool)
+	parent := Detach(base, nil, parentPool)
+	child := Detach(parent, nil, childPool)
 
 	base.waitReadStarted(t, "parent base read", 1)
 	write := writeTunAsync(child, "nested")
@@ -179,7 +179,7 @@ func TestNestedDetachedTunWriteBuffersReturnedAfterChildWait(t *testing.T) {
 func TestJoinerQueuedReadBuffersReturnedOnClose(t *testing.T) {
 	pool := bufpool.NewTestDebugPool(t)
 	base := newQueuedReadTun(1, 1500, 0, 0)
-	j := NewJoiner(pool)
+	j := NewJoiner(nil, pool)
 	if err := j.AttachDefault(base); err != nil {
 		t.Fatalf("Joiner.AttachDefault() error = %v", err)
 	}

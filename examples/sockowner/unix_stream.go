@@ -12,6 +12,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/asciimoth/gonnect"
 	"github.com/asciimoth/gonnect/sockowner"
 )
 
@@ -34,6 +35,7 @@ func runUnixStreamServer(args []string) {
 	fmt.Printf("Unix stream server listening on %s\n", *path)
 	fmt.Printf("Try:\n  %s unix-stream-client -path %q\n\n", os.Args[0], *path)
 
+	var spawner gonnect.Spawner
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -41,7 +43,16 @@ func runUnixStreamServer(args []string) {
 			continue
 		}
 
-		go handleUnixStreamConn(conn)
+		if spawner == nil {
+			go handleUnixStreamConn(conn)
+			continue
+		}
+		if _, err := spawner.Spawn(func() {
+			handleUnixStreamConn(conn)
+		}, "sockowner.unixStream"); err != nil {
+			_ = conn.Close()
+			log.Printf("unix stream spawn error: %v", err)
+		}
 	}
 }
 

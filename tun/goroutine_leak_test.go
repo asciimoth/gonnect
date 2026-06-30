@@ -11,7 +11,7 @@ import (
 
 func TestJoinerCloseDoesNotLeakGoroutines(t *testing.T) {
 	createdByTest := currentGoroutineCreatedByNeedle()
-	j := NewJoiner(testDebugPool(t))
+	j := NewJoiner(nil, testDebugPool(t))
 
 	defaultTun, _ := Pipe(1, 1500, 0, 0)
 	secondaryTun, _ := Pipe(1, 1500, 0, 0)
@@ -48,7 +48,7 @@ func TestJoinerCloseDoesNotLeakGoroutines(t *testing.T) {
 
 func TestSplitterCloseDoesNotLeakGoroutines(t *testing.T) {
 	createdByTest := currentGoroutineCreatedByNeedle()
-	s := NewSplitter(testDebugPool(t))
+	s := NewSplitter(nil, testDebugPool(t))
 	backend, _ := Pipe(1, 1500, 0, 0)
 	if err := s.Attach(backend); err != nil {
 		t.Fatalf("Attach() error = %v", err)
@@ -88,8 +88,8 @@ func TestSplitterCloseDoesNotLeakGoroutines(t *testing.T) {
 func TestDetachedTunCloseDoesNotLeakGoroutines(t *testing.T) {
 	createdByTest := currentGoroutineCreatedByNeedle()
 	wrapped, peer := Pipe(1, 1500, 0, 0)
-	root := Detach(wrapped, testDebugPool(t))
-	child := Detach(root, testDebugPool(t))
+	root := Detach(wrapped, nil, testDebugPool(t))
+	child := Detach(root, nil, testDebugPool(t))
 
 	waitForGoroutinesWithStack(
 		t,

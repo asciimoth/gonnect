@@ -8,13 +8,13 @@ import (
 )
 
 func TestJoinerSplitterDetachedTunComplexTopologyChanges(t *testing.T) {
-	root := NewJoiner(testDebugPool(t))
+	root := NewJoiner(nil, testDebugPool(t))
 	defer root.Close()
-	left := NewSplitter(testDebugPool(t))
+	left := NewSplitter(nil, testDebugPool(t))
 	defer left.Close()
-	right := NewSplitter(testDebugPool(t))
+	right := NewSplitter(nil, testDebugPool(t))
 	defer right.Close()
-	branch := NewJoiner(testDebugPool(t))
+	branch := NewJoiner(nil, testDebugPool(t))
 	defer branch.Close()
 
 	rootDefault := newMockTun(2, 1450, 0, 0)
@@ -29,7 +29,7 @@ func TestJoinerSplitterDetachedTunComplexTopologyChanges(t *testing.T) {
 	}
 	rightFront2 := right.Get(2)
 	assertTunEvent(t, "right frontend 2 initial", rightFront2.Events(), EventUp)
-	rightDetached2 := Detach(rightFront2)
+	rightDetached2 := Detach(rightFront2, nil, nil)
 	assertTunEvent(
 		t,
 		"right detached 2 initial",
@@ -72,7 +72,7 @@ func TestJoinerSplitterDetachedTunComplexTopologyChanges(t *testing.T) {
 	}
 	leftFront1 := left.Get(1)
 	assertTunEvent(t, "left frontend 1 initial", leftFront1.Events(), EventUp)
-	leftDetached1 := Detach(leftFront1)
+	leftDetached1 := Detach(leftFront1, nil, nil)
 	assertTunEvent(
 		t,
 		"left detached 1 initial",
@@ -124,7 +124,7 @@ func TestJoinerSplitterDetachedTunComplexTopologyChanges(t *testing.T) {
 
 	leftFront2 := left.Get(2)
 	assertTunEvent(t, "left frontend 2 initial", leftFront2.Events(), EventUp)
-	leftDetached2 := Detach(leftFront2)
+	leftDetached2 := Detach(leftFront2, nil, nil)
 	assertTunEvent(
 		t,
 		"left detached 2 initial",
@@ -206,7 +206,7 @@ func TestJoinerSplitterDetachedTunComplexTopologyChanges(t *testing.T) {
 		edge,
 	)
 
-	rightReplacement := Detach(rightFront2)
+	rightReplacement := Detach(rightFront2, nil, nil)
 	assertTunEvent(
 		t,
 		"right replacement initial",

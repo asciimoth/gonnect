@@ -312,7 +312,7 @@ func (c NativeConfig) Build() *NativeNetwork {
 // NativeNetwork does not implement UpDown. Wrap it with DetachNetwork when an
 // independently stoppable native network is needed:
 //
-//	n := DetachNetwork(NativeConfig{}.Build(), nil)
+//	n := DetachNetwork(NativeConfig{}.Build(), nil, nil)
 type NativeNetwork struct {
 	mu sync.RWMutex
 

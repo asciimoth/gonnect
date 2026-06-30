@@ -29,7 +29,7 @@ func TestForwarderChan(t *testing.T) {
 					pipeIn, pipeMid1 := tun.Pipe(1, 10, mwo, mro)
 					pipeMid2, pipeOut := tun.Pipe(1, 10, mwo, mro)
 
-					frw := tun.NewForwarder(pool)
+					frw := tun.NewForwarder(pool, nil)
 					defer frw.Stop()
 
 					defer pipeIn.Close()
@@ -82,7 +82,7 @@ func TestForwarderIO(t *testing.T) {
 					pipeMid2, pipeOut := tun.Pipe(1, 60, mwo, mro)
 					defer pipeMid2.Close()
 
-					frw := tun.NewForwarder(pool)
+					frw := tun.NewForwarder(pool, nil)
 					defer frw.Stop()
 
 					defer pipeIn.Close()

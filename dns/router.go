@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net"
 	"sync"
+
+	"github.com/asciimoth/gonnect"
 )
 
 var _ Interface = (*Router)(nil)
@@ -36,12 +38,12 @@ type Router struct {
 }
 
 // NewRouter creates an empty DNS Router.
-func NewRouter() *Router {
+func NewRouter(spawner gonnect.Spawner) *Router {
 	r := &Router{
 		backends: make(map[string]Interface),
 		done:     make(chan struct{}),
 	}
-	r.p = newProvider(r.handle)
+	r.p = newProvider(r.handle, spawner)
 	return r
 }
 

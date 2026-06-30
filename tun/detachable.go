@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/asciimoth/bufpool"
+	"github.com/asciimoth/gonnect"
 )
 
 var (
@@ -113,18 +114,22 @@ type DetachedTun struct {
 	readLen       int
 	native        bool
 	pool          bufpool.Pool
+	spawner       gonnect.Spawner
 }
 
 // Detach creates an independently stoppable wrapper around t. If t is already a
 // DetachedTun, the new wrapper shares t's underlying pumps instead of wrapping
 // the public Read and Write methods again.
-func Detach(t Tun, pools ...bufpool.Pool) *DetachedTun {
-	pool := optionalPool(pools)
+func Detach(
+	t Tun,
+	spawner gonnect.Spawner,
+	pool bufpool.Pool,
+) *DetachedTun {
 	if parent, ok := t.(*DetachedTun); ok {
-		return detachNested(parent, pool)
+		return detachNested(parent, pool, spawner)
 	}
 	if source, ok := t.(tunChannelSource); ok {
-		return detachSource(t, source, pool)
+		return detachSource(t, source, pool, spawner)
 	}
 	mtu, err := t.MTU()
 	if err != nil || mtu < 0 {
@@ -143,6 +148,7 @@ func Detach(t Tun, pools ...bufpool.Pool) *DetachedTun {
 		batch:     t.BatchSize(),
 		native:    t.IsNative(),
 		pool:      pool,
+		spawner:   spawner,
 	}
 	d.waitCond = sync.NewCond(&d.waitMu)
 	if d.batch <= 0 {
@@ -152,8 +158,14 @@ func Detach(t Tun, pools ...bufpool.Pool) *DetachedTun {
 	if d.readLen < d.mro {
 		d.readLen = d.mro
 	}
-	d.startLocked()
-	d.startEventPump(t.Events())
+	if err := d.startLocked(); err != nil {
+		d.closed = true
+		return d
+	}
+	if err := d.startEventPump(t.Events()); err != nil {
+		_ = d.Close()
+		return d
+	}
 	d.sendEvent(EventUp)
 	return d
 }
@@ -162,6 +174,7 @@ func detachSource(
 	t Tun,
 	source tunChannelSource,
 	pool bufpool.Pool,
+	spawner gonnect.Spawner,
 ) *DetachedTun {
 	mtu, err := t.MTU()
 	if err != nil || mtu < 0 {
@@ -180,6 +193,7 @@ func detachSource(
 		batch:     t.BatchSize(),
 		native:    t.IsNative(),
 		pool:      pool,
+		spawner:   spawner,
 	}
 	d.waitCond = sync.NewCond(&d.waitMu)
 	if d.batch <= 0 {
@@ -189,13 +203,23 @@ func detachSource(
 	if d.readLen < d.mro {
 		d.readLen = d.mro
 	}
-	d.startLocked()
-	d.startEventPump(t.Events())
+	if err := d.startLocked(); err != nil {
+		d.closed = true
+		return d
+	}
+	if err := d.startEventPump(t.Events()); err != nil {
+		_ = d.Close()
+		return d
+	}
 	d.sendEvent(EventUp)
 	return d
 }
 
-func detachNested(parent *DetachedTun, pool bufpool.Pool) *DetachedTun {
+func detachNested(
+	parent *DetachedTun,
+	pool bufpool.Pool,
+	spawner gonnect.Spawner,
+) *DetachedTun {
 	d := &DetachedTun{
 		wrapped:   parent.wrapped,
 		parent:    parent,
@@ -210,10 +234,17 @@ func detachNested(parent *DetachedTun, pool bufpool.Pool) *DetachedTun {
 		readLen:   parent.readLen,
 		native:    parent.native,
 		pool:      pool,
+		spawner:   spawner,
 	}
 	d.waitCond = sync.NewCond(&d.waitMu)
-	d.startLocked()
-	d.startEventPump(parent.subscribeEvents())
+	if err := d.startLocked(); err != nil {
+		d.closed = true
+		return d
+	}
+	if err := d.startEventPump(parent.subscribeEvents()); err != nil {
+		_ = d.Close()
+		return d
+	}
 	d.sendEvent(EventUp)
 	return d
 }
@@ -231,7 +262,10 @@ func (d *DetachedTun) Up() error {
 	}
 	d.gen++
 	d.up = true
-	d.startLocked()
+	if err := d.startLocked(); err != nil {
+		d.up = false
+		return err
+	}
 	d.sendEvent(EventUp)
 	return nil
 }
@@ -413,7 +447,7 @@ func (d *DetachedTun) writeRequest(
 	return d.writeSrc, d.effectiveDone, req, nil
 }
 
-func (d *DetachedTun) startLocked() {
+func (d *DetachedTun) startLocked() error {
 	d.done = make(chan struct{})
 	if d.ownsPumps {
 		d.effectiveDone = d.done
@@ -425,11 +459,22 @@ func (d *DetachedTun) startLocked() {
 		done := d.done
 		reads := d.reads
 		writes := d.writes
-		d.wg.Go(func() { d.readPump(gen, done, reads) })
-		d.wg.Go(func() { d.writePump(gen, done, writes) })
-		return
+		if err := spawnWg(d.spawner, func() {
+			d.readPump(gen, done, reads)
+		}, &d.wg, "tun.DetachedTun.readPump"); err != nil {
+			close(d.done)
+			return err
+		}
+		if err := spawnWg(d.spawner, func() {
+			d.writePump(gen, done, writes)
+		}, &d.wg, "tun.DetachedTun.writePump"); err != nil {
+			close(d.done)
+			d.wg.Wait()
+			return err
+		}
+		return nil
 	}
-	_ = d.refreshNestedLocked()
+	return d.refreshNestedLocked()
 }
 
 func (d *DetachedTun) refreshNestedLocked() error {
@@ -671,8 +716,8 @@ func closedChan(ch <-chan struct{}) bool {
 	}
 }
 
-func (d *DetachedTun) startEventPump(events <-chan Event) {
-	go func() {
+func (d *DetachedTun) startEventPump(events <-chan Event) error {
+	return spawn(d.spawner, func() {
 		down := false
 		for event := range events {
 			switch event {
@@ -687,7 +732,7 @@ func (d *DetachedTun) startEventPump(events <-chan Event) {
 			d.sendEvent(event)
 		}
 		d.closeFromWrapped(down)
-	}()
+	}, "tun.DetachedTun.events")
 }
 
 func (d *DetachedTun) closeFromWrapped(down bool) {

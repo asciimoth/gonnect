@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/asciimoth/bufpool"
+	"github.com/asciimoth/gonnect"
 )
 
 var (
@@ -98,6 +99,7 @@ type Splitter struct {
 	eventSerial uint64
 	once        sync.Once
 	pool        bufpool.Pool
+	spawner     gonnect.Spawner
 	wg          sync.WaitGroup
 }
 
@@ -123,18 +125,30 @@ type SplitFrontend struct {
 }
 
 // NewSplitter creates a Splitter with no attached backend.
-func NewSplitter(pools ...bufpool.Pool) *Splitter {
-	pool := optionalPool(pools)
+func NewSplitter(
+	spawner gonnect.Spawner,
+	pool bufpool.Pool,
+) *Splitter {
 	s := &Splitter{
-		done:   make(chan struct{}),
-		writes: make(chan *detachedTunWrite, channelBufferSize()),
-		mro:    splitterDefaultOffset,
-		mwo:    splitterDefaultOffset,
-		mtu:    splitterDefaultMTU,
-		batch:  splitterDefaultBatch,
-		pool:   pool,
+		done:    make(chan struct{}),
+		writes:  make(chan *detachedTunWrite, channelBufferSize()),
+		mro:     splitterDefaultOffset,
+		mwo:     splitterDefaultOffset,
+		mtu:     splitterDefaultMTU,
+		batch:   splitterDefaultBatch,
+		pool:    pool,
+		spawner: spawner,
 	}
-	s.wg.Go(s.writePump)
+	if err := spawnWg(
+		spawner,
+		s.writePump,
+		&s.wg,
+		"tun.Splitter.writePump",
+	); err != nil {
+		s.closed = true
+		close(s.done)
+		return s
+	}
 	return s
 }
 
@@ -162,8 +176,7 @@ func (s *Splitter) Attach(t Tun) error {
 	if old != nil {
 		_ = old.t.Close()
 	}
-	s.startBackend(n)
-	return nil
+	return s.startBackend(n)
 }
 
 // Detach removes and closes the current backend Tun, if any.
@@ -271,9 +284,20 @@ func newSplitterBackend(t Tun) *splitterBackend {
 	return n
 }
 
-func (s *Splitter) startBackend(n *splitterBackend) {
-	s.wg.Go(func() { s.readBackend(n) })
-	go s.watchBackendEvents(n)
+func (s *Splitter) startBackend(n *splitterBackend) error {
+	if err := spawnWg(s.spawner, func() {
+		s.readBackend(n)
+	}, &s.wg, "tun.Splitter.readBackend"); err != nil {
+		s.detachBackend(n, true)
+		return err
+	}
+	if err := spawn(s.spawner, func() {
+		s.watchBackendEvents(n)
+	}, "tun.Splitter.events"); err != nil {
+		s.detachBackend(n, true)
+		return err
+	}
+	return nil
 }
 
 func (s *Splitter) readBackend(n *splitterBackend) {

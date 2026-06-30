@@ -335,6 +335,7 @@ func (s *System) OutDNS() dns.Interface {
 	return dns.NewResolverProvider(
 		newMapResolver(s.StaticDNS),
 		time.Minute,
+		nil,
 	)
 }
 

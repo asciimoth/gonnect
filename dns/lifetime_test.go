@@ -16,7 +16,7 @@ func TestResolverProviderCloseCancelsInFlightAndIsIdempotent(t *testing.T) {
 		started:  make(chan struct{}),
 		canceled: make(chan struct{}),
 	}
-	provider := NewResolverProvider(res, time.Second)
+	provider := NewResolverProvider(res, time.Second, nil)
 
 	queryDone := make(chan error, 1)
 	go func() {
@@ -40,7 +40,7 @@ func TestResolverProviderCloseCancelsInFlightAndIsIdempotent(t *testing.T) {
 
 func TestDetachedCloseCancelsInFlightAndKeepsUpstreamAlive(t *testing.T) {
 	up := newControlledDNS()
-	d := Detach(up)
+	d := Detach(up, nil)
 	defer up.Close()
 
 	queryDone := make(chan error, 1)
@@ -65,7 +65,7 @@ func TestDetachedCloseCancelsInFlightAndKeepsUpstreamAlive(t *testing.T) {
 
 func TestCacheCloseCancelsInFlightAndKeepsUpstreamAlive(t *testing.T) {
 	up := newControlledDNS()
-	cache := NewCache(up, NewMemoryStorage())
+	cache := NewCache(up, NewMemoryStorage(), nil)
 	defer up.Close()
 
 	queryDone := make(chan error, 1)
@@ -97,7 +97,7 @@ func TestClientCloseCancelsInFlightUDPRead(t *testing.T) {
 	}
 	defer sink.Close()
 
-	client := NewClient(ln.Dial, "udp://127.0.0.1:5356")
+	client := NewClient(ln.Dial, nil, "udp://127.0.0.1:5356")
 	client.timeout = time.Hour
 	queryDone := make(chan error, 1)
 	go func() {
@@ -125,7 +125,7 @@ func TestServerCloseCancelsForwardedRequestAndClosesPacketConn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := NewServer(serverConn, up)
+	server := NewServer(serverConn, up, nil)
 
 	clientConn, err := ln.Dial(context.Background(), "udp4", "127.0.0.1:5357")
 	if err != nil {
@@ -257,7 +257,7 @@ func newControlledDNS() *controlledDNS {
 			}
 			sendResponse(req, resp, nil)
 		}
-	})
+	}, nil)
 	return d
 }
 

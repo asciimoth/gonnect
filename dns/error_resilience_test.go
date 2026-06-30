@@ -13,14 +13,14 @@ import (
 
 func TestComplexChainClientDialErrorDoesNotPoisonChain(t *testing.T) {
 	ln := gonnect.NewLoopbackNetwok()
-	upstream := NewResolverProvider(ln, time.Second)
+	upstream := NewResolverProvider(ln, time.Second, nil)
 	defer upstream.Close()
 
 	pc, err := ln.ListenPacket(context.Background(), "udp4", "127.0.0.1:5358")
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := NewServer(pc, upstream)
+	server := NewServer(pc, upstream, nil)
 	defer server.Close()
 
 	failDial := true
@@ -30,11 +30,11 @@ func TestComplexChainClientDialErrorDoesNotPoisonChain(t *testing.T) {
 		}
 		return ln.Dial(ctx, network, address)
 	}
-	client := NewClient(dial, "udp://127.0.0.1:5358")
+	client := NewClient(dial, nil, "udp://127.0.0.1:5358")
 	defer client.Close()
-	cache := NewCache(client, NewMemoryStorage())
+	cache := NewCache(client, NewMemoryStorage(), nil)
 	defer cache.Close()
-	chain := Detach(cache)
+	chain := Detach(cache, nil)
 	defer chain.Close()
 
 	if _, err := queryWithTimeout(chain, "localhost."); err == nil {
@@ -64,14 +64,14 @@ func TestComplexChainClientDialErrorDoesNotPoisonChain(t *testing.T) {
 
 func TestComplexChainClientRetriesNextServerAndSurvivesBadServer(t *testing.T) {
 	ln := gonnect.NewLoopbackNetwok()
-	upstream := NewResolverProvider(ln, time.Second)
+	upstream := NewResolverProvider(ln, time.Second, nil)
 	defer upstream.Close()
 
 	pc, err := ln.ListenPacket(context.Background(), "udp4", "127.0.0.1:5359")
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := NewServer(pc, upstream)
+	server := NewServer(pc, upstream, nil)
 	defer server.Close()
 
 	dial := func(ctx context.Context, network, address string) (net.Conn, error) {
@@ -80,11 +80,11 @@ func TestComplexChainClientRetriesNextServerAndSurvivesBadServer(t *testing.T) {
 		}
 		return ln.Dial(ctx, network, address)
 	}
-	client := NewClient(dial, "udp://127.0.0.1:1", "udp://127.0.0.1:5359")
+	client := NewClient(dial, nil, "udp://127.0.0.1:1", "udp://127.0.0.1:5359")
 	defer client.Close()
-	cache := NewCache(client, NewMemoryStorage())
+	cache := NewCache(client, NewMemoryStorage(), nil)
 	defer cache.Close()
-	chain := Detach(cache)
+	chain := Detach(cache, nil)
 	defer chain.Close()
 
 	resp, err := queryWithTimeout(chain, "localhost.")
@@ -110,10 +110,10 @@ func TestServerUpstreamErrorDoesNotPoisonServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := NewServer(pc, bad)
+	server := NewServer(pc, bad, nil)
 	defer server.Close()
 
-	client := NewClient(ln.Dial, "udp://127.0.0.1:5360")
+	client := NewClient(ln.Dial, nil, "udp://127.0.0.1:5360")
 	defer client.Close()
 	resp, err := queryWithTimeout(client, "localhost.")
 	if err != nil || resp.RCode != RCodeServerFailure {
@@ -124,7 +124,7 @@ func TestServerUpstreamErrorDoesNotPoisonServer(t *testing.T) {
 		)
 	}
 
-	good := NewResolverProvider(ln, time.Second)
+	good := NewResolverProvider(ln, time.Second, nil)
 	defer good.Close()
 	server.Attach(good)
 	resp, err = queryWithTimeout(client, "localhost.")
@@ -141,7 +141,7 @@ func TestCacheDoesNotStoreFailedResponsesAndSurvivesUpstreamErrors(
 	t *testing.T,
 ) {
 	bad := newRCodeDNS(RCodeServerFailure)
-	cache := NewCache(bad, NewMemoryStorage())
+	cache := NewCache(bad, NewMemoryStorage(), nil)
 	defer bad.Close()
 	defer cache.Close()
 
@@ -154,7 +154,7 @@ func TestCacheDoesNotStoreFailedResponsesAndSurvivesUpstreamErrors(
 		)
 	}
 
-	good := NewResolverProvider(gonnect.NewLoopbackNetwok(), time.Second)
+	good := NewResolverProvider(gonnect.NewLoopbackNetwok(), time.Second, nil)
 	defer good.Close()
 	cache.Attach(good)
 	resp, err = queryWithTimeout(cache, "localhost.")
@@ -180,9 +180,9 @@ func TestCacheDoesNotStoreFailedResponsesAndSurvivesUpstreamErrors(
 func TestResolverAdapterSurvivesDNSFailuresInChain(t *testing.T) {
 	up := newToggleDNS()
 	defer up.Close()
-	cache := NewCache(up, NewMemoryStorage())
+	cache := NewCache(up, NewMemoryStorage(), nil)
 	defer cache.Close()
-	detached := Detach(cache)
+	detached := Detach(cache, nil)
 	defer detached.Close()
 	resolver := NewResolver(detached)
 
@@ -218,7 +218,7 @@ func newErrorDNS(err error) *errorDNS {
 	d := &errorDNS{}
 	d.p = newProvider(func(root context.Context, req Request) {
 		sendResponse(req, nil, err)
-	})
+	}, nil)
 	return d
 }
 
@@ -236,7 +236,7 @@ func newRCodeDNS(rcode uint8) *rcodeDNS {
 		resp := responseFor(req.Message)
 		resp.RCode = d.rcode
 		sendResponse(req, resp, nil)
-	})
+	}, nil)
 	return d
 }
 
@@ -258,7 +258,7 @@ func newToggleDNS() *toggleDNS {
 			resp.Answers = staticAnswers(req.Message.Questions[0])
 		}
 		sendResponse(req, resp, nil)
-	})
+	}, nil)
 	return d
 }
 

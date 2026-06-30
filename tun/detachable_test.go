@@ -13,7 +13,7 @@ import (
 
 func TestDetachedTunDownUnblocksPendingRead(t *testing.T) {
 	a, b := tun.Pipe(1, 1500, 0, 0)
-	wrapper := tun.Detach(a)
+	wrapper := tun.Detach(a, nil, nil)
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -54,7 +54,7 @@ func TestDetachedTunDownUnblocksPendingRead(t *testing.T) {
 
 func TestDetachedTunDownUnblocksPendingWrite(t *testing.T) {
 	a, b := tun.Pipe(1, 1500, 0, 0)
-	wrapper := tun.Detach(a)
+	wrapper := tun.Detach(a, nil, nil)
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -86,7 +86,7 @@ func TestDetachedTunDownUnblocksPendingWrite(t *testing.T) {
 
 func TestDetachedTunCloseDoesNotCloseWrappedTun(t *testing.T) {
 	a, b := tun.Pipe(1, 1500, 0, 0)
-	wrapper := tun.Detach(a)
+	wrapper := tun.Detach(a, nil, nil)
 
 	if err := wrapper.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
@@ -119,7 +119,7 @@ func TestDetachedTunCloseDoesNotCloseWrappedTun(t *testing.T) {
 func TestDetachedTunCloseUnblocksPendingRead(t *testing.T) {
 	base := newEventTun(1500)
 	defer closeTestTun(t, base)
-	wrapper := tun.Detach(base)
+	wrapper := tun.Detach(base, nil, nil)
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -144,7 +144,7 @@ func TestDetachedTunCloseUnblocksPendingRead(t *testing.T) {
 func TestDetachedTunCloseUnblocksPendingWrite(t *testing.T) {
 	base := newEventTun(1500)
 	defer closeTestTun(t, base)
-	wrapper := tun.Detach(base)
+	wrapper := tun.Detach(base, nil, nil)
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -166,7 +166,7 @@ func TestDetachedTunCloseUnblocksPendingWrite(t *testing.T) {
 
 func TestDetachedTunWrappedCloseUnblocksPendingRead(t *testing.T) {
 	base := newEventTun(1500)
-	wrapper := tun.Detach(base)
+	wrapper := tun.Detach(base, nil, nil)
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -185,7 +185,7 @@ func TestDetachedTunWrappedCloseUnblocksPendingRead(t *testing.T) {
 
 func TestDetachedTunWrappedCloseUnblocksPendingWrite(t *testing.T) {
 	base := newEventTun(1500)
-	wrapper := tun.Detach(base)
+	wrapper := tun.Detach(base, nil, nil)
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -203,8 +203,8 @@ func TestDetachedTunWrappedCloseUnblocksPendingWrite(t *testing.T) {
 func TestDetachedTunIsNativeCachedFromWrappedTun(t *testing.T) {
 	base := newEventTun(1500)
 	base.SetNative(true)
-	wrapper := tun.Detach(base)
-	child := tun.Detach(wrapper)
+	wrapper := tun.Detach(base, nil, nil)
+	child := tun.Detach(wrapper, nil, nil)
 	t.Cleanup(func() {
 		closeTestTun(t, child)
 		closeTestTun(t, wrapper)
@@ -237,8 +237,8 @@ func TestDetachedTunIsNativeCachedFromWrappedTun(t *testing.T) {
 func TestNestedDetachedTunParentCloseUnblocksPendingChildRead(t *testing.T) {
 	base := newEventTun(1500)
 	defer closeTestTun(t, base)
-	parent := tun.Detach(base)
-	child := tun.Detach(parent)
+	parent := tun.Detach(base, nil, nil)
+	child := tun.Detach(parent, nil, nil)
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -263,8 +263,8 @@ func TestNestedDetachedTunParentCloseUnblocksPendingChildRead(t *testing.T) {
 func TestNestedDetachedTunParentCloseUnblocksPendingChildWrite(t *testing.T) {
 	base := newEventTun(1500)
 	defer closeTestTun(t, base)
-	parent := tun.Detach(base)
-	child := tun.Detach(parent)
+	parent := tun.Detach(base, nil, nil)
+	child := tun.Detach(parent, nil, nil)
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -286,9 +286,9 @@ func TestNestedDetachedTunParentCloseUnblocksPendingChildWrite(t *testing.T) {
 
 func TestNestedDetachedTunParentDownUnblocksChildRead(t *testing.T) {
 	a, _ := tun.Pipe(1, 1500, 0, 0)
-	parent := tun.Detach(a)
-	child := tun.Detach(parent)
-	grandchild := tun.Detach(child)
+	parent := tun.Detach(a, nil, nil)
+	child := tun.Detach(parent, nil, nil)
+	grandchild := tun.Detach(child, nil, nil)
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -315,8 +315,8 @@ func TestNestedDetachedTunParentDownUnblocksChildRead(t *testing.T) {
 
 func TestNestedDetachedTunChildDownDoesNotStopParent(t *testing.T) {
 	a, b := tun.Pipe(1, 1500, 0, 0)
-	parent := tun.Detach(a)
-	child := tun.Detach(parent)
+	parent := tun.Detach(a, nil, nil)
+	child := tun.Detach(parent, nil, nil)
 
 	if err := child.Down(); err != nil {
 		t.Fatalf("child Down() error = %v", err)
@@ -397,7 +397,7 @@ func TestNestedDetachedTunLongChainDownUpCloseScopeAndEvents(t *testing.T) {
 	assertDetachedPacketIO(t, "after middle close", chain[1], base, 15)
 	assertDetachedPacketIOErr(t, "closed wrapper", chain[2])
 
-	replacement := tun.Detach(chain[1])
+	replacement := tun.Detach(chain[1], nil, nil)
 	assertDetachedEvent(t, 2, replacement.Events(), tun.EventUp)
 	assertDetachedPacketIO(t, "replacement wrapper", replacement, base, 17)
 	assertDetachedMTU(
@@ -408,7 +408,7 @@ func TestNestedDetachedTunLongChainDownUpCloseScopeAndEvents(t *testing.T) {
 	assertDetachedMTUErr(t, chain[2:], os.ErrClosed)
 	assertDetachedEventsClosed(t, chain[2:])
 
-	replacementChild := tun.Detach(replacement)
+	replacementChild := tun.Detach(replacement, nil, nil)
 	assertDetachedEvent(t, 3, replacementChild.Events(), tun.EventUp)
 	assertDetachedPacketIO(t, "replacement child", replacementChild, base, 18)
 	assertNoDetachedEvents(
@@ -601,7 +601,7 @@ func detachedTunChain(base tun.Tun, n int) []*tun.DetachedTun {
 	chain := make([]*tun.DetachedTun, n)
 	current := base
 	for i := range chain {
-		chain[i] = tun.Detach(current)
+		chain[i] = tun.Detach(current, nil, nil)
 		current = chain[i]
 	}
 	return chain

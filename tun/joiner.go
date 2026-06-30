@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/asciimoth/bufpool"
+	"github.com/asciimoth/gonnect"
 )
 
 var (
@@ -85,12 +86,15 @@ type Joiner struct {
 	batch       int
 	once        sync.Once
 	pool        bufpool.Pool
+	spawner     gonnect.Spawner
 	wg          sync.WaitGroup
 }
 
 // NewJoiner creates an empty Joiner.
-func NewJoiner(pools ...bufpool.Pool) *Joiner {
-	pool := optionalPool(pools)
+func NewJoiner(
+	spawner gonnect.Spawner,
+	pool bufpool.Pool,
+) *Joiner {
 	j := &Joiner{
 		done:        make(chan struct{}),
 		events:      make(chan Event, 8),
@@ -102,8 +106,19 @@ func NewJoiner(pools ...bufpool.Pool) *Joiner {
 		mtu:         joinerDefaultMTU,
 		batch:       joinerDefaultBatch,
 		pool:        pool,
+		spawner:     spawner,
 	}
-	j.wg.Go(j.writePump)
+	if err := spawnWg(
+		spawner,
+		j.writePump,
+		&j.wg,
+		"tun.Joiner.writePump",
+	); err != nil {
+		j.closed = true
+		close(j.done)
+		j.closeEvents()
+		return j
+	}
 	return j
 }
 
@@ -139,8 +154,7 @@ func (j *Joiner) AttachDefault(t Tun) error {
 	if old != nil {
 		_ = old.t.Close()
 	}
-	j.startNested(n)
-	return nil
+	return j.startNested(n)
 }
 
 // AttachSecondary attaches t as a non-default nested Tun.
@@ -167,8 +181,7 @@ func (j *Joiner) AttachSecondary(t Tun) error {
 	j.recalculateLocked()
 	j.mu.Unlock()
 
-	j.startNested(n)
-	return nil
+	return j.startNested(n)
 }
 
 // Detach detaches and closes t if it is currently attached.
@@ -389,9 +402,20 @@ func (j *Joiner) readPending(
 	return n, nil
 }
 
-func (j *Joiner) startNested(n *joinerNested) {
-	j.wg.Go(func() { j.readNested(n) })
-	go j.watchNestedEvents(n)
+func (j *Joiner) startNested(n *joinerNested) error {
+	if err := spawnWg(j.spawner, func() {
+		j.readNested(n)
+	}, &j.wg, "tun.Joiner.readNested"); err != nil {
+		j.detachNested(n, true)
+		return err
+	}
+	if err := spawn(j.spawner, func() {
+		j.watchNestedEvents(n)
+	}, "tun.Joiner.events"); err != nil {
+		j.detachNested(n, true)
+		return err
+	}
+	return nil
 }
 
 func (j *Joiner) readNested(n *joinerNested) {

@@ -32,11 +32,16 @@ type Client struct {
 	servers []string
 	timeout time.Duration
 	p       *provider
+	spawner gonnect.Spawner
 }
 
 // NewClient creates a DNS client using dial and server URLs. If dial is nil,
 // net.Dialer.DialContext is used. Supported schemes are udp, tcp, and dot.
-func NewClient(dial gonnect.Dial, servers ...string) *Client {
+func NewClient(
+	dial gonnect.Dial,
+	spawner gonnect.Spawner,
+	servers ...string,
+) *Client {
 	if dial == nil {
 		dial = (&net.Dialer{}).DialContext
 	}
@@ -44,8 +49,9 @@ func NewClient(dial gonnect.Dial, servers ...string) *Client {
 		dial:    dial,
 		servers: append([]string(nil), servers...),
 		timeout: 5 * time.Second,
+		spawner: spawner,
 	}
-	c.p = newProvider(c.handle)
+	c.p = newProvider(c.handle, spawner)
 	return c
 }
 
@@ -215,8 +221,9 @@ func closeConnOnContext(ctx context.Context, conn net.Conn) func() {
 // can replace the upstream without closing the packet connection; detaching
 // cancels requests currently waiting on the old upstream.
 type Server struct {
-	conn net.PacketConn
-	p    *provider
+	conn    net.PacketConn
+	p       *provider
+	spawner gonnect.Spawner
 
 	mu       sync.Mutex
 	upstream Interface
@@ -227,19 +234,27 @@ type Server struct {
 }
 
 // NewServer starts serving DNS packets from conn.
-func NewServer(conn net.PacketConn, upstream Interface) *Server {
-	s := &Server{conn: conn}
+func NewServer(
+	conn net.PacketConn,
+	upstream Interface,
+	spawner gonnect.Spawner,
+) *Server {
+	s := &Server{conn: conn, spawner: spawner}
 	s.Attach(upstream)
 	ctx, cancel := context.WithCancel(context.Background())
 	s.p = &provider{
-		ch:     make(chan Request),
-		cancel: cancel,
-		done:   make(chan struct{}),
+		ch:      make(chan Request),
+		cancel:  cancel,
+		done:    make(chan struct{}),
+		spawner: spawner,
 	}
-	go func() {
+	if err := spawn(spawner, func() {
 		defer close(s.p.done)
 		s.serve(ctx)
-	}()
+	}, "dns.Server.serve"); err != nil {
+		cancel()
+		close(s.p.done)
+	}
 	return s
 }
 
@@ -279,7 +294,11 @@ func (s *Server) serve(ctx context.Context) {
 			return
 		}
 		pkt := append([]byte(nil), buf[:n]...)
-		go s.handlePacket(ctx, pkt, addr)
+		if err := spawn(s.spawner, func() {
+			s.handlePacket(ctx, pkt, addr)
+		}, "dns.Server.handlePacket"); err != nil {
+			return
+		}
 	}
 }
 

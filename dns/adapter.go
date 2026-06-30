@@ -30,12 +30,13 @@ type ResolverProvider struct {
 func NewResolverProvider(
 	resolver gonnect.Resolver,
 	ttl time.Duration,
+	spawner gonnect.Spawner,
 ) *ResolverProvider {
 	r := &ResolverProvider{resolver: resolver, ttl: uint32(ttl.Seconds())}
 	if r.ttl == 0 {
 		r.ttl = 60
 	}
-	r.p = newProvider(r.handle)
+	r.p = newProvider(r.handle, spawner)
 	return r
 }
 

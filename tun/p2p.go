@@ -1,6 +1,9 @@
 package tun
 
-import "github.com/asciimoth/bufpool"
+import (
+	"github.com/asciimoth/bufpool"
+	"github.com/asciimoth/gonnect"
+)
 
 // Point2Point manages bidirectional forwarding between two TUN devices,
 // conventionally named A and B.
@@ -13,10 +16,10 @@ type Point2Point struct {
 // NewP2P creates a new Point2Point instance using the provided buffer pool.
 // Point2Point start with no TUN devices
 // and must be configured using SetA and SetB.
-func NewP2P(pool bufpool.Pool) *Point2Point {
+func NewP2P(pool bufpool.Pool, spawner gonnect.Spawner) *Point2Point {
 	return &Point2Point{
-		a2b: NewForwarder(pool),
-		b2a: NewForwarder(pool),
+		a2b: NewForwarder(pool, spawner),
+		b2a: NewForwarder(pool, spawner),
 	}
 }
 

@@ -426,14 +426,16 @@ func joinNetErrors(a, b error) (err error) {
 // copying data from inc->out and out->inc concurrently. It blocks until
 // both directions complete or an error occurs
 // and returns the first error encountered (if any).
-func PipeConn(inc, out net.Conn) (err error) {
+func PipeConn(inc, out net.Conn, spawner Spawner) (err error) {
 	done := make(chan error, 1)
-	go func() {
+	if err := spawn(spawner, func() {
 		_, err := io.Copy(inc, out)
 		_ = inc.Close()
 		_ = out.Close()
 		done <- ClosedNetworkErrToNil(err)
-	}()
+	}, "gonnect.PipeConn.copy"); err != nil {
+		return err
+	}
 
 	_, err = io.Copy(out, inc)
 	_ = inc.Close()
@@ -453,14 +455,17 @@ func PipePacketConn(
 	inc, out net.PacketConn,
 	bufSize int,
 	pool bufpool.Pool,
+	spawner Spawner,
 ) (err error) {
 	done := make(chan error, 1)
-	go func() {
+	if err := spawn(spawner, func() {
 		_, err := CopyPacket(inc, out, bufSize, pool)
 		_ = inc.Close()
 		_ = out.Close()
 		done <- ClosedNetworkErrToNil(err)
-	}()
+	}, "gonnect.PipePacketConn.copy"); err != nil {
+		return err
+	}
 
 	_, err = CopyPacket(out, inc, bufSize, pool)
 	_ = inc.Close()

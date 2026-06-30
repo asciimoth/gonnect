@@ -258,7 +258,7 @@ func TestForwarderUsesIndependentReadAndWriteBatchSizes(t *testing.T) {
 	dst := newMockTun(1, 1500, 5, 7)
 	dst.writeLimit = 1
 
-	frw := NewForwarder(pool)
+	frw := NewForwarder(pool, nil)
 	defer frw.Stop()
 
 	frw.SetReadTun(src)
@@ -304,7 +304,7 @@ func TestForwarderRetriesRetryableReadCapacityError(t *testing.T) {
 	src := newMockTun(4, 1500, 0, 0)
 	dst := newMockTun(2, 1500, 0, 0)
 
-	frw := NewForwarder(pool)
+	frw := NewForwarder(pool, nil)
 	defer frw.Stop()
 
 	frw.SetReadTun(src)
@@ -336,7 +336,7 @@ func TestP2PUsesIndependentReadAndWriteBatchSizes(t *testing.T) {
 	dst := newMockTun(1, 1500, 0, 0)
 	dst.writeLimit = 1
 
-	p2p := NewP2P(nil)
+	p2p := NewP2P(nil, nil)
 	defer p2p.Stop()
 
 	p2p.SetA(src)

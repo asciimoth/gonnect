@@ -5,38 +5,49 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/asciimoth/gonnect"
 )
 
 type provider struct {
-	ch     chan Request
-	cancel context.CancelFunc
-	done   chan struct{}
-	once   sync.Once
-	wg     sync.WaitGroup
+	ch      chan Request
+	cancel  context.CancelFunc
+	done    chan struct{}
+	once    sync.Once
+	wg      sync.WaitGroup
+	spawner gonnect.Spawner
 }
 
-func newProvider(fn func(context.Context, Request)) *provider {
+func newProvider(
+	fn func(context.Context, Request),
+	spawner gonnect.Spawner,
+) *provider {
 	ctx, cancel := context.WithCancel(context.Background())
 	p := &provider{
-		ch:     make(chan Request),
-		cancel: cancel,
-		done:   make(chan struct{}),
+		ch:      make(chan Request),
+		cancel:  cancel,
+		done:    make(chan struct{}),
+		spawner: spawner,
 	}
-	go func() {
+	if err := spawn(spawner, func() {
 		defer close(p.done)
 		for {
 			select {
 			case req := <-p.ch:
-				p.wg.Add(1)
-				go func() {
-					defer p.wg.Done()
+				err := spawnWg(spawner, func() {
 					fn(ctx, req)
-				}()
+				}, &p.wg, "dns.provider.request")
+				if err != nil {
+					sendResponse(req, nil, err)
+				}
 			case <-ctx.Done():
 				return
 			}
 		}
-	}()
+	}, "dns.provider.loop"); err != nil {
+		cancel()
+		close(p.done)
+	}
 	return p
 }
 
@@ -70,9 +81,9 @@ type Detached struct {
 }
 
 // Detach wraps upstream with independent close and cancellation state.
-func Detach(upstream Interface) *Detached {
+func Detach(upstream Interface, spawner gonnect.Spawner) *Detached {
 	d := &Detached{upstream: upstream}
-	d.p = newProvider(d.handle)
+	d.p = newProvider(d.handle, spawner)
 	return d
 }
 
@@ -188,13 +199,17 @@ type Cache struct {
 
 // NewCache creates a cache using storage. If storage is nil, a new
 // MemoryStorage is used.
-func NewCache(upstream Interface, storage CacheStorage) *Cache {
+func NewCache(
+	upstream Interface,
+	storage CacheStorage,
+	spawner gonnect.Spawner,
+) *Cache {
 	if storage == nil {
 		storage = NewMemoryStorage()
 	}
 	c := &Cache{storage: storage}
 	c.Attach(upstream)
-	c.p = newProvider(c.handle)
+	c.p = newProvider(c.handle, spawner)
 	return c
 }
 

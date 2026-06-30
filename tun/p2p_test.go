@@ -29,7 +29,7 @@ func TestP2P(t *testing.T) {
 					pipeA, pipeMidA := tun.Pipe(1, 10, mwo, mro)
 					pipeMidB, pipeB := tun.Pipe(1, 10, mwo, mro)
 
-					p2p := tun.NewP2P(pool)
+					p2p := tun.NewP2P(pool, nil)
 					defer p2p.Stop()
 
 					defer pipeA.Close()
@@ -86,7 +86,7 @@ func TestP2PIO(t *testing.T) {
 					pipeMid2, pipeOut := tun.Pipe(1, 60, mwo, mro)
 					defer pipeMid2.Close()
 
-					p2p := tun.NewP2P(pool)
+					p2p := tun.NewP2P(pool, nil)
 					defer p2p.Stop()
 
 					defer pipeIn.Close()

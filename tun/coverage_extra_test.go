@@ -47,7 +47,7 @@ func TestCallbackTUN(t *testing.T) {
 }
 
 func TestSplitterFrontendAccessorsAndState(t *testing.T) {
-	s := NewSplitter()
+	s := NewSplitter(nil, nil)
 	defer s.Close()
 	f := s.Get(1)
 	if f == nil {
@@ -95,7 +95,7 @@ func TestSplitterFrontendAccessorsAndState(t *testing.T) {
 }
 
 func TestJoinerAccessorsAndClosedState(t *testing.T) {
-	j := NewJoiner()
+	j := NewJoiner(nil, nil)
 	if j.File() != nil || j.IsNative() {
 		t.Fatal("joiner native accessors returned unexpected values")
 	}

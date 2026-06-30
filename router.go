@@ -71,6 +71,7 @@ type Router struct {
 	nextID  uint64
 	cfg     RouterCfg
 	res     Resolver
+	spawner Spawner
 	slots   [RouterSlots]Network
 	slotUp  [RouterSlots]bool
 	slotGen [RouterSlots]uint64
@@ -88,11 +89,12 @@ type Router struct {
 
 // NewRouter creates an empty Router. Without a RouterCfg, operations route to
 // slot 1.
-func NewRouter() *Router {
+func NewRouter(spawner Spawner) *Router {
 	return &Router{
 		wantUp:    true,
 		gen:       1,
 		done:      make(chan struct{}),
+		spawner:   spawner,
 		closers:   make(map[uint64]io.Closer),
 		udp:       make(map[uint64]*routerUDPConn),
 		updowns:   make(map[uint64]UpDown),
@@ -157,7 +159,7 @@ func (r *Router) Attach(slot int, backend Network) error {
 	err = errors.Join(err, r.watchSlot(slot, backend))
 	for _, c := range udp {
 		c.detachBackend(slot)
-		c.attachBackend(slot, backend)
+		c.attachBackend(slot, backend, r.spawner)
 	}
 	return err
 }
@@ -555,6 +557,7 @@ func (r *Router) DialTCP(
 	}
 	defer cancel()
 	c, err := runDetachedOp(
+		r.spawner,
 		ctx,
 		done,
 		func(ctx context.Context) (TCPConn, error) {
@@ -592,6 +595,7 @@ func (r *Router) ListenTCP(
 	}
 	defer cancel()
 	l, err := runDetachedOp(
+		r.spawner,
 		ctx,
 		done,
 		func(ctx context.Context) (TCPListener, error) {
@@ -633,6 +637,7 @@ func (r *Router) DialUDP(
 	}
 	defer cancel()
 	c, err := runDetachedOp(
+		r.spawner,
 		ctx,
 		done,
 		func(ctx context.Context) (UDPConn, error) {
@@ -668,6 +673,7 @@ func (r *Router) ListenUDP(
 	defer cancel()
 
 	c, err := runDetachedOp(
+		r.spawner,
 		ctx,
 		done,
 		func(ctx context.Context) (*routerUDPConn, error) {
@@ -1192,7 +1198,7 @@ func (r *Router) trackRouterUDPConn(
 
 	for i, backend := range backends {
 		if backend != nil {
-			c.attachBackend(i+1, backend)
+			c.attachBackend(i+1, backend, r.spawner)
 		}
 	}
 	return c, nil
@@ -1360,7 +1366,11 @@ func newRouterUDPConn(r *Router, network, laddr string) *routerUDPConn {
 	}
 }
 
-func (c *routerUDPConn) attachBackend(slot int, backend Network) {
+func (c *routerUDPConn) attachBackend(
+	slot int,
+	backend Network,
+	spawner Spawner,
+) {
 	if backend == nil || !routerValidSlot(slot) {
 		return
 	}
@@ -1388,7 +1398,16 @@ func (c *routerUDPConn) attachBackend(slot int, backend Network) {
 	if old != nil {
 		_ = old.Close()
 	}
-	go c.readBackend(slot, bc)
+	if err := spawn(spawner, func() {
+		c.readBackend(slot, bc)
+	}, "gonnect.Router.udp.readBackend"); err != nil {
+		c.mu.Lock()
+		if c.backends[slot-1] == bc {
+			c.backends[slot-1] = nil
+		}
+		c.mu.Unlock()
+		_ = bc.Close()
+	}
 }
 
 func (c *routerUDPConn) detachBackend(slot int) {
@@ -1539,7 +1558,7 @@ func (c *routerUDPConn) WriteTo(b []byte, addr net.Addr) (int, error) {
 	bc := c.backends[slot-1]
 	c.mu.Unlock()
 	if bc == nil {
-		c.attachBackend(slot, backend)
+		c.attachBackend(slot, backend, c.router.spawner)
 		c.mu.Lock()
 		bc = c.backends[slot-1]
 		c.mu.Unlock()
@@ -1636,9 +1655,15 @@ func routerLookupSlice[T any](
 			return nil, err
 		}
 		defer cancel()
-		return runDetachedOp(opCtx, done, func(context.Context) ([]T, error) {
-			return callResolver(res)
-		}, func([]T) {})
+		return runDetachedOp(
+			r.spawner,
+			opCtx,
+			done,
+			func(context.Context) ([]T, error) {
+				return callResolver(res)
+			},
+			func([]T) {},
+		)
 	}
 
 	backend, opCtx, cancel, done, err := r.beginLookup(
@@ -1651,9 +1676,15 @@ func routerLookupSlice[T any](
 		return nil, err
 	}
 	defer cancel()
-	return runDetachedOp(opCtx, done, func(context.Context) ([]T, error) {
-		return callBackend(backend)
-	}, func([]T) {})
+	return runDetachedOp(
+		r.spawner,
+		opCtx,
+		done,
+		func(context.Context) ([]T, error) {
+			return callBackend(backend)
+		},
+		func([]T) {},
+	)
 }
 
 func routerLookupOne[T any](
@@ -1672,9 +1703,15 @@ func routerLookupOne[T any](
 			return zero, err
 		}
 		defer cancel()
-		return runDetachedOp(opCtx, done, func(context.Context) (T, error) {
-			return callResolver(res)
-		}, func(T) {})
+		return runDetachedOp(
+			r.spawner,
+			opCtx,
+			done,
+			func(context.Context) (T, error) {
+				return callResolver(res)
+			},
+			func(T) {},
+		)
 	}
 
 	backend, opCtx, cancel, done, err := r.beginLookup(
@@ -1688,9 +1725,15 @@ func routerLookupOne[T any](
 		return zero, err
 	}
 	defer cancel()
-	return runDetachedOp(opCtx, done, func(context.Context) (T, error) {
-		return callBackend(backend)
-	}, func(T) {})
+	return runDetachedOp(
+		r.spawner,
+		opCtx,
+		done,
+		func(context.Context) (T, error) {
+			return callBackend(backend)
+		},
+		func(T) {},
+	)
 }
 
 func routerCollect[T any](

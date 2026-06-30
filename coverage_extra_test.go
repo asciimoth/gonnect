@@ -534,7 +534,7 @@ func TestErrorAndTCPListenerHelpers(t *testing.T) {
 func TestPipeAndPacketHelpers(t *testing.T) {
 	a, b := net.Pipe()
 	done := make(chan error, 1)
-	go func() { done <- PipeConn(a, b) }()
+	go func() { done <- PipeConn(a, b, nil) }()
 	_ = a.Close()
 	_ = b.Close()
 	select {
@@ -564,7 +564,7 @@ func TestPipeAndPacketHelpers(t *testing.T) {
 
 	inc := &scriptedPacketConn{err: net.ErrClosed}
 	out := &scriptedPacketConn{err: net.ErrClosed}
-	if err := PipePacketConn(inc, out, 64, nil); err != nil {
+	if err := PipePacketConn(inc, out, 64, nil, nil); err != nil {
 		t.Fatalf("PipePacketConn closed packet conns = %v, want nil", err)
 	}
 
@@ -1606,7 +1606,7 @@ func TestLoopbackPipeUDPExtraMethods(t *testing.T) {
 
 func TestRouterAccessorsAndDelegatingBranches(t *testing.T) {
 	ctx := context.Background()
-	r := NewRouter()
+	r := NewRouter(nil)
 	if r.IsNative() {
 		t.Fatal("Router IsNative() = true, want false")
 	}
@@ -1797,7 +1797,7 @@ func TestRouterAccessorsAndDelegatingBranches(t *testing.T) {
 func TestDetachedNetworkAccessorsAndDelegatingBranches(t *testing.T) {
 	ctx := context.Background()
 	base := &RejectNetwork{}
-	n := DetachNetwork(base, nil)
+	n := DetachNetwork(base, nil, nil)
 	if n.GetWrapped() != base {
 		t.Fatal("DetachedNetwork GetWrapped did not return wrapped network")
 	}
@@ -1899,7 +1899,7 @@ func TestDetachedNetworkAccessorsAndDelegatingBranches(t *testing.T) {
 }
 
 func TestDetachedNetworkTrackingBranches(t *testing.T) {
-	n := DetachNetwork(&RejectNetwork{}, nil)
+	n := DetachNetwork(&RejectNetwork{}, nil, nil)
 	unsub, err := n.SubscribeCloser(&fakeCloser{})
 	if err != nil {
 		t.Fatalf("SubscribeCloser error = %v", err)

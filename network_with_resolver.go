@@ -15,9 +15,9 @@ var _ interface {
 	CloserSubscriber
 	UpDownSubscriber
 	Wrapper
-} = (*NetworkWithRouter)(nil)
+} = (*NetworkWithResolver)(nil)
 
-// NetworkWithRouter is a Network middleware that uses a separate Resolver for
+// NetworkWithResolver is a Network middleware that uses a separate Resolver for
 // name resolution while forwarding network operations to another Network.
 //
 // Lookup methods are served by the wrapped Resolver. If the Resolver is nil,
@@ -33,33 +33,33 @@ var _ interface {
 // Lifecycle calls are delegated when the wrapped Network implements the
 // matching optional interface. If it does not, Close, Up, Down,
 // SubscribeCloser, and SubscribeUpDown are no-ops, and IsUp reports true.
-type NetworkWithRouter struct {
+type NetworkWithResolver struct {
 	network  Network
 	resolver Resolver
 }
 
-// NewNetworkWithRouter wraps network with resolver-backed name resolution.
-func NewNetworkWithRouter(
+// NewNetworkWithResolver wraps network with resolver-backed name resolution.
+func NewNetworkWithResolver(
 	network Network,
 	resolver Resolver,
-) *NetworkWithRouter {
-	return &NetworkWithRouter{network: network, resolver: resolver}
+) *NetworkWithResolver {
+	return &NetworkWithResolver{network: network, resolver: resolver}
 }
 
 // GetWrapped returns the wrapped Network.
-func (n *NetworkWithRouter) GetWrapped() any { return n.network }
+func (n *NetworkWithResolver) GetWrapped() any { return n.network }
 
 // GetNetwork returns the wrapped Network.
-func (n *NetworkWithRouter) GetNetwork() Network { return n.network }
+func (n *NetworkWithResolver) GetNetwork() Network { return n.network }
 
 // GetResolver returns the Resolver used by this wrapper.
-func (n *NetworkWithRouter) GetResolver() Resolver { return n.resolver }
+func (n *NetworkWithResolver) GetResolver() Resolver { return n.resolver }
 
 // IsNative reports the wrapped Network native status.
-func (n *NetworkWithRouter) IsNative() bool { return n.network.IsNative() }
+func (n *NetworkWithResolver) IsNative() bool { return n.network.IsNative() }
 
 // Close closes the wrapped Network when it implements io.Closer.
-func (n *NetworkWithRouter) Close() error {
+func (n *NetworkWithResolver) Close() error {
 	if closer, ok := n.network.(io.Closer); ok {
 		return closer.Close()
 	}
@@ -67,7 +67,7 @@ func (n *NetworkWithRouter) Close() error {
 }
 
 // SubscribeCloser delegates to the wrapped Network when supported.
-func (n *NetworkWithRouter) SubscribeCloser(c io.Closer) (func(), error) {
+func (n *NetworkWithResolver) SubscribeCloser(c io.Closer) (func(), error) {
 	if sub, ok := n.network.(CloserSubscriber); ok {
 		return sub.SubscribeCloser(c)
 	}
@@ -75,7 +75,7 @@ func (n *NetworkWithRouter) SubscribeCloser(c io.Closer) (func(), error) {
 }
 
 // Up brings the wrapped Network up when it implements UpDown.
-func (n *NetworkWithRouter) Up() error {
+func (n *NetworkWithResolver) Up() error {
 	if updown, ok := n.network.(UpDown); ok {
 		return updown.Up()
 	}
@@ -83,7 +83,7 @@ func (n *NetworkWithRouter) Up() error {
 }
 
 // Down brings the wrapped Network down when it implements UpDown.
-func (n *NetworkWithRouter) Down() error {
+func (n *NetworkWithResolver) Down() error {
 	if updown, ok := n.network.(UpDown); ok {
 		return updown.Down()
 	}
@@ -91,7 +91,7 @@ func (n *NetworkWithRouter) Down() error {
 }
 
 // IsUp reports the wrapped Network state when it implements UpDown.
-func (n *NetworkWithRouter) IsUp() (bool, error) {
+func (n *NetworkWithResolver) IsUp() (bool, error) {
 	if updown, ok := n.network.(UpDown); ok {
 		return updown.IsUp()
 	}
@@ -99,7 +99,7 @@ func (n *NetworkWithRouter) IsUp() (bool, error) {
 }
 
 // SubscribeUpDown delegates to the wrapped Network when supported.
-func (n *NetworkWithRouter) SubscribeUpDown(u UpDown) (func(), error) {
+func (n *NetworkWithResolver) SubscribeUpDown(u UpDown) (func(), error) {
 	if sub, ok := n.network.(UpDownSubscriber); ok {
 		return sub.SubscribeUpDown(u)
 	}
@@ -107,7 +107,7 @@ func (n *NetworkWithRouter) SubscribeUpDown(u UpDown) (func(), error) {
 }
 
 // Dial resolves address and forwards the call to the wrapped Network.
-func (n *NetworkWithRouter) Dial(
+func (n *NetworkWithResolver) Dial(
 	ctx context.Context,
 	network, address string,
 ) (net.Conn, error) {
@@ -119,7 +119,7 @@ func (n *NetworkWithRouter) Dial(
 }
 
 // Listen resolves address and forwards the call to the wrapped Network.
-func (n *NetworkWithRouter) Listen(
+func (n *NetworkWithResolver) Listen(
 	ctx context.Context,
 	network, address string,
 ) (net.Listener, error) {
@@ -131,7 +131,7 @@ func (n *NetworkWithRouter) Listen(
 }
 
 // PacketDial resolves address and forwards the call to the wrapped Network.
-func (n *NetworkWithRouter) PacketDial(
+func (n *NetworkWithResolver) PacketDial(
 	ctx context.Context,
 	network, address string,
 ) (PacketConn, error) {
@@ -143,7 +143,7 @@ func (n *NetworkWithRouter) PacketDial(
 }
 
 // ListenPacket resolves address and forwards the call to the wrapped Network.
-func (n *NetworkWithRouter) ListenPacket(
+func (n *NetworkWithResolver) ListenPacket(
 	ctx context.Context,
 	network, address string,
 ) (PacketConn, error) {
@@ -156,7 +156,7 @@ func (n *NetworkWithRouter) ListenPacket(
 
 // DialTCP resolves laddr and raddr and forwards the call to the wrapped
 // Network.
-func (n *NetworkWithRouter) DialTCP(
+func (n *NetworkWithResolver) DialTCP(
 	ctx context.Context,
 	network, laddr, raddr string,
 ) (TCPConn, error) {
@@ -173,7 +173,7 @@ func (n *NetworkWithRouter) DialTCP(
 }
 
 // ListenTCP resolves laddr and forwards the call to the wrapped Network.
-func (n *NetworkWithRouter) ListenTCP(
+func (n *NetworkWithResolver) ListenTCP(
 	ctx context.Context,
 	network, laddr string,
 ) (TCPListener, error) {
@@ -186,7 +186,7 @@ func (n *NetworkWithRouter) ListenTCP(
 
 // DialUDP resolves laddr and raddr and forwards the call to the wrapped
 // Network.
-func (n *NetworkWithRouter) DialUDP(
+func (n *NetworkWithResolver) DialUDP(
 	ctx context.Context,
 	network, laddr, raddr string,
 ) (UDPConn, error) {
@@ -203,7 +203,7 @@ func (n *NetworkWithRouter) DialUDP(
 }
 
 // ListenUDP resolves laddr and forwards the call to the wrapped Network.
-func (n *NetworkWithRouter) ListenUDP(
+func (n *NetworkWithResolver) ListenUDP(
 	ctx context.Context,
 	network, laddr string,
 ) (UDPConn, error) {
@@ -216,7 +216,7 @@ func (n *NetworkWithRouter) ListenUDP(
 
 // ListenPacketConfig resolves address and forwards the call to the wrapped
 // Network.
-func (n *NetworkWithRouter) ListenPacketConfig(
+func (n *NetworkWithResolver) ListenPacketConfig(
 	ctx context.Context,
 	lc *ListenConfig,
 	network, address string,
@@ -229,7 +229,7 @@ func (n *NetworkWithRouter) ListenPacketConfig(
 }
 
 // ListenUDPConfig resolves laddr and forwards the call to the wrapped Network.
-func (n *NetworkWithRouter) ListenUDPConfig(
+func (n *NetworkWithResolver) ListenUDPConfig(
 	ctx context.Context,
 	lc *ListenConfig,
 	network, laddr string,
@@ -243,7 +243,7 @@ func (n *NetworkWithRouter) ListenUDPConfig(
 
 // ListenMulticastUDP resolves address and forwards the call to the wrapped
 // Network.
-func (n *NetworkWithRouter) ListenMulticastUDP(
+func (n *NetworkWithResolver) ListenMulticastUDP(
 	ctx context.Context,
 	network, address string,
 	opts MulticastOptions,
@@ -256,7 +256,7 @@ func (n *NetworkWithRouter) ListenMulticastUDP(
 }
 
 // LookupIP delegates to the wrapped Resolver.
-func (n *NetworkWithRouter) LookupIP(
+func (n *NetworkWithResolver) LookupIP(
 	ctx context.Context,
 	network, address string,
 ) ([]net.IP, error) {
@@ -264,7 +264,7 @@ func (n *NetworkWithRouter) LookupIP(
 }
 
 // LookupIPAddr delegates to the wrapped Resolver.
-func (n *NetworkWithRouter) LookupIPAddr(
+func (n *NetworkWithResolver) LookupIPAddr(
 	ctx context.Context,
 	host string,
 ) ([]net.IPAddr, error) {
@@ -272,7 +272,7 @@ func (n *NetworkWithRouter) LookupIPAddr(
 }
 
 // LookupNetIP delegates to the wrapped Resolver.
-func (n *NetworkWithRouter) LookupNetIP(
+func (n *NetworkWithResolver) LookupNetIP(
 	ctx context.Context,
 	network, host string,
 ) ([]netip.Addr, error) {
@@ -280,7 +280,7 @@ func (n *NetworkWithRouter) LookupNetIP(
 }
 
 // LookupHost delegates to the wrapped Resolver.
-func (n *NetworkWithRouter) LookupHost(
+func (n *NetworkWithResolver) LookupHost(
 	ctx context.Context,
 	host string,
 ) ([]string, error) {
@@ -288,7 +288,7 @@ func (n *NetworkWithRouter) LookupHost(
 }
 
 // LookupAddr delegates to the wrapped Resolver.
-func (n *NetworkWithRouter) LookupAddr(
+func (n *NetworkWithResolver) LookupAddr(
 	ctx context.Context,
 	addr string,
 ) ([]string, error) {
@@ -296,7 +296,7 @@ func (n *NetworkWithRouter) LookupAddr(
 }
 
 // LookupCNAME delegates to the wrapped Resolver.
-func (n *NetworkWithRouter) LookupCNAME(
+func (n *NetworkWithResolver) LookupCNAME(
 	ctx context.Context,
 	host string,
 ) (string, error) {
@@ -304,7 +304,7 @@ func (n *NetworkWithRouter) LookupCNAME(
 }
 
 // LookupPort delegates to the wrapped Resolver.
-func (n *NetworkWithRouter) LookupPort(
+func (n *NetworkWithResolver) LookupPort(
 	ctx context.Context,
 	network, service string,
 ) (int, error) {
@@ -312,7 +312,7 @@ func (n *NetworkWithRouter) LookupPort(
 }
 
 // LookupNS delegates to the wrapped Resolver.
-func (n *NetworkWithRouter) LookupNS(
+func (n *NetworkWithResolver) LookupNS(
 	ctx context.Context,
 	name string,
 ) ([]*net.NS, error) {
@@ -320,7 +320,7 @@ func (n *NetworkWithRouter) LookupNS(
 }
 
 // LookupMX delegates to the wrapped Resolver.
-func (n *NetworkWithRouter) LookupMX(
+func (n *NetworkWithResolver) LookupMX(
 	ctx context.Context,
 	name string,
 ) ([]*net.MX, error) {
@@ -328,7 +328,7 @@ func (n *NetworkWithRouter) LookupMX(
 }
 
 // LookupSRV delegates to the wrapped Resolver.
-func (n *NetworkWithRouter) LookupSRV(
+func (n *NetworkWithResolver) LookupSRV(
 	ctx context.Context,
 	service, proto, name string,
 ) (string, []*net.SRV, error) {
@@ -336,7 +336,7 @@ func (n *NetworkWithRouter) LookupSRV(
 }
 
 // LookupTXT delegates to the wrapped Resolver.
-func (n *NetworkWithRouter) LookupTXT(
+func (n *NetworkWithResolver) LookupTXT(
 	ctx context.Context,
 	name string,
 ) ([]string, error) {
@@ -344,42 +344,42 @@ func (n *NetworkWithRouter) LookupTXT(
 }
 
 // Interfaces forwards the call to the wrapped Network.
-func (n *NetworkWithRouter) Interfaces() ([]NetworkInterface, error) {
+func (n *NetworkWithResolver) Interfaces() ([]NetworkInterface, error) {
 	return n.network.Interfaces()
 }
 
 // InterfaceAddrs forwards the call to the wrapped Network.
-func (n *NetworkWithRouter) InterfaceAddrs() ([]net.Addr, error) {
+func (n *NetworkWithResolver) InterfaceAddrs() ([]net.Addr, error) {
 	return n.network.InterfaceAddrs()
 }
 
 // InterfaceMulticastAddrs forwards the call to the wrapped Network.
-func (n *NetworkWithRouter) InterfaceMulticastAddrs() ([]net.Addr, error) {
+func (n *NetworkWithResolver) InterfaceMulticastAddrs() ([]net.Addr, error) {
 	return n.network.InterfaceMulticastAddrs()
 }
 
 // InterfacesByIndex forwards the call to the wrapped Network.
-func (n *NetworkWithRouter) InterfacesByIndex(
+func (n *NetworkWithResolver) InterfacesByIndex(
 	index int,
 ) ([]NetworkInterface, error) {
 	return n.network.InterfacesByIndex(index)
 }
 
 // InterfacesByName forwards the call to the wrapped Network.
-func (n *NetworkWithRouter) InterfacesByName(
+func (n *NetworkWithResolver) InterfacesByName(
 	name string,
 ) ([]NetworkInterface, error) {
 	return n.network.InterfacesByName(name)
 }
 
-func (n *NetworkWithRouter) lookupResolver() Resolver {
+func (n *NetworkWithResolver) lookupResolver() Resolver {
 	if n.resolver != nil {
 		return n.resolver
 	}
 	return n.network
 }
 
-func (n *NetworkWithRouter) resolveNetAddr(
+func (n *NetworkWithResolver) resolveNetAddr(
 	ctx context.Context,
 	network, address string,
 ) (string, error) {
@@ -411,7 +411,7 @@ func (n *NetworkWithRouter) resolveNetAddr(
 	}
 	host = routerPickResolvedHost(network, hosts)
 	if host == "" {
-		return "", NoSuchHost(lookupHost, "routerdns")
+		return "", NoSuchHost(lookupHost, "resolverdns")
 	}
 	return net.JoinHostPort(host, service), nil
 }

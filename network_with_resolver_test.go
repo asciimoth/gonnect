@@ -9,10 +9,13 @@ import (
 	"github.com/asciimoth/gonnect"
 )
 
-func TestNetworkWithRouterRoutesLookupsToResolver(t *testing.T) {
+func TestNetworkWithResolverRoutesLookupsToResolver(t *testing.T) {
 	ctx := context.Background()
 	resolver := &detachedResolver{}
-	wrapper := gonnect.NewNetworkWithRouter(&gonnect.RejectNetwork{}, resolver)
+	wrapper := gonnect.NewNetworkWithResolver(
+		&gonnect.RejectNetwork{},
+		resolver,
+	)
 
 	lookupCalls := []struct {
 		name string
@@ -76,10 +79,10 @@ func TestNetworkWithRouterRoutesLookupsToResolver(t *testing.T) {
 	}
 }
 
-func TestNetworkWithRouterResolverPreResolvesAddresses(t *testing.T) {
+func TestNetworkWithResolverResolverPreResolvesAddresses(t *testing.T) {
 	ctx := context.Background()
 	wrapped := newDetachedCaptureNetwork()
-	wrapper := gonnect.NewNetworkWithRouter(wrapped, &detachedResolver{})
+	wrapper := gonnect.NewNetworkWithResolver(wrapped, &detachedResolver{})
 	named := "host.test:service"
 	resolved := "192.0.2.10:8080"
 
@@ -195,11 +198,11 @@ func TestNetworkWithRouterResolverPreResolvesAddresses(t *testing.T) {
 	}
 }
 
-func TestNetworkWithRouterResolverLeavesIPLiteralHosts(t *testing.T) {
+func TestNetworkWithResolverResolverLeavesIPLiteralHosts(t *testing.T) {
 	ctx := context.Background()
 	wrapped := newDetachedCaptureNetwork()
 	resolver := &detachedResolver{}
-	wrapper := gonnect.NewNetworkWithRouter(wrapped, resolver)
+	wrapper := gonnect.NewNetworkWithResolver(wrapped, resolver)
 
 	_, err := wrapper.Dial(ctx, "tcp", "127.0.0.1:service")
 	if !errors.Is(err, errDetachedCapture) {
@@ -224,10 +227,10 @@ func TestNetworkWithRouterResolverLeavesIPLiteralHosts(t *testing.T) {
 	}
 }
 
-func TestNetworkWithRouterNilResolverUsesWrappedNetwork(t *testing.T) {
+func TestNetworkWithResolverNilResolverUsesWrappedNetwork(t *testing.T) {
 	ctx := context.Background()
 	wrapped := newDetachedCaptureNetwork()
-	wrapper := gonnect.NewNetworkWithRouter(wrapped, nil)
+	wrapper := gonnect.NewNetworkWithResolver(wrapped, nil)
 
 	_, err := wrapper.Dial(ctx, "tcp", "host.test:service")
 	if !errors.Is(err, errDetachedCapture) {
@@ -252,10 +255,10 @@ func TestNetworkWithRouterNilResolverUsesWrappedNetwork(t *testing.T) {
 	}
 }
 
-func TestNetworkWithRouterLifecycleNoOpsWhenWrappedNetworkDoesNotSupportThem(
+func TestNetworkWithResolverLifecycleNoOpsWhenWrappedNetworkDoesNotSupportThem(
 	t *testing.T,
 ) {
-	wrapper := gonnect.NewNetworkWithRouter(&gonnect.RejectNetwork{}, nil)
+	wrapper := gonnect.NewNetworkWithResolver(&gonnect.RejectNetwork{}, nil)
 
 	if err := wrapper.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
@@ -283,9 +286,9 @@ func TestNetworkWithRouterLifecycleNoOpsWhenWrappedNetworkDoesNotSupportThem(
 	unsubscribeUpDown()
 }
 
-func TestNetworkWithRouterLifecyclePassesThrough(t *testing.T) {
+func TestNetworkWithResolverLifecyclePassesThrough(t *testing.T) {
 	wrapped := gonnect.NewLoopbackNetwok()
-	wrapper := gonnect.NewNetworkWithRouter(wrapped, nil)
+	wrapper := gonnect.NewNetworkWithResolver(wrapped, nil)
 	closer := &lifecycleCloser{}
 	updown := &lifecycleUpDown{}
 
@@ -329,9 +332,9 @@ func TestNetworkWithRouterLifecyclePassesThrough(t *testing.T) {
 	}
 }
 
-func TestNetworkWithRouterWrapsNetwork(t *testing.T) {
+func TestNetworkWithResolverWrapsNetwork(t *testing.T) {
 	wrapped := &gonnect.RejectNetwork{}
-	wrapper := gonnect.NewNetworkWithRouter(wrapped, nil)
+	wrapper := gonnect.NewNetworkWithResolver(wrapped, nil)
 
 	if wrapper.GetWrapped() != wrapped {
 		t.Fatal("GetWrapped() did not return wrapped Network")
@@ -347,11 +350,11 @@ func TestNetworkWithRouterWrapsNetwork(t *testing.T) {
 	}
 }
 
-func TestNetworkWithRouterRejectsUnresolvableHostnames(t *testing.T) {
+func TestNetworkWithResolverRejectsUnresolvableHostnames(t *testing.T) {
 	ctx := context.Background()
-	wrapper := gonnect.NewNetworkWithRouter(
+	wrapper := gonnect.NewNetworkWithResolver(
 		newDetachedCaptureNetwork(),
-		&networkWithRouterEmptyResolver{},
+		&networkWithResolverEmptyResolver{},
 	)
 
 	_, err := wrapper.Dial(ctx, "tcp", "host.test:http")
@@ -364,11 +367,11 @@ func TestNetworkWithRouterRejectsUnresolvableHostnames(t *testing.T) {
 	}
 }
 
-type networkWithRouterEmptyResolver struct {
+type networkWithResolverEmptyResolver struct {
 	detachedResolver
 }
 
-func (r *networkWithRouterEmptyResolver) LookupHost(
+func (r *networkWithResolverEmptyResolver) LookupHost(
 	ctx context.Context,
 	host string,
 ) ([]string, error) {

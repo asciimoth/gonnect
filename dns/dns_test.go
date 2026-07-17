@@ -429,7 +429,7 @@ func TestLoopbackClientServerCacheTree(t *testing.T) {
 	server := NewServer(pc, cache, nil)
 	defer server.Close()
 
-	client := NewClient(ln.Dial, nil, "udp://127.0.0.1:5353")
+	client := NewClient(ln.Dial, nil, nil, "udp://127.0.0.1:5353")
 	defer client.Close()
 
 	resolverBranch := NewResolverProvider(
@@ -470,7 +470,7 @@ func TestClientTCPAndServerDetach(t *testing.T) {
 	server := NewServer(pc, upstream, nil)
 	defer server.Close()
 	server.Detach()
-	client := NewClient(ln.Dial, nil, "udp://127.0.0.1:5354")
+	client := NewClient(ln.Dial, nil, nil, "udp://127.0.0.1:5354")
 	resp, err := Query(context.Background(), client, aQuery("localhost."))
 	if err != nil || resp.RCode != RCodeServerFailure {
 		t.Fatalf("detached server resp=%#v err=%v", resp, err)
@@ -483,14 +483,14 @@ func TestClientTCPAndServerDetach(t *testing.T) {
 	}
 	defer lnr.Close()
 	go serveOneTCP(t, lnr, upstream)
-	tcpClient := NewClient(ln.Dial, nil, "tcp://127.0.0.1:5355")
+	tcpClient := NewClient(ln.Dial, nil, nil, "tcp://127.0.0.1:5355")
 	defer tcpClient.Close()
 	resp, err = Query(context.Background(), tcpClient, aQuery("localhost."))
 	if err != nil || len(resp.Answers) == 0 {
 		t.Fatalf("tcp client resp=%#v err=%v", resp, err)
 	}
 
-	bad := NewClient(ln.Dial, nil, "bogus://127.0.0.1:53")
+	bad := NewClient(ln.Dial, nil, nil, "bogus://127.0.0.1:53")
 	defer bad.Close()
 	if _, err = Query(
 		context.Background(),
@@ -501,7 +501,7 @@ func TestClientTCPAndServerDetach(t *testing.T) {
 	}
 }
 
-func TestClientDoTUsesCustomTLSConfig(t *testing.T) {
+func TestClientDoTUsesBootstrapAndCustomTLSConfig(t *testing.T) {
 	ln := gonnect.NewLoopbackNetwok()
 	upstream := NewResolverProvider(ln, time.Second, nil)
 	defer upstream.Close()
@@ -514,10 +514,11 @@ func TestClientDoTUsesCustomTLSConfig(t *testing.T) {
 	defer lnr.Close()
 	go serveOneTLS(t, lnr, upstream, cert)
 
-	client := NewClient(ln.Dial, nil, "dot://127.0.0.1:5361")
+	bootstrap := newBootstrapDNS("127.0.0.1")
+	defer bootstrap.Close()
+	client := NewClient(ln.Dial, bootstrap, nil, "dot://dns.test:5361")
 	client.TLSConfig = &tls.Config{
 		RootCAs:    roots,
-		ServerName: "dns.test",
 		MinVersion: tls.VersionTLS12,
 	}
 	defer client.Close()
@@ -525,6 +526,61 @@ func TestClientDoTUsesCustomTLSConfig(t *testing.T) {
 	resp, err := Query(context.Background(), client, aQuery("localhost."))
 	if err != nil || len(resp.Answers) == 0 {
 		t.Fatalf("DoT client resp=%#v err=%v", resp, err)
+	}
+}
+
+func TestClientRejectsHostnameServerWithoutBootstrap(t *testing.T) {
+	var dials atomic.Int32
+	dial := func(ctx context.Context, network, address string) (net.Conn, error) {
+		dials.Add(1)
+		return nil, errors.New("dial should not be called")
+	}
+	client := NewClient(dial, nil, nil, "udp://dns.test:5353")
+	defer client.Close()
+
+	_, err := Query(context.Background(), client, aQuery("localhost."))
+	if err == nil {
+		t.Fatal("hostname server without bootstrap succeeded")
+	}
+	var dnsErr *net.DNSError
+	if !errors.As(err, &dnsErr) || !dnsErr.IsNotFound {
+		t.Fatalf("error = %T %v, want not-found DNS error", err, err)
+	}
+	if got := dials.Load(); got != 0 {
+		t.Fatalf("dial calls = %d, want 0", got)
+	}
+}
+
+func TestClientRejectsRequestsWithoutDialer(t *testing.T) {
+	client := NewClient(nil, nil, nil, "udp://127.0.0.1:5353")
+	defer client.Close()
+
+	_, err := Query(context.Background(), client, aQuery("localhost."))
+	if !errors.Is(err, ErrNoDialer) {
+		t.Fatalf("error = %v, want ErrNoDialer", err)
+	}
+}
+
+func TestClientTriesBootstrapAddressesBeforeNextServer(t *testing.T) {
+	ln := gonnect.NewLoopbackNetwok()
+	upstream := NewResolverProvider(ln, time.Second, nil)
+	defer upstream.Close()
+
+	lnr, err := ln.Listen(context.Background(), "tcp4", "127.0.0.1:5362")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lnr.Close()
+	go serveOneTCP(t, lnr, upstream)
+
+	bootstrap := newBootstrapDNS("127.0.0.2", "127.0.0.1")
+	defer bootstrap.Close()
+	client := NewClient(ln.Dial, bootstrap, nil, "tcp://dns.test:5362")
+	defer client.Close()
+
+	resp, err := Query(context.Background(), client, aQuery("localhost."))
+	if err != nil || len(resp.Answers) == 0 {
+		t.Fatalf("tcp client with bootstrap resp=%#v err=%v", resp, err)
 	}
 }
 
@@ -663,10 +719,60 @@ type staticDNS struct {
 	p *provider
 }
 
+type bootstrapDNS struct {
+	p   *provider
+	ips []net.IP
+}
+
 type countingNameErrorDNS struct {
 	p     *provider
 	calls atomic.Int32
 }
+
+func newBootstrapDNS(addrs ...string) *bootstrapDNS {
+	b := &bootstrapDNS{}
+	for _, addr := range addrs {
+		b.ips = append(b.ips, net.ParseIP(addr))
+	}
+	b.p = newProvider(func(root context.Context, req Request) {
+		resp := responseFor(req.Message)
+		q := req.Message.Questions[0]
+		for _, ip := range b.ips {
+			switch q.Type {
+			case TypeA:
+				if data := ip.To4(); data != nil {
+					resp.Answers = append(resp.Answers, Resource{
+						Name:  q.Name,
+						Type:  TypeA,
+						Class: ClassIN,
+						TTL:   1,
+						Data:  append([]byte(nil), data...),
+					})
+				}
+			case TypeAAAA:
+				if ip.To4() == nil {
+					if data := ip.To16(); data != nil {
+						resp.Answers = append(resp.Answers, Resource{
+							Name:  q.Name,
+							Type:  TypeAAAA,
+							Class: ClassIN,
+							TTL:   1,
+							Data:  append([]byte(nil), data...),
+						})
+					}
+				}
+			}
+		}
+		if len(resp.Answers) == 0 {
+			resp.RCode = RCodeNameError
+		}
+		sendResponse(req, resp, nil)
+	}, nil)
+	return b
+}
+
+func (b *bootstrapDNS) Requests() chan<- Request { return b.p.Requests() }
+func (b *bootstrapDNS) Close() error             { return b.p.Close() }
 
 func newCountingNameErrorDNS() *countingNameErrorDNS {
 	d := &countingNameErrorDNS{}

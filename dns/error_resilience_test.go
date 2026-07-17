@@ -30,7 +30,7 @@ func TestComplexChainClientDialErrorDoesNotPoisonChain(t *testing.T) {
 		}
 		return ln.Dial(ctx, network, address)
 	}
-	client := NewClient(dial, nil, "udp://127.0.0.1:5358")
+	client := NewClient(dial, nil, nil, "udp://127.0.0.1:5358")
 	defer client.Close()
 	cache := NewCache(client, NewMemoryStorage(), nil)
 	defer cache.Close()
@@ -80,7 +80,13 @@ func TestComplexChainClientRetriesNextServerAndSurvivesBadServer(t *testing.T) {
 		}
 		return ln.Dial(ctx, network, address)
 	}
-	client := NewClient(dial, nil, "udp://127.0.0.1:1", "udp://127.0.0.1:5359")
+	client := NewClient(
+		dial,
+		nil,
+		nil,
+		"udp://127.0.0.1:1",
+		"udp://127.0.0.1:5359",
+	)
 	defer client.Close()
 	cache := NewCache(client, NewMemoryStorage(), nil)
 	defer cache.Close()
@@ -113,7 +119,7 @@ func TestServerUpstreamErrorDoesNotPoisonServer(t *testing.T) {
 	server := NewServer(pc, bad, nil)
 	defer server.Close()
 
-	client := NewClient(ln.Dial, nil, "udp://127.0.0.1:5360")
+	client := NewClient(ln.Dial, nil, nil, "udp://127.0.0.1:5360")
 	defer client.Close()
 	resp, err := queryWithTimeout(client, "localhost.")
 	if err != nil || resp.RCode != RCodeServerFailure {

@@ -97,7 +97,7 @@ func TestClientCloseCancelsInFlightUDPRead(t *testing.T) {
 	}
 	defer sink.Close()
 
-	client := NewClient(ln.Dial, nil, "udp://127.0.0.1:5356")
+	client := NewClient(ln.Dial, nil, nil, "udp://127.0.0.1:5356")
 	client.timeout = time.Hour
 	queryDone := make(chan error, 1)
 	go func() {

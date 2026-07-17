@@ -158,6 +158,8 @@ func Query(ctx context.Context, d Interface, req *Message) (*Message, error) {
 var (
 	// ErrNoUpstream is returned when middleware has no wrapped DNS interface.
 	ErrNoUpstream = errors.New("dns: no upstream attached")
+	// ErrNoDialer is returned by Client when it was created without a dialer.
+	ErrNoDialer = errors.New("dns: no dialer configured")
 	// ErrClosed is returned by providers and middleware after Close.
 	ErrClosed = net.ErrClosed
 )

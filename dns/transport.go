@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"net/netip"
 	"net/url"
 	"strings"
 	"sync"
@@ -23,33 +24,45 @@ const maxDNSMessageSize = 1<<16 - 1
 // the first successful wire response. The client allocates a fresh wire ID for
 // every upstream request and maps the response ID back to the caller's message
 // ID before replying.
+//
+// Configured server URLs are tried in order. When a server URL uses a hostname,
+// the hostname is resolved through the bootstrap DNS interface passed to
+// NewClient, and every returned IP address is tried in resolver order before the
+// client moves to the next configured server. If bootstrap is nil, server URLs
+// must use IP literal hosts; hostname servers fail before dialing.
 type Client struct {
 	// TLSConfig configures TLS for dot:// upstreams. The config is cloned for
 	// each connection. If ServerName is empty, the URL host is used.
 	TLSConfig *tls.Config
 
-	dial    gonnect.Dial
-	servers []string
-	timeout time.Duration
-	p       *provider
-	spawner gonnect.Spawner
+	dial      gonnect.Dial
+	bootstrap Interface
+	servers   []string
+	timeout   time.Duration
+	p         *provider
+	spawner   gonnect.Spawner
 }
 
-// NewClient creates a DNS client using dial and server URLs. If dial is nil,
-// net.Dialer.DialContext is used. Supported schemes are udp, tcp, and dot.
+// NewClient creates a DNS client using dial, bootstrap DNS, and server URLs.
+// If dial is nil, all requests fail with ErrNoDialer. bootstrap is used only to
+// resolve non-IP server URL hostnames. If bootstrap is nil, server URLs with
+// hostname hosts are rejected, while IP literal server URLs remain usable.
+//
+// Supported schemes are udp, tcp, and dot. Server URLs are attempted in order.
+// If a server hostname resolves to multiple IP addresses, those addresses are
+// attempted in bootstrap resolver order before the next server URL is tried.
 func NewClient(
 	dial gonnect.Dial,
+	bootstrap Interface,
 	spawner gonnect.Spawner,
 	servers ...string,
 ) *Client {
-	if dial == nil {
-		dial = (&net.Dialer{}).DialContext
-	}
 	c := &Client{
-		dial:    dial,
-		servers: append([]string(nil), servers...),
-		timeout: 5 * time.Second,
-		spawner: spawner,
+		dial:      dial,
+		bootstrap: bootstrap,
+		servers:   append([]string(nil), servers...),
+		timeout:   5 * time.Second,
+		spawner:   spawner,
 	}
 	c.p = newProvider(c.handle, spawner)
 	return c
@@ -77,6 +90,10 @@ func (c *Client) handle(root context.Context, req Request) {
 		case <-ctx.Done():
 		}
 	}()
+	if c.dial == nil {
+		sendResponse(req, nil, ErrNoDialer)
+		return
+	}
 	var last error
 	for _, server := range c.servers {
 		resp, err := c.exchange(ctx, server, req.Message)
@@ -107,8 +124,18 @@ func (c *Client) exchange(
 	if addr == "" {
 		addr = u.Path
 	}
-	if !strings.Contains(addr, ":") {
-		addr = net.JoinHostPort(addr, "53")
+	switch network {
+	case "udp", "tcp", "dot":
+	default:
+		return nil, net.UnknownNetworkError(network)
+	}
+	host, port, err := splitServerHostPort(addr)
+	if err != nil {
+		return nil, err
+	}
+	addrs, err := c.serverAddrs(ctx, host, port)
+	if err != nil {
+		return nil, err
 	}
 	wire := msg.Copy()
 	wire.ID = NextID()
@@ -116,13 +143,98 @@ func (c *Client) exchange(
 	if err != nil {
 		return nil, err
 	}
+	var last error
+	for _, addr := range addrs {
+		resp, err := c.exchangeOne(ctx, network, addr, pkt)
+		if err == nil {
+			return resp, nil
+		}
+		last = err
+	}
+	if last == nil {
+		last = ErrNoUpstream
+	}
+	return nil, last
+}
+
+type serverAddr struct {
+	addr          string
+	tlsServerName string
+}
+
+func splitServerHostPort(addr string) (string, string, error) {
+	if addr == "" {
+		return "", "", errors.New("dns: empty server address")
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err == nil {
+		return host, port, nil
+	}
+	if ip, err := netip.ParseAddr(addr); err == nil {
+		return ip.String(), "53", nil
+	}
+	if strings.HasPrefix(addr, "[") && strings.HasSuffix(addr, "]") {
+		host := strings.TrimSuffix(strings.TrimPrefix(addr, "["), "]")
+		if ip, err := netip.ParseAddr(host); err == nil {
+			return ip.String(), "53", nil
+		}
+	}
+	if strings.Count(addr, ":") > 1 {
+		return "", "", err
+	}
+	return addr, "53", nil
+}
+
+func (c *Client) serverAddrs(
+	ctx context.Context,
+	host, port string,
+) ([]serverAddr, error) {
+	if host == "" {
+		return []serverAddr{{addr: net.JoinHostPort(host, port)}}, nil
+	}
+	if ip, err := netip.ParseAddr(host); err == nil {
+		host = ip.String()
+		return []serverAddr{{
+			addr:          net.JoinHostPort(host, port),
+			tlsServerName: host,
+		}}, nil
+	}
+	if c.bootstrap == nil {
+		return nil, gonnect.NoSuchHost(host, "dns bootstrap")
+	}
+	ips, err := NewResolver(c.bootstrap).LookupIP(ctx, "ip", host)
+	if err != nil {
+		return nil, err
+	}
+	addrs := make([]serverAddr, 0, len(ips))
+	for _, ip := range ips {
+		if ip == nil {
+			continue
+		}
+		addrs = append(addrs, serverAddr{
+			addr:          net.JoinHostPort(ip.String(), port),
+			tlsServerName: host,
+		})
+	}
+	if len(addrs) == 0 {
+		return nil, gonnect.NoSuchHost(host, "dns bootstrap")
+	}
+	return addrs, nil
+}
+
+func (c *Client) exchangeOne(
+	ctx context.Context,
+	network string,
+	addr serverAddr,
+	pkt []byte,
+) (*Message, error) {
 	switch network {
 	case "udp":
-		return c.exchangeUDP(ctx, addr, pkt)
+		return c.exchangeUDP(ctx, addr.addr, pkt)
 	case "tcp":
-		return c.exchangeStream(ctx, "tcp", addr, pkt, false)
+		return c.exchangeStream(ctx, "tcp", addr.addr, pkt, "")
 	case "dot":
-		return c.exchangeStream(ctx, "tcp", addr, pkt, true)
+		return c.exchangeStream(ctx, "tcp", addr.addr, pkt, addr.tlsServerName)
 	default:
 		return nil, net.UnknownNetworkError(network)
 	}
@@ -156,7 +268,7 @@ func (c *Client) exchangeStream(
 	ctx context.Context,
 	network, addr string,
 	pkt []byte,
-	tlsMode bool,
+	tlsServerName string,
 ) (*Message, error) {
 	conn, err := c.dial(ctx, network, addr)
 	if err != nil {
@@ -165,9 +277,8 @@ func (c *Client) exchangeStream(
 	defer func() { _ = conn.Close() }()
 	done := closeConnOnContext(ctx, conn)
 	defer done()
-	if tlsMode {
-		host, _, _ := net.SplitHostPort(addr)
-		conn = tls.Client(conn, c.tlsConfig(host))
+	if tlsServerName != "" {
+		conn = tls.Client(conn, c.tlsConfig(tlsServerName))
 	}
 	_ = conn.SetDeadline(time.Now().Add(c.timeout))
 	var lenBuf [2]byte

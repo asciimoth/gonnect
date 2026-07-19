@@ -362,6 +362,8 @@ func TestCacheAttachDetachReattach(t *testing.T) {
 	cache := NewCache(
 		NewResolverProvider(gonnect.NewLoopbackNetwok(), time.Second, nil),
 		storage,
+		false,
+		false,
 		nil,
 	)
 	defer cache.Close()
@@ -389,7 +391,7 @@ func TestCacheAttachDetachReattach(t *testing.T) {
 }
 
 func TestCacheServesReverseLookupsFromForwardAnswers(t *testing.T) {
-	cache := NewCache(newStaticDNS(), NewMemoryStorage(), nil)
+	cache := NewCache(newStaticDNS(), NewMemoryStorage(), true, false, nil)
 	defer cache.Close()
 	res := NewResolver(cache)
 
@@ -441,6 +443,107 @@ func TestCacheServesReverseLookupsFromForwardAnswers(t *testing.T) {
 	}
 }
 
+func TestCacheDoesNotServeReverseLookupsWhenDisabled(t *testing.T) {
+	cache := NewCache(newStaticDNS(), NewMemoryStorage(), false, false, nil)
+	defer cache.Close()
+	res := NewResolver(cache)
+
+	resp, err := Query(context.Background(), cache, aQuery("example.test."))
+	if err != nil || resp.RCode != RCodeSuccess || len(resp.Answers) == 0 {
+		t.Fatalf("forward lookup resp=%#v err=%v", resp, err)
+	}
+
+	cache.Detach()
+
+	resp, err = Query(context.Background(), cache, aQuery("example.test."))
+	if err != nil || resp.RCode != RCodeSuccess || len(resp.Answers) == 0 {
+		t.Fatalf("cached forward lookup resp=%#v err=%v", resp, err)
+	}
+
+	for _, addr := range []string{"127.0.0.1", "::1"} {
+		_, err = res.LookupAddr(context.Background(), addr)
+		if !errors.Is(err, ErrNoUpstream) {
+			t.Fatalf(
+				"literal reverse lookup %q error = %v, want ErrNoUpstream",
+				addr,
+				err,
+			)
+		}
+	}
+
+	for _, name := range []string{
+		"1.0.0.127.in-addr.arpa.",
+		"1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.ip6.arpa.",
+	} {
+		_, err = Query(context.Background(), cache, &Message{
+			ID:               NextID(),
+			RecursionDesired: true,
+			Questions: []Question{{
+				Name:  name,
+				Type:  TypePTR,
+				Class: ClassIN,
+			}},
+		})
+		if !errors.Is(err, ErrNoUpstream) {
+			t.Fatalf(
+				"canonical reverse lookup %q error = %v, want ErrNoUpstream",
+				name,
+				err,
+			)
+		}
+	}
+}
+
+func TestCacheStorageWriteOnlyBypassesReadsButStillStores(t *testing.T) {
+	storage := NewMemoryStorage()
+	upstream := newCountingStaticDNS()
+	defer upstream.Close()
+
+	cache := NewCache(
+		upstream,
+		storage,
+		false,
+		true,
+		nil,
+	)
+	defer cache.Close()
+
+	resp, err := Query(context.Background(), cache, aQuery("example.test."))
+	if err != nil || resp.RCode != RCodeSuccess || len(resp.Answers) == 0 {
+		t.Fatalf("initial write-only lookup resp=%#v err=%v", resp, err)
+	}
+	if got := upstream.calls.Load(); got != 1 {
+		t.Fatalf("upstream calls after initial lookup = %d, want 1", got)
+	}
+
+	resp, err = Query(context.Background(), cache, aQuery("example.test."))
+	if err != nil || resp.RCode != RCodeSuccess || len(resp.Answers) == 0 {
+		t.Fatalf("second write-only lookup resp=%#v err=%v", resp, err)
+	}
+	if got := upstream.calls.Load(); got != 2 {
+		t.Fatalf("upstream calls after second lookup = %d, want 2", got)
+	}
+
+	cache.Detach()
+	_, err = Query(context.Background(), cache, aQuery("example.test."))
+	if !errors.Is(err, ErrNoUpstream) {
+		t.Fatalf(
+			"write-only lookup after detach error = %v, want ErrNoUpstream",
+			err,
+		)
+	}
+
+	reader := NewCache(nil, storage, false, false, nil)
+	defer reader.Close()
+	resp, err = Query(context.Background(), reader, aQuery("example.test."))
+	if err != nil || resp.RCode != RCodeSuccess || len(resp.Answers) == 0 {
+		t.Fatalf("shared storage reader lookup resp=%#v err=%v", resp, err)
+	}
+	if got := upstream.calls.Load(); got != 2 {
+		t.Fatalf("upstream calls after shared storage read = %d, want 2", got)
+	}
+}
+
 func TestMemoryStorageExpiryDeleteAndNoCache(t *testing.T) {
 	s := NewMemoryStorage()
 	now := time.Now()
@@ -471,7 +574,7 @@ func TestMemoryStorageExpiryDeleteAndNoCache(t *testing.T) {
 func TestLoopbackClientServerCacheTree(t *testing.T) {
 	ln := gonnect.NewLoopbackNetwok()
 	base := NewResolverProvider(ln, time.Second, nil)
-	cache := NewCache(base, NewMemoryStorage(), nil)
+	cache := NewCache(base, NewMemoryStorage(), false, false, nil)
 	defer base.Close()
 	defer cache.Close()
 
@@ -490,7 +593,7 @@ func TestLoopbackClientServerCacheTree(t *testing.T) {
 		time.Second,
 		nil,
 	)
-	tree := NewCache(client, NewMemoryStorage(), nil)
+	tree := NewCache(client, NewMemoryStorage(), false, false, nil)
 	defer resolverBranch.Close()
 	defer tree.Close()
 
@@ -772,6 +875,11 @@ type staticDNS struct {
 	p *provider
 }
 
+type countingStaticDNS struct {
+	p     *provider
+	calls atomic.Int32
+}
+
 type bootstrapDNS struct {
 	p   *provider
 	ips []net.IP
@@ -840,6 +948,21 @@ func newCountingNameErrorDNS() *countingNameErrorDNS {
 
 func (d *countingNameErrorDNS) Requests() chan<- Request { return d.p.Requests() }
 func (d *countingNameErrorDNS) Close() error             { return d.p.Close() }
+
+func newCountingStaticDNS() *countingStaticDNS {
+	d := &countingStaticDNS{}
+	d.p = newProvider(func(root context.Context, req Request) {
+		d.calls.Add(1)
+		resp := responseFor(req.Message)
+		q := req.Message.Questions[0]
+		resp.Answers = staticAnswers(q)
+		sendResponse(req, resp, nil)
+	}, nil)
+	return d
+}
+
+func (d *countingStaticDNS) Requests() chan<- Request { return d.p.Requests() }
+func (d *countingStaticDNS) Close() error             { return d.p.Close() }
 
 func newStaticDNS() *staticDNS {
 	s := &staticDNS{}

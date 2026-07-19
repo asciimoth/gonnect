@@ -12,4 +12,14 @@
 // These pieces are intentionally small and composable so callers can build
 // chains or trees such as resolver adapters feeding shared cache middleware
 // that fans out to local or remote DNS transports.
+//
+// Cache can optionally synthesize reverse PTR cache entries from successful
+// A and AAAA responses. Pass false for NewCache's enableReverseLookups
+// argument unless this disclosure is acceptable: enabling it can reveal
+// forward lookup history to other consumers sharing the same cache, because a
+// consumer can probe reverse lookups for selected addresses to infer whether
+// another consumer recently resolved associated hostnames.
+//
+// Cache can also use its CacheStorage in write-only mode. This lets one DNS
+// path warm shared storage without serving entries that another path wrote.
 package dns

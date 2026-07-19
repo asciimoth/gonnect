@@ -189,9 +189,22 @@ func minTTL(msg *Message) uint32 {
 // misses to an attachable upstream. Detach cancels requests that are currently
 // waiting on the old upstream. Cached responses remain available across
 // attach, detach, and reattach operations.
+//
+// By default, Cache both reads from and writes to CacheStorage. Enable
+// storageWriteOnly when this Cache should only populate the shared storage and
+// must not serve answers already present there.
+//
+// When reverse lookups are enabled, successful A and AAAA responses also
+// populate synthetic PTR cache entries for the returned addresses. This can
+// leak forward lookup history between consumers that share the same cache:
+// a consumer can probe reverse lookups to infer whether another consumer
+// recently resolved a hostname. Leave it disabled unless that information
+// sharing is acceptable for every cache user.
 type Cache struct {
-	storage CacheStorage
-	p       *provider
+	storage              CacheStorage
+	enableReverseLookups bool
+	storageWriteOnly     bool
+	p                    *provider
 
 	mu       sync.Mutex
 	upstream Interface
@@ -200,16 +213,25 @@ type Cache struct {
 }
 
 // NewCache creates a cache using storage. If storage is nil, a new
-// MemoryStorage is used.
+// MemoryStorage is used. Set enableReverseLookups to true only when consumers
+// sharing this cache are allowed to observe synthetic PTR answers derived from
+// each other's A and AAAA lookups. Set storageWriteOnly to true to keep
+// writing successful upstream answers without serving storage hits.
 func NewCache(
 	upstream Interface,
 	storage CacheStorage,
+	enableReverseLookups bool,
+	storageWriteOnly bool,
 	spawner gonnect.Spawner,
 ) *Cache {
 	if storage == nil {
 		storage = NewMemoryStorage()
 	}
-	c := &Cache{storage: storage}
+	c := &Cache{
+		storage:              storage,
+		enableReverseLookups: enableReverseLookups,
+		storageWriteOnly:     storageWriteOnly,
+	}
 	c.Attach(upstream)
 	c.p = newProvider(c.handle, spawner)
 	return c
@@ -243,11 +265,13 @@ func (c *Cache) Detach() {
 
 func (c *Cache) handle(root context.Context, req Request) {
 	key := cacheKey(req.Message)
-	if msg, ok := c.storage.Get(key, time.Now()); ok {
-		resp := msg.Copy()
-		resp.ID = req.Message.ID
-		sendResponse(req, resp, nil)
-		return
+	if !c.storageWriteOnly {
+		if msg, ok := c.storage.Get(key, time.Now()); ok {
+			resp := msg.Copy()
+			resp.ID = req.Message.ID
+			sendResponse(req, resp, nil)
+			return
+		}
 	}
 	up, gen, cancelCh := c.current()
 	if up == nil {
@@ -277,7 +301,9 @@ func (c *Cache) handle(root context.Context, req Request) {
 		c.mu.Unlock()
 		if stillCurrent {
 			c.storage.Set(key, resp, now)
-			c.storeReverseLookups(resp, now)
+			if c.enableReverseLookups {
+				c.storeReverseLookups(resp, now)
+			}
 		}
 	}
 	sendResponse(req, resp, err)

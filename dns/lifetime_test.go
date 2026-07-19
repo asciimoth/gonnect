@@ -65,7 +65,7 @@ func TestDetachedCloseCancelsInFlightAndKeepsUpstreamAlive(t *testing.T) {
 
 func TestCacheCloseCancelsInFlightAndKeepsUpstreamAlive(t *testing.T) {
 	up := newControlledDNS()
-	cache := NewCache(up, NewMemoryStorage(), nil)
+	cache := NewCache(up, NewMemoryStorage(), false, false, nil)
 	defer up.Close()
 
 	queryDone := make(chan error, 1)

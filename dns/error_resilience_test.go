@@ -32,7 +32,7 @@ func TestComplexChainClientDialErrorDoesNotPoisonChain(t *testing.T) {
 	}
 	client := NewClient(dial, nil, nil, "udp://127.0.0.1:5358")
 	defer client.Close()
-	cache := NewCache(client, NewMemoryStorage(), nil)
+	cache := NewCache(client, NewMemoryStorage(), false, false, nil)
 	defer cache.Close()
 	chain := Detach(cache, nil)
 	defer chain.Close()
@@ -88,7 +88,7 @@ func TestComplexChainClientRetriesNextServerAndSurvivesBadServer(t *testing.T) {
 		"udp://127.0.0.1:5359",
 	)
 	defer client.Close()
-	cache := NewCache(client, NewMemoryStorage(), nil)
+	cache := NewCache(client, NewMemoryStorage(), false, false, nil)
 	defer cache.Close()
 	chain := Detach(cache, nil)
 	defer chain.Close()
@@ -147,7 +147,7 @@ func TestCacheDoesNotStoreFailedResponsesAndSurvivesUpstreamErrors(
 	t *testing.T,
 ) {
 	bad := newRCodeDNS(RCodeServerFailure)
-	cache := NewCache(bad, NewMemoryStorage(), nil)
+	cache := NewCache(bad, NewMemoryStorage(), false, false, nil)
 	defer bad.Close()
 	defer cache.Close()
 
@@ -186,7 +186,7 @@ func TestCacheDoesNotStoreFailedResponsesAndSurvivesUpstreamErrors(
 func TestResolverAdapterSurvivesDNSFailuresInChain(t *testing.T) {
 	up := newToggleDNS()
 	defer up.Close()
-	cache := NewCache(up, NewMemoryStorage(), nil)
+	cache := NewCache(up, NewMemoryStorage(), false, false, nil)
 	defer cache.Close()
 	detached := Detach(cache, nil)
 	defer detached.Close()

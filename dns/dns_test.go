@@ -388,6 +388,59 @@ func TestCacheAttachDetachReattach(t *testing.T) {
 	}
 }
 
+func TestCacheServesReverseLookupsFromForwardAnswers(t *testing.T) {
+	cache := NewCache(newStaticDNS(), NewMemoryStorage(), nil)
+	defer cache.Close()
+	res := NewResolver(cache)
+
+	addrs, err := res.LookupIPAddr(context.Background(), "example.test")
+	if err != nil || len(addrs) != 2 {
+		t.Fatalf("forward lookup addrs=%v err=%v", addrs, err)
+	}
+
+	cache.Detach()
+
+	names, err := res.LookupAddr(context.Background(), "127.0.0.1")
+	if err != nil || len(names) != 1 || names[0] != "example.test." {
+		t.Fatalf("cached literal IPv4 PTR names=%v err=%v", names, err)
+	}
+
+	resp, err := Query(context.Background(), cache, &Message{
+		ID:               NextID(),
+		RecursionDesired: true,
+		Questions: []Question{{
+			Name:  "1.0.0.127.in-addr.arpa.",
+			Type:  TypePTR,
+			Class: ClassIN,
+		}},
+	})
+	if err != nil || resp.RCode != RCodeSuccess ||
+		len(resp.Answers) != 1 ||
+		string(resp.Answers[0].Data) != "example.test." {
+		t.Fatalf("cached reverse IPv4 PTR resp=%#v err=%v", resp, err)
+	}
+
+	names, err = res.LookupAddr(context.Background(), "::1")
+	if err != nil || len(names) != 1 || names[0] != "example.test." {
+		t.Fatalf("cached literal IPv6 PTR names=%v err=%v", names, err)
+	}
+
+	resp, err = Query(context.Background(), cache, &Message{
+		ID:               NextID(),
+		RecursionDesired: true,
+		Questions: []Question{{
+			Name:  "1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.ip6.arpa.",
+			Type:  TypePTR,
+			Class: ClassIN,
+		}},
+	})
+	if err != nil || resp.RCode != RCodeSuccess ||
+		len(resp.Answers) != 1 ||
+		string(resp.Answers[0].Data) != "example.test." {
+		t.Fatalf("cached reverse IPv6 PTR resp=%#v err=%v", resp, err)
+	}
+}
+
 func TestMemoryStorageExpiryDeleteAndNoCache(t *testing.T) {
 	s := NewMemoryStorage()
 	now := time.Now()
@@ -1047,5 +1100,16 @@ func TestReverseAddrHelper(t *testing.T) {
 	}
 	if strconv.Itoa(1) != "1" {
 		t.Fatal("strconv import guard")
+	}
+}
+
+func TestReverseAddr6Helper(t *testing.T) {
+	got := reverseAddr6(net.ParseIP("::1"))
+	want := "1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.ip6.arpa."
+	if got != want {
+		t.Fatalf("reverseAddr6 = %q, want %q", got, want)
+	}
+	if reverseAddr6(net.ParseIP("127.0.0.1")) != "" {
+		t.Fatal("reverseAddr6 IPv4 should be empty")
 	}
 }

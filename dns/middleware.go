@@ -3,6 +3,8 @@ package dns
 import (
 	"context"
 	"fmt"
+	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -269,11 +271,13 @@ func (c *Cache) handle(root context.Context, req Request) {
 	}()
 	resp, err := Query(ctx, up, req.Message)
 	if err == nil && resp != nil {
+		now := time.Now()
 		c.mu.Lock()
 		stillCurrent := gen == c.gen
 		c.mu.Unlock()
 		if stillCurrent {
-			c.storage.Set(key, resp, time.Now())
+			c.storage.Set(key, resp, now)
+			c.storeReverseLookups(resp, now)
 		}
 	}
 	sendResponse(req, resp, err)
@@ -291,4 +295,89 @@ func cacheKey(msg *Message) string {
 	}
 	q := msg.Questions[0]
 	return fmt.Sprintf("%s|%d|%d", absName(q.Name), q.Type, q.Class)
+}
+
+func (c *Cache) storeReverseLookups(msg *Message, now time.Time) {
+	if msg == nil || !msg.Response || msg.RCode != RCodeSuccess {
+		return
+	}
+	for _, rr := range msg.Answers {
+		ip := resourceIP(rr)
+		if ip == nil {
+			continue
+		}
+		host := absName(rr.Name)
+		if host == "." && len(msg.Questions) > 0 {
+			host = absName(msg.Questions[0].Name)
+		}
+		if host == "." {
+			continue
+		}
+		for _, ptrName := range ptrCacheNames(ip) {
+			ptr := &Message{
+				Response:           true,
+				RCode:              RCodeSuccess,
+				RecursionAvailable: true,
+				Questions: []Question{{
+					Name:  ptrName,
+					Type:  TypePTR,
+					Class: ClassIN,
+				}},
+				Answers: []Resource{{
+					Name:  ptrName,
+					Type:  TypePTR,
+					Class: ClassIN,
+					TTL:   rr.TTL,
+					Data:  []byte(host),
+				}},
+			}
+			c.storage.Set("", ptr, now)
+		}
+	}
+}
+
+func resourceIP(rr Resource) net.IP {
+	switch rr.Type {
+	case TypeA:
+		if rr.Class == ClassIN && len(rr.Data) == net.IPv4len {
+			return net.IPv4(rr.Data[0], rr.Data[1], rr.Data[2], rr.Data[3])
+		}
+	case TypeAAAA:
+		if rr.Class == ClassIN && len(rr.Data) == net.IPv6len {
+			return net.IP(append([]byte(nil), rr.Data...))
+		}
+	}
+	return nil
+}
+
+func ptrCacheNames(ip net.IP) []string {
+	var names []string
+	if reverse := reverseAddr(ip); reverse != "" {
+		names = append(names, reverse)
+	}
+	if reverse := reverseAddr6(ip); reverse != "" {
+		names = append(names, reverse)
+	}
+	if literal := ip.String(); literal != "" && literal != "<nil>" {
+		names = append(names, absName(literal))
+	}
+	return names
+}
+
+func reverseAddr6(ip net.IP) string {
+	ip16 := ip.To16()
+	if ip16 == nil || ip.To4() != nil {
+		return ""
+	}
+	const hex = "0123456789abcdef"
+	var b strings.Builder
+	b.Grow(72)
+	for i := len(ip16) - 1; i >= 0; i-- {
+		b.WriteByte(hex[ip16[i]&0x0f])
+		b.WriteByte('.')
+		b.WriteByte(hex[ip16[i]>>4])
+		b.WriteByte('.')
+	}
+	b.WriteString("ip6.arpa.")
+	return b.String()
 }

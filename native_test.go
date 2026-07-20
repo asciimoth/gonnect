@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/asciimoth/gonnect"
 	gdns "github.com/asciimoth/gonnect/dns"
@@ -95,6 +96,149 @@ func TestNativeNetworkDialNoResolver(t *testing.T) {
 
 	if got := resolverDials.Load(); got != 0 {
 		t.Fatalf("resolver dial calls = %d, want 0", got)
+	}
+}
+
+func TestNativeNetworkTypedDialUsesControls(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		config func(calls *atomic.Int32) gonnect.NativeConfig
+	}{
+		{
+			name: "Control",
+			config: func(calls *atomic.Int32) gonnect.NativeConfig {
+				return gonnect.NativeConfig{
+					Control: func(
+						network, address string,
+						c syscall.RawConn,
+					) error {
+						calls.Add(1)
+						return nil
+					},
+				}
+			},
+		},
+		{
+			name: "ControlContext",
+			config: func(calls *atomic.Int32) gonnect.NativeConfig {
+				return gonnect.NativeConfig{
+					ControlContext: func(
+						ctx context.Context,
+						network, address string,
+						c syscall.RawConn,
+					) error {
+						calls.Add(1)
+						return nil
+					},
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := context.Background()
+			var calls atomic.Int32
+			n := tt.config(&calls).Build()
+
+			tcpLn, err := net.Listen("tcp4", "127.0.0.1:0")
+			if err != nil {
+				t.Fatalf("Listen error = %v", err)
+			}
+			t.Cleanup(func() { _ = tcpLn.Close() })
+
+			accepted := make(chan net.Conn, 1)
+			acceptErr := make(chan error, 1)
+			go func() {
+				conn, err := tcpLn.Accept()
+				if err != nil {
+					acceptErr <- err
+					return
+				}
+				accepted <- conn
+			}()
+
+			tcpConn, err := n.DialTCP(ctx, "tcp4", "", tcpLn.Addr().String())
+			if err != nil {
+				t.Fatalf("DialTCP() error = %v", err)
+			}
+			_ = tcpConn.Close()
+
+			select {
+			case conn := <-accepted:
+				_ = conn.Close()
+			case err := <-acceptErr:
+				t.Fatalf("Accept error = %v", err)
+			case <-time.After(time.Second):
+				t.Fatal("Accept timed out")
+			}
+
+			if got := calls.Load(); got == 0 {
+				t.Fatal("DialTCP() did not invoke configured control")
+			}
+
+			beforeUDP := calls.Load()
+			udpLn, err := net.ListenPacket("udp4", "127.0.0.1:0")
+			if err != nil {
+				t.Fatalf("ListenPacket error = %v", err)
+			}
+			t.Cleanup(func() { _ = udpLn.Close() })
+
+			udpConn, err := n.DialUDP(
+				ctx,
+				"udp4",
+				"127.0.0.1:0",
+				udpLn.LocalAddr().String(),
+			)
+			if err != nil {
+				t.Fatalf("DialUDP() error = %v", err)
+			}
+			_ = udpConn.Close()
+
+			if got := calls.Load(); got <= beforeUDP {
+				t.Fatal("DialUDP() did not invoke configured control")
+			}
+		})
+	}
+}
+
+func TestNativeNetworkTypedListenUsesControls(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	var calls atomic.Int32
+	n := gonnect.NativeConfig{
+		ListenCfg: &net.ListenConfig{
+			Control: func(network, address string, c syscall.RawConn) error {
+				calls.Add(1)
+				return nil
+			},
+		},
+	}.Build()
+
+	tcpLn, err := n.ListenTCP(ctx, "tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("ListenTCP() error = %v", err)
+	}
+	t.Cleanup(func() { _ = tcpLn.Close() })
+
+	if got := calls.Load(); got == 0 {
+		t.Fatal("ListenTCP() did not invoke configured control")
+	}
+
+	beforeUDP := calls.Load()
+	udpConn, err := n.ListenUDP(ctx, "udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("ListenUDP() error = %v", err)
+	}
+	t.Cleanup(func() { _ = udpConn.Close() })
+
+	if got := calls.Load(); got <= beforeUDP {
+		t.Fatal("ListenUDP() did not invoke configured control")
 	}
 }
 

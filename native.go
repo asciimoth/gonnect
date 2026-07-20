@@ -716,13 +716,21 @@ func (n *NativeNetwork) DialTCP(
 		return nil, err
 	}
 
-	// WARN: In go 1.25 there is no DialTCP method for net.Dialer
-	// TODO: Change to n.dialer.DialTCP after bumping to next go version
-	c, err := net.DialTCP(network, laddrTCP, raddrTCP)
+	dialer := n.dialer
+	if laddrTCP != nil {
+		dialer.LocalAddr = laddrTCP
+	}
+	c, err := dialer.DialContext(ctx, network, raddrTCP.String())
 	if err != nil {
 		return nil, err
 	}
-	return c, nil
+	tc, ok := c.(*net.TCPConn)
+	if ok {
+		return tc, nil
+	}
+
+	_ = c.Close()
+	return nil, nativeConnRefused(network, raddrTCP.String())
 }
 
 // ListenTCP announces on the specified network and address for TCP connections.
@@ -736,15 +744,19 @@ func (n *NativeNetwork) ListenTCP(
 		return nil, err
 	}
 
-	// WARN: In go 1.25 there is no ListenTCP method for net.ListenConfig
-	// TODO: Change to n.getListener().ListenTCP after bumping to next go version
-	l, err := net.ListenTCP(network, laddrTCP)
+	l, err := n.getListenCfg().Listen(ctx, network, laddrTCP.String())
 	if err != nil {
 		return nil, err
 	}
-	return &NetTCPListener{
-		TCPListener: l,
-	}, nil
+	tl, ok := l.(*net.TCPListener)
+	if ok {
+		return &NetTCPListener{
+			TCPListener: tl,
+		}, nil
+	}
+
+	_ = l.Close()
+	return nil, nativeListenDeniedErr(network, laddrTCP.String())
 }
 
 // PacketDial establishes a UDP connection to the remote address using the specified network.
@@ -773,13 +785,21 @@ func (n *NativeNetwork) DialUDP(
 		return nil, err
 	}
 
-	// WARN: In go 1.25 there is no DialUDP method for net.Dialer
-	// TODO: Change to n.dialer.DialUDP after bumping to next go version
-	c, err := net.DialUDP(network, laddrUDP, raddrUDP)
+	dialer := n.dialer
+	if laddrUDP != nil {
+		dialer.LocalAddr = laddrUDP
+	}
+	c, err := dialer.DialContext(ctx, network, raddrUDP.String())
 	if err != nil {
 		return nil, err
 	}
-	return c, nil
+	uc, ok := c.(UDPConn)
+	if ok {
+		return uc, nil
+	}
+
+	_ = c.Close()
+	return nil, nativeConnRefused(network, raddrUDP.String())
 }
 
 // ListenUDP announces on the specified network and address for UDP connections.
@@ -788,18 +808,7 @@ func (n *NativeNetwork) ListenUDP(
 	ctx context.Context,
 	network, laddr string,
 ) (UDPConn, error) {
-	laddrUDP, err := n.resolveUDPAddr(ctx, network, laddr, actionListen)
-	if err != nil {
-		return nil, err
-	}
-
-	// WARN: In go 1.25 there is no ListenTCP method for net.ListenConfig
-	// TODO: Change to n.getListener().ListenTCP after bumping to next go version
-	c, err := net.ListenUDP(network, laddrUDP)
-	if err != nil {
-		return nil, err
-	}
-	return c, nil
+	return n.ListenUDPConfig(ctx, nil, network, laddr)
 }
 
 // ListenUDPConfig announces on the specified network and address for UDP

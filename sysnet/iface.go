@@ -24,6 +24,17 @@ var (
 	ErrUnknownTun = errors.New("unknown tun")
 )
 
+// Warning identifies a non-fatal runtime condition reported by a System.
+//
+// Warning values are stable identifiers. They are not final user-facing text.
+type Warning string
+
+const (
+	// WarningDefaultTunDNSRouteNotExclusive means the System cannot prove that
+	// system DNS traffic is routed only to the DefaultTun DNS provider.
+	WarningDefaultTunDNSRouteNotExclusive Warning = "default_tun_dns_route_not_exclusive"
+)
+
 // A Rule matches IP packets and connections to check if they are owned by a
 // specific process, user, application, or other entity.
 // For example: Type="app", Rule="org.mozilla.firefox".
@@ -290,11 +301,21 @@ type System interface {
 
 	VerifyDefaultTunOpts(opts DefaultTunOpts) error
 
+	// DefaultTunWarnings returns current warnings for a DefaultTun returned by
+	// this System. Unknown, stale, closed, or unsupported DefaultTun values
+	// should return nil.
+	DefaultTunWarnings(defaultTun DefaultTun) []Warning
+
 	// BuildTun constructs a tun.Tun instance with specified options.
 	// BuildTun may be not supported on some systems, check Features.
 	BuildTun(opts TunOpts) (tun.Tun, error)
 
 	VerifyTunOpts(opts TunOpts) error
+
+	// TunWarnings returns current warnings for a regular Tun returned by this
+	// System. Unknown, stale, closed, or unsupported Tun values should return
+	// nil.
+	TunWarnings(tun tun.Tun) []Warning
 
 	// SetTunMTU updates MTU of provided Tun.
 	// It should work only for Tuns built via this System instance. For others

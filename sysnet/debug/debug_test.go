@@ -9,6 +9,7 @@ import (
 
 	"github.com/asciimoth/gonnect/dns"
 	"github.com/asciimoth/gonnect/sysnet"
+	"github.com/asciimoth/gonnect/tun"
 )
 
 func TestBuildTunPeerRenameAndClose(t *testing.T) {
@@ -138,6 +139,140 @@ func TestDefaultTunRebuildClearsDNSAndCloseRemovesEntry(t *testing.T) {
 	}
 }
 
+func TestWarningsNilByDefault(t *testing.T) {
+	system := &System{}
+	defer system.Close()
+
+	defaultTun, err := system.BuildDefaultTun(sysnet.DefaultTunOpts{})
+	if err != nil {
+		t.Fatalf("BuildDefaultTun error = %v", err)
+	}
+	if got := system.DefaultTunWarnings(defaultTun); got != nil {
+		t.Fatalf("DefaultTunWarnings = %v, want nil", got)
+	}
+
+	tunDev, err := system.BuildTun(sysnet.TunOpts{})
+	if err != nil {
+		t.Fatalf("BuildTun error = %v", err)
+	}
+	if got := system.TunWarnings(tunDev); got != nil {
+		t.Fatalf("TunWarnings = %v, want nil", got)
+	}
+}
+
+func TestWarningsHooksRequireCurrentMatchingTun(t *testing.T) {
+	warning := sysnet.WarningDefaultTunDNSRouteNotExclusive
+	system := &System{
+		DefaultTunWarningsHook: func(sysnet.DefaultTun) []sysnet.Warning {
+			return []sysnet.Warning{warning}
+		},
+		TunWarningsHook: func(tun.Tun) []sysnet.Warning {
+			return []sysnet.Warning{warning}
+		},
+	}
+	defer system.Close()
+
+	defaultTun, err := system.BuildDefaultTun(sysnet.DefaultTunOpts{})
+	if err != nil {
+		t.Fatalf("BuildDefaultTun error = %v", err)
+	}
+	tunDev, err := system.BuildTun(sysnet.TunOpts{})
+	if err != nil {
+		t.Fatalf("BuildTun error = %v", err)
+	}
+
+	assertWarnings(
+		t,
+		"DefaultTunWarnings(active)",
+		system.DefaultTunWarnings(defaultTun),
+		[]sysnet.Warning{warning},
+	)
+	assertWarnings(
+		t,
+		"TunWarnings(active)",
+		system.TunWarnings(tunDev),
+		[]sysnet.Warning{warning},
+	)
+
+	got := system.DefaultTunWarnings(defaultTun)
+	got[0] = "mutated"
+	assertWarnings(
+		t,
+		"DefaultTunWarnings(after caller mutation)",
+		system.DefaultTunWarnings(defaultTun),
+		[]sysnet.Warning{warning},
+	)
+
+	if got := system.TunWarnings(defaultTun); got != nil {
+		t.Fatalf("TunWarnings(default tun) = %v, want nil", got)
+	}
+
+	system.DisableDefaultTun = true
+	if got := system.DefaultTunWarnings(defaultTun); got != nil {
+		t.Fatalf("DefaultTunWarnings(unsupported) = %v, want nil", got)
+	}
+	system.DisableDefaultTun = false
+
+	system.DisableTun = true
+	if got := system.TunWarnings(tunDev); got != nil {
+		t.Fatalf("TunWarnings(unsupported) = %v, want nil", got)
+	}
+	system.DisableTun = false
+
+	other := &System{}
+	defer other.Close()
+	unknownDefaultTun, err := other.BuildDefaultTun(sysnet.DefaultTunOpts{})
+	if err != nil {
+		t.Fatalf("other BuildDefaultTun error = %v", err)
+	}
+	unknownTun, err := other.BuildTun(sysnet.TunOpts{})
+	if err != nil {
+		t.Fatalf("other BuildTun error = %v", err)
+	}
+	if got := system.DefaultTunWarnings(unknownDefaultTun); got != nil {
+		t.Fatalf("DefaultTunWarnings(unknown) = %v, want nil", got)
+	}
+	if got := system.TunWarnings(unknownTun); got != nil {
+		t.Fatalf("TunWarnings(unknown) = %v, want nil", got)
+	}
+
+	if err := defaultTun.Close(); err != nil {
+		t.Fatalf("DefaultTun.Close error = %v", err)
+	}
+	if got := system.DefaultTunWarnings(defaultTun); got != nil {
+		t.Fatalf("DefaultTunWarnings(closed) = %v, want nil", got)
+	}
+	replacementDefaultTun, err := system.BuildDefaultTun(
+		sysnet.DefaultTunOpts{},
+	)
+	if err != nil {
+		t.Fatalf("replacement BuildDefaultTun error = %v", err)
+	}
+	if got := system.DefaultTunWarnings(defaultTun); got != nil {
+		t.Fatalf("DefaultTunWarnings(stale) = %v, want nil", got)
+	}
+	if err := replacementDefaultTun.Close(); err != nil {
+		t.Fatalf("replacement DefaultTun.Close error = %v", err)
+	}
+
+	if err := tunDev.Close(); err != nil {
+		t.Fatalf("Tun.Close error = %v", err)
+	}
+	if got := system.TunWarnings(tunDev); got != nil {
+		t.Fatalf("TunWarnings(closed) = %v, want nil", got)
+	}
+	replacementTun, err := system.BuildTun(sysnet.TunOpts{})
+	if err != nil {
+		t.Fatalf("replacement BuildTun error = %v", err)
+	}
+	if got := system.TunWarnings(tunDev); got != nil {
+		t.Fatalf("TunWarnings(stale) = %v, want nil", got)
+	}
+	if err := replacementTun.Close(); err != nil {
+		t.Fatalf("replacement Tun.Close error = %v", err)
+	}
+}
+
 type fakeDNS struct {
 	requests chan dns.Request
 	seen     chan struct{}
@@ -168,4 +303,20 @@ func (f *fakeDNS) Close() error {
 
 func (f *fakeDNS) requestsSeen() int {
 	return len(f.seen)
+}
+
+func assertWarnings(
+	t *testing.T,
+	name string,
+	got, want []sysnet.Warning,
+) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("%s = %v, want %v", name, got, want)
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Fatalf("%s = %v, want %v", name, got, want)
+		}
+	}
 }

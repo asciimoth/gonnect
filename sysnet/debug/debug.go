@@ -183,6 +183,10 @@ type System struct {
 	// and exposes its peer through GetDefaultTunPeer.
 	DefaultTunBuilder func(opts sysnet.DefaultTunOpts) (tun.Tun, error)
 
+	// DefaultTunWarningsHook is an optional hook used by DefaultTunWarnings.
+	// When omitted, DefaultTunWarnings returns nil.
+	DefaultTunWarningsHook func(sysnet.DefaultTun) []sysnet.Warning
+
 	// TunOptsVerifyer is an optional hook used by VerifyTunOpts and BuildTun. Use
 	// it in tests to assert or reject requested regular tun options.
 	TunOptsVerifyer func(opts sysnet.TunOpts) error
@@ -191,6 +195,10 @@ type System struct {
 	// implementation. When omitted, System creates an in-memory pipe and exposes
 	// its peer through GetTunPeer.
 	TunBuilder func(opts sysnet.TunOpts) (tun.Tun, error)
+
+	// TunWarningsHook is an optional hook used by TunWarnings. When omitted,
+	// TunWarnings returns nil.
+	TunWarningsHook func(tun.Tun) []sysnet.Warning
 
 	mu sync.Mutex
 
@@ -412,6 +420,39 @@ func (s *System) VerifyTunOpts(opts sysnet.TunOpts) error {
 	}
 
 	return nil
+}
+
+// DefaultTunWarnings returns current warnings for an active default tun created
+// by this System. By default it returns nil; tests can install
+// DefaultTunWarningsHook to provide warnings.
+func (s *System) DefaultTunWarnings(t sysnet.DefaultTun) []sysnet.Warning {
+	s.mu.Lock()
+	entry := s.tunEntryLocked(t)
+	hook := s.DefaultTunWarningsHook
+	valid := !s.closed && !s.DisableDefaultTun && entry != nil &&
+		entry.defaultTun
+	s.mu.Unlock()
+
+	if !valid || hook == nil {
+		return nil
+	}
+	return copySlice(hook(t))
+}
+
+// TunWarnings returns current warnings for an active regular tun created by
+// this System. By default it returns nil; tests can install TunWarningsHook to
+// provide warnings.
+func (s *System) TunWarnings(t tun.Tun) []sysnet.Warning {
+	s.mu.Lock()
+	entry := s.tunEntryLocked(t)
+	hook := s.TunWarningsHook
+	valid := !s.closed && !s.DisableTun && entry != nil && !entry.defaultTun
+	s.mu.Unlock()
+
+	if !valid || hook == nil {
+		return nil
+	}
+	return copySlice(hook(t))
 }
 
 // BuildDefaultTun creates or reconfigures the default tun for this System.

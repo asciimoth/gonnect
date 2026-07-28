@@ -1,6 +1,11 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
 set dotenv-load := true
 
+typos:
+  typos
+
+check: tidy typos fmt lint vet test
+
 test:
 	go test ./... --race -count=1
 

@@ -25,6 +25,13 @@
 // or glob URL request-targets, HTTP-version tokens, normalized hostnames, and
 // request-line or header byte limits.
 //
+// TLS and TLSFactory match TLS ClientHello records. TLSWithConfig and
+// TLSFactoryWithConfig can also filter by offered TLS versions, visible SNI
+// availability, encrypted_client_hello extension presence, visible SNI
+// hostnames, ALPN protocol names, and ClientHello byte limits. TLS version
+// filters match versions offered by the ClientHello, not the server-selected
+// version.
+//
 // Sniff owns neither timeouts nor policy. Callers should set and clear read
 // deadlines on the connection as appropriate. A deadline error is returned as
 // the connection's read error. Use gonnect.IsTimeout to identify timeout errors

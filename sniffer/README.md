@@ -45,6 +45,9 @@ Included building blocks:
 - `HTTP`, `HTTPWithConfig`, `HTTPFactory`, and `HTTPFactoryWithConfig`, which
   match HTTP request lines and can filter by method, URL request-target,
   HTTP-version token, and hostname
+- `TLS`, `TLSWithConfig`, `TLSFactory`, and `TLSFactoryWithConfig`, which match
+  TLS ClientHello records and can filter by offered version, visible SNI
+  availability, ECH presence, visible SNI hostname, and ALPN
 - `And`, `Or`, and `Not`
 - `AndFactory`, `OrFactory`, and `NotFactory`
 - `Limit` and `LimitFactory` for classifier-local byte limits
@@ -84,6 +87,40 @@ the header terminator, or the header byte limit.
 `HTTPConfig.MaxHeaderBytes` bounds header inspection when hostname matching is
 enabled. Zero values use `DefaultHTTPRequestLineMaxBytes` and
 `DefaultHTTPHeaderMaxBytes`.
+
+`TLS` accepts any syntactically valid TLS ClientHello. Use `TLSWithConfig` or
+`TLSFactoryWithConfig` for exact fields, multi-value fields, and glob patterns:
+
+```go
+factory := sniffer.TLSFactoryWithConfig(sniffer.TLSConfig{
+	Versions:         []uint16{tls.VersionTLS13},
+	SNIAvailable:    sniffer.TLSFlagRequired,
+	SNIEncrypted:    sniffer.TLSFlagForbidden,
+	HostnamePatterns: []string{"*.example.test"},
+	ALPNs:           []string{"h2", "http/1.1"},
+})
+```
+
+`TLSConfig.Version` and `TLSConfig.Versions` match versions offered by the
+ClientHello. If the `supported_versions` extension is present, the classifier
+uses it. Otherwise it uses the ClientHello `legacy_version` field. The
+server-selected TLS version is not visible before routing.
+
+`TLSConfig.SNIAvailable` matches whether the ClientHello contains a visible SNI
+`host_name`. `TLSConfig.SNIEncrypted` matches whether the
+`encrypted_client_hello` extension is present. This is an observable ECH signal
+only; the classifier cannot verify server ECH acceptance or reveal an encrypted
+inner hostname.
+
+`Hostname`, `Hostnames`, and `HostnamePatterns` match the visible SNI hostname
+case-insensitively. With ECH, this is the outer ClientHello hostname, if the
+client sends one. `ALPN`, `ALPNs`, and `ALPNPatterns` match any protocol name
+in the ALPN extension case-sensitively. TLS hostname and ALPN patterns use the
+same whole-value glob syntax as HTTP patterns.
+
+`TLSConfig.MaxClientHelloBytes` bounds the bytes inspected while parsing the
+first ClientHello, including TLS record headers and handshake headers. Zero
+uses `DefaultTLSClientHelloMaxBytes`.
 
 ## Sniffing and routing
 

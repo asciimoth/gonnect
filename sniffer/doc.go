@@ -20,6 +20,11 @@
 // default; use WithMinSniffBufferSize or FactoryWithMinSniffBufferSize when
 // they need a non-zero size.
 //
+// HTTP and HTTPFactory match HTTP request lines. HTTPWithConfig and
+// HTTPFactoryWithConfig can also filter by exact or multi-value methods, exact
+// or glob URL request-targets, HTTP-version tokens, normalized hostnames, and
+// request-line or header byte limits.
+//
 // Sniff owns neither timeouts nor policy. Callers should set and clear read
 // deadlines on the connection as appropriate. A deadline error is returned as
 // the connection's read error. Use gonnect.IsTimeout to identify timeout errors

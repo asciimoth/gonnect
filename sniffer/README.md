@@ -42,12 +42,48 @@ Included building blocks:
 
 - `Prefix` and `PrefixFactory`
 - `SSH` and `SSHFactory`, which match `SSH-` at offset zero
+- `HTTP`, `HTTPWithConfig`, `HTTPFactory`, and `HTTPFactoryWithConfig`, which
+  match HTTP request lines and can filter by method, URL request-target,
+  HTTP-version token, and hostname
 - `And`, `Or`, and `Not`
 - `AndFactory`, `OrFactory`, and `NotFactory`
 - `Limit` and `LimitFactory` for classifier-local byte limits
 - `MinSniffBufferSize` and `MinFactorySniffBufferSize` helpers
 - `WithMinSniffBufferSize` and `FactoryWithMinSniffBufferSize` wrappers for
   function adapters or other classifiers that need a non-zero size
+
+`HTTP` accepts any valid method token, non-empty URL request-target, and
+HTTP-version token that starts with `HTTP/`. Use `HTTPWithConfig` or
+`HTTPFactoryWithConfig` for exact fields, multi-value fields, and glob
+patterns:
+
+```go
+factory := sniffer.HTTPFactoryWithConfig(sniffer.HTTPConfig{
+	Methods:          []string{"GET", "POST"},
+	URLPatterns:      []string{"/api/*"},
+	HostnamePatterns: []string{"*.example.test"},
+})
+```
+
+Empty field groups are wildcards, so leaving `Version` and `Versions` empty
+accepts any HTTP version token. Non-empty values in one group are ORed, and all
+configured groups must match.
+
+`URLPatterns` and `HostnamePatterns` are byte-oriented glob patterns over the
+whole value. `*` matches any byte sequence, `?` matches one byte, and `\`
+escapes the next byte. Use `URL` or `URLs` for literal request-targets that
+contain `?`.
+
+Hostname filters match a normalized hostname from an absolute-form
+request-target or the `Host` header. Matching is case-insensitive, and an
+optional port is removed before matching. Hostname filters make the classifier
+inspect headers until a matching `Host` header, a non-matching `Host` header,
+the header terminator, or the header byte limit.
+
+`HTTPConfig.MaxRequestLineBytes` bounds the request line, including LF.
+`HTTPConfig.MaxHeaderBytes` bounds header inspection when hostname matching is
+enabled. Zero values use `DefaultHTTPRequestLineMaxBytes` and
+`DefaultHTTPHeaderMaxBytes`.
 
 ## Sniffing and routing
 
@@ -60,7 +96,7 @@ func route(raw net.Conn, pool bufpool.Pool) error {
 	}
 
 	factories := []sniffer.Factory{
-		sniffer.PrefixFactory([]byte("GET ")),
+		sniffer.HTTPFactory(),
 		sniffer.SSHFactory(),
 	}
 	index, err := sniffer.SniffFactoriesWithPool(

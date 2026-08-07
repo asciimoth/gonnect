@@ -46,7 +46,7 @@ func (u *lifecycleUpDown) IsUp() (bool, error) {
 func newLifecycleRouter(t *testing.T) *gonnect.Router {
 	t.Helper()
 	r := gonnect.NewRouter(nil)
-	if err := r.Attach(1, gonnect.NewLoopbackNetwok()); err != nil {
+	if err := r.Attach(1, gonnect.NewLoopbackNetwork()); err != nil {
 		t.Fatalf("Router Attach() error = %v", err)
 	}
 	return r
@@ -211,7 +211,7 @@ func TestNetworkCloserSubscriberImplementations(t *testing.T) {
 			name: "DetachedNetwork",
 			net:  gonnect.DetachNetwork(&gonnect.RejectNetwork{}, nil, nil),
 		},
-		{name: "LoopbackNetwork", net: gonnect.NewLoopbackNetwok()},
+		{name: "LoopbackNetwork", net: gonnect.NewLoopbackNetwork()},
 		{name: "Router", net: newLifecycleRouter(t)},
 	}
 
@@ -284,9 +284,9 @@ func TestNetworkCloserLookupImplementationsStopAfterClose(t *testing.T) {
 	}{
 		{
 			name: "DetachedNetwork",
-			net:  gonnect.DetachNetwork(gonnect.NewLoopbackNetwok(), nil, nil),
+			net:  gonnect.DetachNetwork(gonnect.NewLoopbackNetwork(), nil, nil),
 		},
-		{name: "LoopbackNetwork", net: gonnect.NewLoopbackNetwok()},
+		{name: "LoopbackNetwork", net: gonnect.NewLoopbackNetwork()},
 		{name: "Router", net: newLifecycleRouter(t)},
 	}
 
@@ -322,7 +322,7 @@ func TestNetworkUpDownSubscriberImplementations(t *testing.T) {
 			name: "DetachedNetwork",
 			net:  gonnect.DetachNetwork(&gonnect.RejectNetwork{}, nil, nil),
 		},
-		{name: "LoopbackNetwork", net: gonnect.NewLoopbackNetwok()},
+		{name: "LoopbackNetwork", net: gonnect.NewLoopbackNetwork()},
 		{name: "Router", net: newLifecycleRouter(t)},
 	}
 
@@ -445,9 +445,9 @@ func TestNetworkUpDownLookupImplementationsStopAfterDownAndResumeAfterUp(
 	}{
 		{
 			name: "DetachedNetwork",
-			net:  gonnect.DetachNetwork(gonnect.NewLoopbackNetwok(), nil, nil),
+			net:  gonnect.DetachNetwork(gonnect.NewLoopbackNetwork(), nil, nil),
 		},
-		{name: "LoopbackNetwork", net: gonnect.NewLoopbackNetwok()},
+		{name: "LoopbackNetwork", net: gonnect.NewLoopbackNetwork()},
 		{name: "Router", net: newLifecycleRouter(t)},
 	}
 
@@ -476,7 +476,7 @@ func TestNetworkUpDownLookupImplementationsStopAfterDownAndResumeAfterUp(
 }
 
 func TestDetachedNetworkNestedClosePropagation(t *testing.T) {
-	root := gonnect.NewLoopbackNetwok()
+	root := gonnect.NewLoopbackNetwork()
 	parent := gonnect.DetachNetwork(root, nil, nil)
 	child := gonnect.DetachNetwork(parent, nil, nil)
 	closer := &lifecycleCloser{}
@@ -499,7 +499,7 @@ func TestDetachedNetworkNestedClosePropagation(t *testing.T) {
 }
 
 func TestDetachedNetworkNestedUpDownPropagation(t *testing.T) {
-	root := gonnect.NewLoopbackNetwok()
+	root := gonnect.NewLoopbackNetwork()
 	parent := gonnect.DetachNetwork(root, nil, nil)
 	child := gonnect.DetachNetwork(parent, nil, nil)
 	watcher := &lifecycleUpDown{}
@@ -561,7 +561,7 @@ func TestDetachedNetworkChainLifecyclePropagationDirection(t *testing.T) {
 		}
 	}
 	makeChain := func() (*gonnect.LoopbackNetwork, []*gonnect.DetachedNetwork) {
-		root := gonnect.NewLoopbackNetwok()
+		root := gonnect.NewLoopbackNetwork()
 		parent := gonnect.DetachNetwork(root, nil, nil)
 		child := gonnect.DetachNetwork(parent, nil, nil)
 		grandchild := gonnect.DetachNetwork(child, nil, nil)

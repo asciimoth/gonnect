@@ -61,10 +61,10 @@ type LoopbackNetwork struct {
 	closeSubs      map[uint64]io.Closer
 }
 
-// NewLoopbackNetwok creates and returns a new loopback network instance.
+// NewLoopbackNetwork creates and returns a new loopback network instance.
 // The returned network provides simulated TCP and UDP communication on
 // IPv4 (127.0.0.1) and IPv6 (::1) loopback addresses.
-func NewLoopbackNetwok() *LoopbackNetwork {
+func NewLoopbackNetwork() *LoopbackNetwork {
 	return &LoopbackNetwork{
 		up: true,
 		tcp4reg: &loopbackTCPRegistry{

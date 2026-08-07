@@ -90,7 +90,7 @@ func TestCacheCloseCancelsInFlightAndKeepsUpstreamAlive(t *testing.T) {
 }
 
 func TestClientCloseCancelsInFlightUDPRead(t *testing.T) {
-	ln := gonnect.NewLoopbackNetwok()
+	ln := gonnect.NewLoopbackNetwork()
 	sink, err := ln.ListenPacket(context.Background(), "udp4", "127.0.0.1:5356")
 	if err != nil {
 		t.Fatal(err)
@@ -113,7 +113,7 @@ func TestClientCloseCancelsInFlightUDPRead(t *testing.T) {
 }
 
 func TestServerCloseCancelsForwardedRequestAndClosesPacketConn(t *testing.T) {
-	ln := gonnect.NewLoopbackNetwok()
+	ln := gonnect.NewLoopbackNetwork()
 	up := newControlledDNS()
 	defer up.Close()
 

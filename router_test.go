@@ -356,7 +356,7 @@ func TestRouterBackendCloseDoesNotCloseRouter(t *testing.T) {
 func TestRouterDefaultTCPRoute(t *testing.T) {
 	ctx := context.Background()
 	r := gonnect.NewRouter(nil)
-	if err := r.Attach(1, gonnect.NewLoopbackNetwok()); err != nil {
+	if err := r.Attach(1, gonnect.NewLoopbackNetwork()); err != nil {
 		t.Fatalf("Attach() error = %v", err)
 	}
 
@@ -408,7 +408,7 @@ func TestRouterDefaultTCPRoute(t *testing.T) {
 func TestRouterReplaceBackendClosesSlotObjects(t *testing.T) {
 	ctx := context.Background()
 	r := gonnect.NewRouter(nil)
-	if err := r.Attach(1, gonnect.NewLoopbackNetwok()); err != nil {
+	if err := r.Attach(1, gonnect.NewLoopbackNetwork()); err != nil {
 		t.Fatalf("Attach() error = %v", err)
 	}
 
@@ -433,7 +433,7 @@ func TestRouterReplaceBackendClosesSlotObjects(t *testing.T) {
 	server := <-accepted
 	defer server.Close()
 
-	if err := r.Attach(1, gonnect.NewLoopbackNetwok()); err != nil {
+	if err := r.Attach(1, gonnect.NewLoopbackNetwork()); err != nil {
 		t.Fatalf("reattach error = %v", err)
 	}
 
@@ -457,8 +457,8 @@ func TestRouterUDPListenRoutesEachPacketAndReattaches(t *testing.T) {
 	}}
 	r.SetCfg(cfg)
 
-	backend1 := gonnect.NewLoopbackNetwok()
-	backend2 := gonnect.NewLoopbackNetwok()
+	backend1 := gonnect.NewLoopbackNetwork()
+	backend2 := gonnect.NewLoopbackNetwork()
 	if err := r.Attach(1, backend1); err != nil {
 		t.Fatalf("Attach(1) error = %v", err)
 	}
@@ -498,7 +498,7 @@ func TestRouterUDPListenRoutesEachPacketAndReattaches(t *testing.T) {
 		t.Fatal("WriteTo() to detached slot succeeded")
 	}
 
-	backend2b := gonnect.NewLoopbackNetwok()
+	backend2b := gonnect.NewLoopbackNetwork()
 	if err := r.Attach(2, backend2b); err != nil {
 		t.Fatalf("reattach slot 2 error = %v", err)
 	}
@@ -515,7 +515,7 @@ func TestRouterUDPConnCompatibilityMethods(t *testing.T) {
 	ctx := context.Background()
 	r := gonnect.NewRouter(nil)
 	r.SetCfg(&testRouterCfg{udpSlotByPort: map[string]int{"30100": 1}})
-	backend := gonnect.NewLoopbackNetwok()
+	backend := gonnect.NewLoopbackNetwork()
 	if err := r.Attach(1, backend); err != nil {
 		t.Fatalf("Attach(1) error = %v", err)
 	}
@@ -669,7 +669,7 @@ func TestRouterLookupRoutesThroughConfig(t *testing.T) {
 	if err := r.Attach(1, &gonnect.RejectNetwork{}); err != nil {
 		t.Fatalf("Attach(1) error = %v", err)
 	}
-	if err := r.Attach(2, gonnect.NewLoopbackNetwok()); err != nil {
+	if err := r.Attach(2, gonnect.NewLoopbackNetwork()); err != nil {
 		t.Fatalf("Attach(2) error = %v", err)
 	}
 
@@ -699,7 +699,7 @@ func TestRouterResolverOverridesLookupAndPreResolvesDial(t *testing.T) {
 		},
 		ports: map[string]int{"svc": 0},
 	})
-	if err := r.Attach(1, gonnect.NewLoopbackNetwok()); err != nil {
+	if err := r.Attach(1, gonnect.NewLoopbackNetwork()); err != nil {
 		t.Fatalf("Attach(1) error = %v", err)
 	}
 

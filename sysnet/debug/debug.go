@@ -354,7 +354,7 @@ func (s *System) OutNet() gonnect.Network {
 	defer s.mu.Unlock()
 
 	if s.OutNetwork == nil {
-		loop := gonnect.NewLoopbackNetwok()
+		loop := gonnect.NewLoopbackNetwork()
 		loop.AllowAnyHost = true
 		return loop
 	}
@@ -369,7 +369,7 @@ func (s *System) LocalNet() gonnect.Network {
 	defer s.mu.Unlock()
 
 	if s.LocalNetwork == nil {
-		loop := gonnect.NewLoopbackNetwok()
+		loop := gonnect.NewLoopbackNetwork()
 		loop.AllowAnyHost = true
 		return loop
 	}

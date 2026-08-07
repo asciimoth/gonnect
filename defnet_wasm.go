@@ -8,5 +8,5 @@ package gonnect
 // If cfg is nil, default one will be used.
 // For loopback network cfg arg is ignored.
 func DefaultNetwork(_ *NativeConfig) Network {
-	return NewLoopbackNetwok()
+	return NewLoopbackNetwork()
 }

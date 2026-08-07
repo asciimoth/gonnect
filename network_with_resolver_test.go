@@ -287,7 +287,7 @@ func TestNetworkWithResolverLifecycleNoOpsWhenWrappedNetworkDoesNotSupportThem(
 }
 
 func TestNetworkWithResolverLifecyclePassesThrough(t *testing.T) {
-	wrapped := gonnect.NewLoopbackNetwok()
+	wrapped := gonnect.NewLoopbackNetwork()
 	wrapper := gonnect.NewNetworkWithResolver(wrapped, nil)
 	closer := &lifecycleCloser{}
 	updown := &lifecycleUpDown{}

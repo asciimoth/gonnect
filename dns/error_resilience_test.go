@@ -12,7 +12,7 @@ import (
 )
 
 func TestComplexChainClientDialErrorDoesNotPoisonChain(t *testing.T) {
-	ln := gonnect.NewLoopbackNetwok()
+	ln := gonnect.NewLoopbackNetwork()
 	upstream := NewResolverProvider(ln, time.Second, nil)
 	defer upstream.Close()
 
@@ -63,7 +63,7 @@ func TestComplexChainClientDialErrorDoesNotPoisonChain(t *testing.T) {
 }
 
 func TestComplexChainClientRetriesNextServerAndSurvivesBadServer(t *testing.T) {
-	ln := gonnect.NewLoopbackNetwok()
+	ln := gonnect.NewLoopbackNetwork()
 	upstream := NewResolverProvider(ln, time.Second, nil)
 	defer upstream.Close()
 
@@ -108,7 +108,7 @@ func TestComplexChainClientRetriesNextServerAndSurvivesBadServer(t *testing.T) {
 }
 
 func TestServerUpstreamErrorDoesNotPoisonServer(t *testing.T) {
-	ln := gonnect.NewLoopbackNetwok()
+	ln := gonnect.NewLoopbackNetwork()
 	bad := newErrorDNS(errors.New("upstream failed"))
 	defer bad.Close()
 
@@ -160,7 +160,7 @@ func TestCacheDoesNotStoreFailedResponsesAndSurvivesUpstreamErrors(
 		)
 	}
 
-	good := NewResolverProvider(gonnect.NewLoopbackNetwok(), time.Second, nil)
+	good := NewResolverProvider(gonnect.NewLoopbackNetwork(), time.Second, nil)
 	defer good.Close()
 	cache.Attach(good)
 	resp, err = queryWithTimeout(cache, "localhost.")

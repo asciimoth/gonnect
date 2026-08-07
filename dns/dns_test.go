@@ -191,7 +191,7 @@ func TestDetachedChainCancelsWithoutClosingUpstream(t *testing.T) {
 }
 
 func TestResolverAdapterChain(t *testing.T) {
-	root := NewResolverProvider(gonnect.NewLoopbackNetwok(), time.Second, nil)
+	root := NewResolverProvider(gonnect.NewLoopbackNetwork(), time.Second, nil)
 	res1 := NewResolver(root)
 	prov2 := NewResolverProvider(res1, time.Second, nil)
 	res2 := NewResolver(prov2)
@@ -360,7 +360,7 @@ func TestResolverLookupIPNumericLiteralDoesNotQueryDNS(t *testing.T) {
 func TestCacheAttachDetachReattach(t *testing.T) {
 	storage := NewMemoryStorage()
 	cache := NewCache(
-		NewResolverProvider(gonnect.NewLoopbackNetwok(), time.Second, nil),
+		NewResolverProvider(gonnect.NewLoopbackNetwork(), time.Second, nil),
 		storage,
 		false,
 		false,
@@ -382,7 +382,7 @@ func TestCacheAttachDetachReattach(t *testing.T) {
 		t.Fatalf("miss after detach error = %v", err)
 	}
 	cache.Attach(
-		NewResolverProvider(gonnect.NewLoopbackNetwok(), time.Second, nil),
+		NewResolverProvider(gonnect.NewLoopbackNetwork(), time.Second, nil),
 	)
 	resp, err = Query(context.Background(), cache, aQuery("localhost."))
 	if err != nil || len(resp.Answers) == 0 {
@@ -572,7 +572,7 @@ func TestMemoryStorageExpiryDeleteAndNoCache(t *testing.T) {
 }
 
 func TestLoopbackClientServerCacheTree(t *testing.T) {
-	ln := gonnect.NewLoopbackNetwok()
+	ln := gonnect.NewLoopbackNetwork()
 	base := NewResolverProvider(ln, time.Second, nil)
 	cache := NewCache(base, NewMemoryStorage(), false, false, nil)
 	defer base.Close()
@@ -589,7 +589,7 @@ func TestLoopbackClientServerCacheTree(t *testing.T) {
 	defer client.Close()
 
 	resolverBranch := NewResolverProvider(
-		gonnect.NewLoopbackNetwok(),
+		gonnect.NewLoopbackNetwork(),
 		time.Second,
 		nil,
 	)
@@ -615,7 +615,7 @@ func TestLoopbackClientServerCacheTree(t *testing.T) {
 }
 
 func TestClientTCPAndServerDetach(t *testing.T) {
-	ln := gonnect.NewLoopbackNetwok()
+	ln := gonnect.NewLoopbackNetwork()
 	upstream := NewResolverProvider(ln, time.Second, nil)
 	defer upstream.Close()
 
@@ -658,7 +658,7 @@ func TestClientTCPAndServerDetach(t *testing.T) {
 }
 
 func TestClientDoTUsesBootstrapAndCustomTLSConfig(t *testing.T) {
-	ln := gonnect.NewLoopbackNetwok()
+	ln := gonnect.NewLoopbackNetwork()
 	upstream := NewResolverProvider(ln, time.Second, nil)
 	defer upstream.Close()
 
@@ -718,7 +718,7 @@ func TestClientRejectsRequestsWithoutDialer(t *testing.T) {
 }
 
 func TestClientTriesBootstrapAddressesBeforeNextServer(t *testing.T) {
-	ln := gonnect.NewLoopbackNetwok()
+	ln := gonnect.NewLoopbackNetwork()
 	upstream := NewResolverProvider(ln, time.Second, nil)
 	defer upstream.Close()
 

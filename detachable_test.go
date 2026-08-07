@@ -286,7 +286,7 @@ func TestDetachedNetworkCloseCancelsContextIgnoringDialAndListen(
 	t *testing.T,
 ) {
 	wrapped := &delayedLoopbackNetwork{
-		Network: gonnect.NewLoopbackNetwok(),
+		Network: gonnect.NewLoopbackNetwork(),
 		delay:   time.Second,
 		entered: make(chan string, 2),
 	}

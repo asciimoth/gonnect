@@ -1036,7 +1036,7 @@ func TestNativeUnprivilegedBranches(t *testing.T) {
 
 func TestLoopbackLookupAndStateBranches(t *testing.T) {
 	ctx := context.Background()
-	ln := NewLoopbackNetwok()
+	ln := NewLoopbackNetwork()
 	if ln.IsNative() {
 		t.Fatal("LoopbackNetwork IsNative() = true, want false")
 	}
@@ -1284,7 +1284,7 @@ func TestLoopbackHelperBranches(t *testing.T) {
 
 func TestLoopbackConfigAndMulticastHelpers(t *testing.T) {
 	ctx := context.Background()
-	ln := NewLoopbackNetwok()
+	ln := NewLoopbackNetwork()
 	pc, err := ln.ListenPacketConfig(ctx, nil, "udp4", "localhost:0")
 	if err != nil {
 		t.Fatalf("ListenPacketConfig error = %v", err)
@@ -1353,7 +1353,7 @@ func TestLoopbackConfigAndMulticastHelpers(t *testing.T) {
 
 func TestLoopbackMulticastConnBehavior(t *testing.T) {
 	ctx := context.Background()
-	ln := NewLoopbackNetwok()
+	ln := NewLoopbackNetwork()
 	group := &net.UDPAddr{
 		IP:   net.ParseIP("ff02::1"),
 		Port: 0,
@@ -1533,7 +1533,7 @@ func TestLoopbackPipeTCPExtraMethods(t *testing.T) {
 
 func TestLoopbackPipeUDPExtraMethods(t *testing.T) {
 	ctx := context.Background()
-	n := NewLoopbackNetwok()
+	n := NewLoopbackNetwork()
 	c2, err := n.ListenUDP(ctx, "udp4", "localhost:0")
 	if err != nil {
 		t.Fatalf("ListenUDP error = %v", err)
@@ -1649,7 +1649,7 @@ func TestRouterAccessorsAndDelegatingBranches(t *testing.T) {
 	}
 
 	r.SetResolver(nil)
-	if err := r.Attach(1, NewLoopbackNetwok()); err != nil {
+	if err := r.Attach(1, NewLoopbackNetwork()); err != nil {
 		t.Fatalf("Attach loopback error = %v", err)
 	}
 	if ips, err := r.LookupIP(

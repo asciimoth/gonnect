@@ -454,7 +454,7 @@ func TestRemapperLifecycleNoOpsWhenWrappedNetworkDoesNotSupportThem(
 }
 
 func TestRemapperLifecyclePassesThrough(t *testing.T) {
-	wrapped := gonnect.NewLoopbackNetwok()
+	wrapped := gonnect.NewLoopbackNetwork()
 	remapper := gonnect.NewRemapper(wrapped, nil)
 	closer := &lifecycleCloser{}
 	updown := &lifecycleUpDown{}
@@ -531,7 +531,7 @@ func TestRemapperWrapsNetworkAndIsNonNative(t *testing.T) {
 func TestRemapperListenRemapWorksWithLoopbackNetwork(t *testing.T) {
 	ctx := context.Background()
 	remapper := gonnect.NewRemapper(
-		gonnect.NewLoopbackNetwok(),
+		gonnect.NewLoopbackNetwork(),
 		[]gonnect.RemapRule{{
 			Filter: func(info gonnect.RemapInfo) bool {
 				return info.Operation == gonnect.RemapOpListenUDP &&
@@ -562,7 +562,7 @@ func TestRemapperDialRemapWorksThroughRouter(t *testing.T) {
 	ctx := context.Background()
 	router := gonnect.NewRouter(nil)
 	defer func() { _ = router.Close() }()
-	if err := router.Attach(1, gonnect.NewLoopbackNetwok()); err != nil {
+	if err := router.Attach(1, gonnect.NewLoopbackNetwork()); err != nil {
 		t.Fatalf("Router Attach() error = %v", err)
 	}
 

@@ -20,7 +20,8 @@
 // default; use WithMinSniffBufferSize or FactoryWithMinSniffBufferSize when
 // they need a non-zero size.
 //
-// HTTP and HTTPFactory match HTTP request lines. HTTPWithConfig and
+// HTTP and HTTPFactory match HTTP request lines. HTTP2 and HTTP2Factory match
+// the cleartext HTTP/2 client preface. HTTPWithConfig and
 // HTTPFactoryWithConfig can also filter by exact or multi-value methods, exact
 // or glob URL request-targets, HTTP-version tokens, normalized hostnames, and
 // request-line or header byte limits.
@@ -31,6 +32,18 @@
 // hostnames, ALPN protocol names, and ClientHello byte limits. TLS version
 // filters match versions offered by the ClientHello, not the server-selected
 // version.
+//
+// ProxyProtocolV1, ProxyProtocolV2, and ProxyProtocol match HAProxy PROXY
+// protocol headers. SOCKS4, SOCKS5, and SOCKS match SOCKS client greetings or
+// requests. DNSOverTCP matches length-prefixed DNS query messages.
+// AMQP matches AMQP protocol headers. MQTT matches MQTT CONNECT headers.
+// PostgreSQL matches startup-family packets. MongoDB matches wire protocol
+// request headers. Redis matches RESP array requests.
+// RTSP and SIP match request lines. STUN matches STUN and TURN headers. RDP
+// matches TPKT/X.224 connection requests. SMB matches SMB-over-TCP negotiate
+// requests. LDAP matches LDAP client request prefixes. Cassandra matches native
+// protocol STARTUP and OPTIONS requests. Memcached matches binary and text
+// protocol requests.
 //
 // Sniff owns neither timeouts nor policy. Callers should set and clear read
 // deadlines on the connection as appropriate. A deadline error is returned as

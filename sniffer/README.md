@@ -45,9 +45,37 @@ Included building blocks:
 - `HTTP`, `HTTPWithConfig`, `HTTPFactory`, and `HTTPFactoryWithConfig`, which
   match HTTP request lines and can filter by method, URL request-target,
   HTTP-version token, and hostname
+- `HTTP2` and `HTTP2Factory`, which match the cleartext HTTP/2 client
+  connection preface
+- `AMQP` and `AMQPFactory`, which match AMQP 0-9-1, AMQP 1.0, and
+  AMQP 1.0 SASL protocol headers
+- `MQTT` and `MQTTFactory`, which match MQTT CONNECT headers
+- `PostgreSQL` and `PostgreSQLFactory`, which match PostgreSQL startup,
+  SSLRequest, GSSENCRequest, and CancelRequest packets
+- `MongoDB` and `MongoDBFactory`, which match MongoDB wire protocol request
+  headers
+- `Redis` and `RedisFactory`, which match Redis RESP array requests
 - `TLS`, `TLSWithConfig`, `TLSFactory`, and `TLSFactoryWithConfig`, which match
   TLS ClientHello records and can filter by offered version, visible SNI
   availability, ECH presence, visible SNI hostname, and ALPN
+- `ProxyProtocolV1`, `ProxyProtocolV2`, `ProxyProtocol`,
+  `ProxyProtocolV1Factory`, `ProxyProtocolV2Factory`, and
+  `ProxyProtocolFactory`, which match HAProxy PROXY protocol headers
+- `SOCKS4`, `SOCKS5`, `SOCKS`, `SOCKS4Factory`, `SOCKS5Factory`, and
+  `SOCKSFactory`, which match SOCKS client requests or greetings
+- `DNSOverTCP`, `DNSOverTCPWithConfig`, `DNSOverTCPFactory`, and
+  `DNSOverTCPFactoryWithConfig`, which match DNS-over-TCP query messages
+- `RTSP` and `RTSPFactory`, which match RTSP request lines
+- `SIP` and `SIPFactory`, which match SIP request lines
+- `STUN` and `STUNFactory`, which match STUN and TURN message headers
+- `RDP` and `RDPFactory`, which match RDP TPKT/X.224 connection requests
+- `SMB` and `SMBFactory`, which match SMB-over-TCP negotiate requests
+- `LDAP` and `LDAPFactory`, which match LDAP client request message prefixes
+- `Cassandra` and `CassandraFactory`, which match Cassandra native protocol
+  STARTUP and OPTIONS requests
+- `MemcachedBinary`, `MemcachedASCII`, `Memcached`,
+  `MemcachedBinaryFactory`, `MemcachedASCIIFactory`, and
+  `MemcachedFactory`, which match memcached binary and text requests
 - `And`, `Or`, and `Not`
 - `AndFactory`, `OrFactory`, and `NotFactory`
 - `Limit` and `LimitFactory` for classifier-local byte limits
@@ -121,6 +149,87 @@ same whole-value glob syntax as HTTP patterns.
 `TLSConfig.MaxClientHelloBytes` bounds the bytes inspected while parsing the
 first ClientHello, including TLS record headers and handshake headers. Zero
 uses `DefaultTLSClientHelloMaxBytes`.
+
+`HTTP2` matches the cleartext HTTP/2 prior-knowledge preface:
+`PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n`. TLS connections that negotiate HTTP/2 by
+ALPN are still TLS streams; use `TLSWithConfig` with `ALPN: "h2"` for those
+connections.
+
+`AMQP` matches the eight-byte protocol header for AMQP 0-9-1, AMQP 1.0, and
+AMQP 1.0 SASL negotiation. It does not inspect later connection tuning, SASL
+frames, or AMQP frames.
+
+`MQTT` matches MQTT CONNECT packets. It validates the fixed header packet type,
+Remaining Length field, protocol name, protocol level, connect flags, and
+keep-alive bytes. It accepts MQTT 3.1, 3.1.1, and 5. It matches before reading
+the client identifier or other payload fields.
+
+`PostgreSQL` matches PostgreSQL client startup-family packets. It accepts
+normal protocol 3.0 startup messages, SSLRequest, GSSENCRequest, and
+CancelRequest packets. It does not inspect startup parameters, user names,
+databases, or cancellation keys.
+
+`MongoDB` matches MongoDB wire protocol request messages. It validates the
+16-byte wire message header, requires a client request opcode, and requires
+`responseTo` to be zero. It does not inspect BSON command documents or
+compressed message bodies.
+
+`Redis` matches Redis RESP array requests. It validates the first request array
+and its first bulk-string command name. Inline Redis commands are not matched
+because their text forms are ambiguous with other line-oriented protocols. The
+command name must be non-empty, use printable non-space bytes, and be no larger
+than 128 bytes.
+
+`ProxyProtocolV1` matches the ASCII `PROXY ` prefix. It is a routing
+heuristic, not a full v1 line parser. `ProxyProtocolV2` validates the binary
+signature and fixed 16-byte header. It checks the version, command, address
+family, transport protocol, and minimum address payload length, but it does not
+inspect address values or TLVs. `ProxyProtocol` accepts either version.
+
+`SOCKS4` matches SOCKS4 and SOCKS4a request headers with CONNECT or BIND
+commands. It matches after the fixed eight-byte header and does not read the
+user ID or SOCKS4a hostname. `SOCKS5` validates the version byte and waits for
+the declared method list. `SOCKS` accepts either SOCKS4 or SOCKS5.
+
+`DNSOverTCP` matches a DNS query with the two-byte TCP length prefix. It
+validates the DNS header and question section, requires a client query rather
+than a response, and requires at least one question.
+`DNSOverTCPConfig.MaxMessageBytes` bounds the message bytes after the length
+prefix. Zero uses `DefaultDNSOverTCPMessageMaxBytes`.
+
+`RTSP` matches a known RTSP method, a non-empty request URI, and the RTSP/1.0
+version token on the first CRLF-terminated line. It does not inspect headers,
+Transport parameters, CSeq, or message bodies.
+
+`SIP` matches a known SIP method, a non-empty Request-URI, and the SIP/2.0
+version token on the first CRLF-terminated line. It does not inspect Via, To,
+From, Call-ID, CSeq, or message bodies.
+
+`STUN` matches the fixed STUN header used by STUN and TURN. It validates the
+message type top bits, length alignment, magic cookie, and known method. It
+does not inspect attributes or integrity.
+
+`RDP` matches an RDP connection request over TPKT. It validates the TPKT header
+and the X.224 Connection Request fixed fields, then matches before optional
+cookies, routing tokens, or negotiation data.
+
+`SMB` matches SMB-over-TCP client negotiate requests. It validates the NetBIOS
+Session Service header and the start of an SMB1 or SMB2/3 negotiate request. It
+does not inspect dialects, security modes, capabilities, or later SMB messages.
+
+`LDAP` matches LDAP client messages. It validates enough BER to find a non-zero
+message ID and a client request protocolOp tag. It does not parse request
+fields, controls, filters, or authentication data.
+
+`Cassandra` matches Cassandra native protocol STARTUP and OPTIONS requests for
+protocol v3, v4, and v5. It validates the request header and body length rules
+for those first client messages, but it does not inspect the body string map or
+compression.
+
+`MemcachedBinary` matches memcached binary protocol requests by validating the
+fixed request header. `MemcachedASCII` matches common memcached text protocol
+request lines and matches before storage value bytes. `Memcached` accepts either
+form.
 
 ## Sniffing and routing
 

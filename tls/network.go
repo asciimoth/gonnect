@@ -681,6 +681,15 @@ func (n *Network) upstreamConfig(
 }
 
 func (n *Network) leafCertificate(host string) (stdtls.Certificate, error) {
+	return leafCertificate(n.ca, n.caCert, n.leafTTL, host)
+}
+
+func leafCertificate(
+	ca stdtls.Certificate,
+	caCert *x509.Certificate,
+	leafTTL time.Duration,
+	host string,
+) (stdtls.Certificate, error) {
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		return stdtls.Certificate{}, err
@@ -693,9 +702,9 @@ func (n *Network) leafCertificate(host string) (stdtls.Certificate, error) {
 	}
 
 	now := time.Now()
-	notAfter := now.Add(n.leafTTL)
-	if notAfter.After(n.caCert.NotAfter) {
-		notAfter = n.caCert.NotAfter
+	notAfter := now.Add(leafTTL)
+	if notAfter.After(caCert.NotAfter) {
+		notAfter = caCert.NotAfter
 	}
 	if !notAfter.After(now) {
 		return stdtls.Certificate{}, errors.New(
@@ -721,9 +730,9 @@ func (n *Network) leafCertificate(host string) (stdtls.Certificate, error) {
 	der, err := x509.CreateCertificate(
 		rand.Reader,
 		&template,
-		n.caCert,
+		caCert,
 		&priv.PublicKey,
-		n.ca.PrivateKey,
+		ca.PrivateKey,
 	)
 	if err != nil {
 		return stdtls.Certificate{}, err
@@ -733,9 +742,9 @@ func (n *Network) leafCertificate(host string) (stdtls.Certificate, error) {
 		return stdtls.Certificate{}, err
 	}
 
-	chain := make([][]byte, 0, 1+len(n.ca.Certificate))
+	chain := make([][]byte, 0, 1+len(ca.Certificate))
 	chain = append(chain, der)
-	for _, cert := range n.ca.Certificate {
+	for _, cert := range ca.Certificate {
 		chain = append(chain, append([]byte(nil), cert...))
 	}
 	return stdtls.Certificate{

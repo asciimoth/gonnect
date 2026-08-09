@@ -1,5 +1,4 @@
-// Package tls provides a Network middleware that terminates and re-creates
-// outgoing TLS connections.
+// Package tls provides Network middlewares for outgoing TLS interception.
 //
 // The middleware is intended for code that accepts a gonnect.Network but does
 // not let its caller provide a tls.Config. It detects client-first TLS traffic
@@ -36,4 +35,11 @@
 // returned connection. They are not copied to the hidden upstream socket after
 // Dial or DialTCP returns. Close the returned connection to abort hidden
 // upstream work.
+//
+// Terminator is a narrower middleware. It also terminates client TLS with a
+// generated certificate, but it does not create a new upstream TLS connection.
+// Instead it dials plaintext TCP through the wrapped Network. It rejects
+// non-TLS TCP, TLS it cannot intercept, and all operations except TCP Dial and
+// DialTCP. Use other gonnect.Network middlewares before or after Terminator for
+// filtering, routing, and DNS policy.
 package tls

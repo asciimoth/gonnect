@@ -23,11 +23,11 @@
 // The pool is only used for internal copies made by PutBack. Conn never stores
 // or returns caller-owned slices. A pooled put-back buffer is returned to the
 // pool when its bytes are fully read, when a later PutBack replaces it with a
-// combined buffer, when TCPConn.WriteTo fully writes it, or when Close discards
-// unread put-back bytes. After a buffer is returned to the pool, Conn does not
-// read from it or write to it again. Partially read or partially written
-// put-back buffers stay owned by Conn until the remaining bytes are consumed,
-// replaced, or discarded by Close.
+// combined buffer, when TCPConn.WriteTo fully writes it, or when PostClose
+// releases it. After a buffer is returned to the pool, Conn does not read from
+// it or write to it again. Partially read or partially written put-back buffers
+// stay owned by Conn until the remaining bytes are consumed, replaced, or
+// released by PostClose.
 //
 // If New receives a gonnect.TCPConn, the returned value also implements TCPConn
 // and gonnect.TCPConn. If the TCP connection has standard library socket methods
@@ -42,13 +42,13 @@
 // an accompanying error.
 //
 // Conn is not safe for concurrent read-side operations. Do not call Read,
-// PutBack, or Buffered concurrently with each other. For TCPConn, WriteTo is
-// also a read-side operation. Like a normal net.Conn, Conn can still be used
-// concurrently by one goroutine that reads and one goroutine that writes,
-// subject to the underlying connection's guarantees. Writes, address queries,
-// and deadline methods are delegated directly to the underlying connection.
-// Close delegates to the underlying connection after returning any pooled
-// put-back buffer.
+// PutBack, Buffered, or PostClose concurrently with each other. For TCPConn,
+// WriteTo is also a read-side operation. PreClose can be called while reads or
+// writes are active. Like a normal net.Conn, Conn can still be used concurrently
+// by one goroutine that reads and one goroutine that writes, subject to the
+// underlying connection's guarantees. Writes, address queries, and deadline
+// methods are delegated directly to the underlying connection. Close is
+// equivalent to PostClose, which first runs PreClose if needed.
 //
 // Buffered reads do not call the underlying connection, so an underlying read
 // deadline is not consulted until the put-back buffer has been drained.

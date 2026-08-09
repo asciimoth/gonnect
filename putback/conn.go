@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"sync"
 	"syscall"
 	"time"
 
@@ -15,12 +16,14 @@ import (
 // Conn wraps a net.Conn and allows bytes to be prepended to its unread input.
 //
 // Conn is not safe for concurrent read-side operations. Do not call Read,
-// PutBack, or Buffered concurrently with each other. Like a normal net.Conn,
-// Conn can still be used concurrently by one goroutine that reads and one
-// goroutine that writes, subject to the underlying connection's guarantees. For
-// TCPConn, WriteTo is also a read-side operation.
+// PutBack, Buffered, or PostClose concurrently with each other. Like a normal
+// net.Conn, Conn can still be used concurrently by one goroutine that reads and
+// one goroutine that writes, subject to the underlying connection's guarantees.
+// PreClose can be called while reads or writes are active. For TCPConn, WriteTo
+// is also a read-side operation.
 type Conn interface {
 	net.Conn
+	gonnect.TwoStepCloser
 
 	// PutBack copies p and prepends it to the unread byte stream.
 	//
@@ -66,16 +69,22 @@ type conn struct {
 	// underlying connection. Read returns those bytes first and reports this
 	// error on the next read after all put-back bytes have been drained.
 	deferredErr error
+
+	preCloseOnce  sync.Once
+	preCloseErr   error
+	postCloseOnce sync.Once
+	postCloseErr  error
 }
 
 var _ Conn = (*conn)(nil)
 var _ TCPConn = (*tcpConn)(nil)
 var _ netTCPConn = (*tcpNetConn)(nil)
+var _ gonnect.TwoStepCloser = (*conn)(nil)
 
 // New wraps nc and uses pool to allocate copied put-back buffers. If pool is
 // nil, each put-back copy is allocated with make. Pooled buffers are returned
 // when buffered bytes are drained, replaced by a later PutBack, written by
-// TCPConn.WriteTo, or discarded by Close.
+// TCPConn.WriteTo, or released by PostClose.
 //
 // If nc implements gonnect.TCPConn, the returned value also implements TCPConn
 // and gonnect.TCPConn.
@@ -192,11 +201,30 @@ func (c *conn) Write(p []byte) (int, error) {
 	return c.conn.Write(p)
 }
 
-// Close returns any pooled put-back buffer and delegates to the underlying
-// connection.
+// PreClose starts closing the connection without touching put-back buffers.
+func (c *conn) PreClose() error {
+	c.preCloseOnce.Do(func() {
+		c.preCloseErr = gonnect.PreClose(c.conn)
+	})
+	return c.preCloseErr
+}
+
+// PostClose releases put-back buffers after active read-side operations stop.
+func (c *conn) PostClose() error {
+	c.postCloseOnce.Do(func() {
+		err := c.PreClose()
+		c.releaseExtra()
+		if _, ok := c.conn.(gonnect.PostCloser); ok {
+			err = errors.Join(err, gonnect.PostClose(c.conn))
+		}
+		c.postCloseErr = err
+	})
+	return c.postCloseErr
+}
+
+// Close starts and finishes closing the connection.
 func (c *conn) Close() error {
-	c.releaseExtra()
-	return c.conn.Close()
+	return c.PostClose()
 }
 
 // LocalAddr delegates to the underlying connection.

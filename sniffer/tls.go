@@ -3,6 +3,8 @@ package sniffer
 import (
 	"encoding/binary"
 	"strings"
+
+	"github.com/asciimoth/gonnect/putback"
 )
 
 // DefaultTLSClientHelloMaxBytes is the default TLS ClientHello inspection
@@ -99,6 +101,29 @@ type TLSConfig struct {
 	ALPNPatterns []string
 }
 
+// TLSClientHelloInfo is the visible metadata from a TLS ClientHello.
+//
+// Versions contains the protocol versions offered by the client. If the
+// supported_versions extension is present, it is used. Otherwise Versions
+// contains the legacy_version field.
+//
+// SNIHostname is the normalized visible SNI host_name, if one is present. It
+// is lower-case and never has a trailing dot. When ECH is present, this is the
+// outer ClientHello hostname.
+//
+// SNIEncrypted reports whether the encrypted_client_hello extension is present.
+// This is only the visible ECH signal. It does not prove that the server will
+// accept ECH and it cannot reveal an encrypted inner hostname.
+//
+// ALPNProtocols contains the ALPN protocols offered by the client, in wire
+// order.
+type TLSClientHelloInfo struct {
+	Versions      []uint16
+	SNIHostname   string
+	SNIEncrypted  bool
+	ALPNProtocols []string
+}
+
 // TLS returns a classifier that matches a syntactically valid TLS ClientHello.
 //
 // Use TLSWithConfig when the route must match offered TLS versions, SNI
@@ -111,6 +136,32 @@ func TLS() Classifier {
 // fields requested by config.
 func TLSWithConfig(config TLSConfig) Classifier {
 	return newTLSClassifier(normalizeTLSConfig(config))
+}
+
+// SniffTLSClientHello sniffs a syntactically valid TLS ClientHello and returns
+// its visible metadata.
+//
+// buffer is both scratch storage and the total byte budget. Its length limits
+// how many bytes this function may inspect. All bytes read from conn are put
+// back before this function returns, including on no-match and read-error
+// paths.
+//
+// The ok result is true only when a full valid TLS ClientHello was parsed
+// within buffer. Non-TLS data, malformed TLS data, and TLS data that is over
+// the byte budget return ok false with a nil error. Read errors are returned
+// unchanged.
+func SniffTLSClientHello(
+	buffer []byte,
+	conn putback.Conn,
+) (info TLSClientHelloInfo, ok bool, err error) {
+	classifier := newTLSClassifier(normalizeTLSConfig(TLSConfig{
+		MaxClientHelloBytes: len(buffer),
+	}))
+	index, err := Sniff(buffer, conn, classifier)
+	if index != 0 {
+		return TLSClientHelloInfo{}, false, err
+	}
+	return cloneTLSClientHelloInfo(classifier.info), true, err
 }
 
 // TLSFactory returns a factory for TLS classifiers with the default config.
@@ -188,7 +239,7 @@ func checkedTLSFlag(name string, flag TLSFlag) TLSFlag {
 	return flag
 }
 
-func newTLSClassifier(config normalizedTLSConfig) Classifier {
+func newTLSClassifier(config normalizedTLSConfig) *tlsClassifier {
 	return &tlsClassifier{
 		config:    config,
 		buf:       make([]byte, 0, 512),
@@ -202,6 +253,7 @@ type tlsClassifier struct {
 	buf       []byte
 	needBytes int
 	state     State
+	info      TLSClientHelloInfo
 }
 
 func (c *tlsClassifier) Feed(p []byte) State {
@@ -245,6 +297,7 @@ func (c *tlsClassifier) Feed(p []byte) State {
 		return c.state
 	}
 
+	c.info = cloneTLSClientHelloInfo(info)
 	if !c.matchClientHello(info) {
 		c.state = Mismatch
 		return c.state
@@ -257,34 +310,27 @@ func (c *tlsClassifier) MinSniffBufferSize() int {
 	return c.config.minSniffBufferSize()
 }
 
-func (c *tlsClassifier) matchClientHello(info tlsClientHelloInfo) bool {
-	if !c.config.version.match(info.versions) {
+func (c *tlsClassifier) matchClientHello(info TLSClientHelloInfo) bool {
+	if !c.config.version.match(info.Versions) {
 		return false
 	}
-	if !c.config.sniAvailable.match(info.sniHostname != "") {
+	if !c.config.sniAvailable.match(info.SNIHostname != "") {
 		return false
 	}
-	if !c.config.sniEncrypted.match(info.sniEncrypted) {
+	if !c.config.sniEncrypted.match(info.SNIEncrypted) {
 		return false
 	}
-	if !c.config.hostname.match(info.sniHostname) {
+	if !c.config.hostname.match(info.SNIHostname) {
 		return false
 	}
-	if !c.config.alpn.matchAny(info.alpnProtocols) {
+	if !c.config.alpn.matchAny(info.ALPNProtocols) {
 		return false
 	}
 	return true
 }
 
-type tlsClientHelloInfo struct {
-	versions      []uint16
-	sniHostname   string
-	sniEncrypted  bool
-	alpnProtocols []string
-}
-
-func parseTLSClientHello(data []byte) (tlsClientHelloInfo, State, int) {
-	var info tlsClientHelloInfo
+func parseTLSClientHello(data []byte) (TLSClientHelloInfo, State, int) {
+	var info TLSClientHelloInfo
 	var handshake []byte
 	recordOffset := 0
 
@@ -383,8 +429,8 @@ func checkTLSClientHelloHeader(handshake []byte) State {
 	return Match
 }
 
-func parseTLSClientHelloBody(body []byte) (tlsClientHelloInfo, bool) {
-	var info tlsClientHelloInfo
+func parseTLSClientHelloBody(body []byte) (TLSClientHelloInfo, bool) {
+	var info TLSClientHelloInfo
 	if len(body) < 34 {
 		return info, false
 	}
@@ -393,7 +439,7 @@ func parseTLSClientHelloBody(body []byte) (tlsClientHelloInfo, bool) {
 	if !validTLSClientHelloVersion(legacyVersion) {
 		return info, false
 	}
-	info.versions = []uint16{legacyVersion}
+	info.Versions = []uint16{legacyVersion}
 
 	offset := 34
 	sessionIDLen := int(body[offset])
@@ -449,7 +495,7 @@ func parseTLSClientHelloBody(body []byte) (tlsClientHelloInfo, bool) {
 
 func parseTLSClientHelloExtensions(
 	extensions []byte,
-	info *tlsClientHelloInfo,
+	info *TLSClientHelloInfo,
 ) bool {
 	seen := make(map[uint16]struct{})
 	for offset := 0; offset < len(extensions); {
@@ -476,13 +522,13 @@ func parseTLSClientHelloExtensions(
 			if !ok {
 				return false
 			}
-			info.sniHostname = hostname
+			info.SNIHostname = hostname
 		case tlsExtensionApplicationProtocols:
 			protocols, ok := parseTLSALPNExtension(extensionData)
 			if !ok {
 				return false
 			}
-			info.alpnProtocols = protocols
+			info.ALPNProtocols = protocols
 		case tlsExtensionSupportedVersions:
 			versions, ok := parseTLSSupportedVersionsExtension(
 				extensionData,
@@ -490,14 +536,23 @@ func parseTLSClientHelloExtensions(
 			if !ok {
 				return false
 			}
-			info.versions = versions
+			info.Versions = versions
 		case tlsExtensionEncryptedClientHello:
-			info.sniEncrypted = true
+			info.SNIEncrypted = true
 		}
 
 		offset += extensionLen
 	}
 	return true
+}
+
+func cloneTLSClientHelloInfo(info TLSClientHelloInfo) TLSClientHelloInfo {
+	return TLSClientHelloInfo{
+		Versions:      append([]uint16(nil), info.Versions...),
+		SNIHostname:   info.SNIHostname,
+		SNIEncrypted:  info.SNIEncrypted,
+		ALPNProtocols: append([]string(nil), info.ALPNProtocols...),
+	}
 }
 
 func parseTLSServerNameExtension(data []byte) (string, bool) {

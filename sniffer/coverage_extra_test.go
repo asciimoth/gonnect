@@ -395,7 +395,7 @@ func TestCoverageTLSExtensionMalformed(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if parseTLSClientHelloExtensions(test.data, &tlsClientHelloInfo{}) {
+			if parseTLSClientHelloExtensions(test.data, &TLSClientHelloInfo{}) {
 				t.Fatal("parseTLSClientHelloExtensions succeeded")
 			}
 		})

@@ -5,7 +5,10 @@ import (
 	"errors"
 	"io"
 	"net"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	helpers "github.com/asciimoth/gonnect"
 )
@@ -943,6 +946,205 @@ func (m *mockReadCloser) Read(p []byte) (n int, err error) {
 func (m *mockReadCloser) Close() error {
 	if m.closeFunc != nil {
 		return m.closeFunc()
+	}
+	return nil
+}
+
+func TestPreClosePostCloseHelpers(t *testing.T) {
+	t.Parallel()
+
+	if err := helpers.PreClose(nil); err != nil {
+		t.Fatalf("PreClose(nil) = %v, want nil", err)
+	}
+	if err := helpers.PostClose(nil); err != nil {
+		t.Fatalf("PostClose(nil) = %v, want nil", err)
+	}
+
+	closeErr := errors.New("close")
+	plain := &closeOnlyConn{err: closeErr}
+	if err := helpers.PreClose(plain); !errors.Is(err, closeErr) {
+		t.Fatalf("PreClose fallback = %v, want close error", err)
+	}
+	if err := helpers.PostClose(plain); !errors.Is(err, closeErr) {
+		t.Fatalf("PostClose fallback = %v, want close error", err)
+	}
+	if plain.closes.Load() != 2 {
+		t.Fatalf("fallback Close calls = %d, want 2", plain.closes.Load())
+	}
+
+	preErr := errors.New("pre")
+	postErr := errors.New("post")
+	phased := &closePhaseConn{preErr: preErr, postErr: postErr}
+	if err := helpers.PreClose(phased); !errors.Is(err, preErr) {
+		t.Fatalf("PreClose phased = %v, want pre error", err)
+	}
+	if err := helpers.PostClose(phased); !errors.Is(err, postErr) {
+		t.Fatalf("PostClose phased = %v, want post error", err)
+	}
+	if phased.closes.Load() != 0 {
+		t.Fatalf("phased Close calls = %d, want 0", phased.closes.Load())
+	}
+	if phased.preCloses.Load() != 1 {
+		t.Fatalf("PreClose calls = %d, want 1", phased.preCloses.Load())
+	}
+	if phased.postCloses.Load() != 1 {
+		t.Fatalf("PostClose calls = %d, want 1", phased.postCloses.Load())
+	}
+}
+
+func TestPipeConnUsesClosePhases(t *testing.T) {
+	a := newBlockingPipeCloseConn()
+	b := newEOFAfterReadStartPipeCloseConn(a.readStarted)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- helpers.PipeConn(a, b, nil)
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("PipeConn() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("PipeConn() timed out")
+	}
+
+	if a.closeCalls.Load() != 0 || b.closeCalls.Load() != 0 {
+		t.Fatalf(
+			"Close calls = (%d, %d), want (0, 0)",
+			a.closeCalls.Load(),
+			b.closeCalls.Load(),
+		)
+	}
+	if a.preCloses.Load() != 2 || b.preCloses.Load() != 2 {
+		t.Fatalf(
+			"PreClose calls = (%d, %d), want (2, 2)",
+			a.preCloses.Load(),
+			b.preCloses.Load(),
+		)
+	}
+	if a.postCloses.Load() != 1 || b.postCloses.Load() != 1 {
+		t.Fatalf(
+			"PostClose calls = (%d, %d), want (1, 1)",
+			a.postCloses.Load(),
+			b.postCloses.Load(),
+		)
+	}
+	if a.postDuringRead.Load() != 0 || b.postDuringRead.Load() != 0 {
+		t.Fatalf(
+			"PostClose while Read active = (%d, %d), want (0, 0)",
+			a.postDuringRead.Load(),
+			b.postDuringRead.Load(),
+		)
+	}
+}
+
+type helperConn struct{}
+
+func (c *helperConn) Read([]byte) (int, error)         { return 0, io.EOF }
+func (c *helperConn) Write(p []byte) (int, error)      { return len(p), nil }
+func (c *helperConn) LocalAddr() net.Addr              { return nil }
+func (c *helperConn) RemoteAddr() net.Addr             { return nil }
+func (c *helperConn) SetDeadline(time.Time) error      { return nil }
+func (c *helperConn) SetReadDeadline(time.Time) error  { return nil }
+func (c *helperConn) SetWriteDeadline(time.Time) error { return nil }
+
+type closeOnlyConn struct {
+	helperConn
+	closes atomic.Int32
+	err    error
+}
+
+func (c *closeOnlyConn) Close() error {
+	c.closes.Add(1)
+	return c.err
+}
+
+type closePhaseConn struct {
+	closeOnlyConn
+	preCloses  atomic.Int32
+	postCloses atomic.Int32
+	preErr     error
+	postErr    error
+}
+
+func (c *closePhaseConn) PreClose() error {
+	c.preCloses.Add(1)
+	return c.preErr
+}
+
+func (c *closePhaseConn) PostClose() error {
+	c.postCloses.Add(1)
+	return c.postErr
+}
+
+type pipeCloseConn struct {
+	helperConn
+
+	preClosed   chan struct{}
+	readStarted chan struct{}
+	waitStarted <-chan struct{}
+
+	preOnce        sync.Once
+	readStartOnce  sync.Once
+	readsActive    atomic.Int32
+	preCloses      atomic.Int32
+	postCloses     atomic.Int32
+	closeCalls     atomic.Int32
+	postDuringRead atomic.Int32
+}
+
+func newBlockingPipeCloseConn() *pipeCloseConn {
+	return &pipeCloseConn{
+		preClosed:   make(chan struct{}),
+		readStarted: make(chan struct{}),
+	}
+}
+
+func newEOFAfterReadStartPipeCloseConn(
+	readStarted <-chan struct{},
+) *pipeCloseConn {
+	return &pipeCloseConn{
+		preClosed:   make(chan struct{}),
+		readStarted: make(chan struct{}),
+		waitStarted: readStarted,
+	}
+}
+
+func (c *pipeCloseConn) Read([]byte) (int, error) {
+	c.readsActive.Add(1)
+	defer c.readsActive.Add(-1)
+
+	if c.waitStarted != nil {
+		<-c.waitStarted
+		return 0, io.EOF
+	}
+
+	c.readStartOnce.Do(func() {
+		close(c.readStarted)
+	})
+	<-c.preClosed
+	return 0, net.ErrClosed
+}
+
+func (c *pipeCloseConn) Close() error {
+	c.closeCalls.Add(1)
+	return nil
+}
+
+func (c *pipeCloseConn) PreClose() error {
+	c.preCloses.Add(1)
+	c.preOnce.Do(func() {
+		close(c.preClosed)
+	})
+	return nil
+}
+
+func (c *pipeCloseConn) PostClose() error {
+	c.postCloses.Add(1)
+	if c.readsActive.Load() != 0 {
+		c.postDuringRead.Add(1)
 	}
 	return nil
 }

@@ -76,6 +76,28 @@ type testAddr string
 func (a testAddr) Network() string { return "test" }
 func (a testAddr) String() string  { return string(a) }
 
+type phaseCloseMemoryConn struct {
+	*memoryConn
+	preCloses  int
+	postCloses int
+	closes     int
+}
+
+func (c *phaseCloseMemoryConn) PreClose() error {
+	c.preCloses++
+	return c.memoryConn.Close()
+}
+
+func (c *phaseCloseMemoryConn) PostClose() error {
+	c.postCloses++
+	return nil
+}
+
+func (c *phaseCloseMemoryConn) Close() error {
+	c.closes++
+	return errors.Join(c.PreClose(), c.PostClose())
+}
+
 type tcpMemoryConn struct {
 	*memoryConn
 
@@ -430,13 +452,56 @@ func TestPutBackWithPoolReturnsReplacedBuffer(t *testing.T) {
 	pool.Close()
 }
 
-func TestPutBackWithPoolReturnsBufferOnClose(t *testing.T) {
+func TestPutBackPreCloseLeavesBufferedBytesOwned(t *testing.T) {
+	raw := newMemoryConn("tail")
+	conn := putback.New(raw, nil)
+	conn.PutBack([]byte("head"))
+
+	if err := conn.PreClose(); err != nil {
+		t.Fatalf("PreClose: %v", err)
+	}
+	if !raw.closed {
+		t.Fatal("wrapped connection was not closed")
+	}
+	if got := conn.Buffered(); got != len("head") {
+		t.Fatalf("Buffered after PreClose = %d, want %d", got, len("head"))
+	}
+}
+
+func TestPutBackPostCloseReturnsBuffer(t *testing.T) {
+	pool := bufpool.NewTestDebugPool(t)
+	conn := putback.New(newMemoryConn("tail"), pool)
+	conn.PutBack([]byte("head"))
+
+	if err := conn.PreClose(); err != nil {
+		t.Fatalf("PreClose: %v", err)
+	}
+	if got := conn.Buffered(); got != len("head") {
+		t.Fatalf("Buffered after PreClose = %d, want %d", got, len("head"))
+	}
+	if err := conn.PostClose(); err != nil {
+		t.Fatalf("PostClose: %v", err)
+	}
+	if got := conn.Buffered(); got != 0 {
+		t.Fatalf("Buffered after PostClose = %d, want 0", got)
+	}
+	if err := conn.PostClose(); err != nil {
+		t.Fatalf("second PostClose: %v", err)
+	}
+
+	pool.Close()
+}
+
+func TestPutBackCloseReturnsBuffer(t *testing.T) {
 	pool := bufpool.NewTestDebugPool(t)
 	conn := putback.New(newMemoryConn("tail"), pool)
 	conn.PutBack([]byte("head"))
 
 	if err := conn.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
 	}
 
 	pool.Close()
@@ -485,19 +550,30 @@ func TestPutBackWithPoolCloseAfterDrainDoesNotDoublePut(t *testing.T) {
 	pool.Close()
 }
 
-func TestPutBackWithPoolCloseTwiceDoesNotDoublePut(t *testing.T) {
-	pool := bufpool.NewTestDebugPool(t)
-	conn := putback.New(newMemoryConn("tail"), pool)
+func TestPutBackClosePhasesDelegateToWrappedClosePhases(t *testing.T) {
+	raw := &phaseCloseMemoryConn{memoryConn: newMemoryConn("tail")}
+	conn := putback.New(raw, nil)
 	conn.PutBack([]byte("head"))
 
-	if err := conn.Close(); err != nil {
-		t.Fatalf("first Close: %v", err)
+	if err := conn.PreClose(); err != nil {
+		t.Fatalf("PreClose: %v", err)
+	}
+	if err := conn.PostClose(); err != nil {
+		t.Fatalf("PostClose: %v", err)
 	}
 	if err := conn.Close(); err != nil {
-		t.Fatalf("second Close: %v", err)
+		t.Fatalf("Close: %v", err)
 	}
 
-	pool.Close()
+	if raw.preCloses != 1 {
+		t.Fatalf("wrapped PreClose calls = %d, want 1", raw.preCloses)
+	}
+	if raw.postCloses != 1 {
+		t.Fatalf("wrapped PostClose calls = %d, want 1", raw.postCloses)
+	}
+	if raw.closes != 0 {
+		t.Fatalf("wrapped Close calls = %d, want 0", raw.closes)
+	}
 }
 
 func TestPutBackWithPoolDoesNotReadReleasedBufferAfterPartialRead(

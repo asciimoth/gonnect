@@ -19,11 +19,13 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/asciimoth/gonnect"
 	"github.com/asciimoth/gonnect/putback"
 	"github.com/asciimoth/gonnect/sniffer"
 )
@@ -142,6 +144,110 @@ func TestTLSClassifierEncryptedClientHelloFlag(t *testing.T) {
 	})
 	if got := classifier.Feed(hello); got != sniffer.Mismatch {
 		t.Fatalf("forbidden ECH state = %v, want Mismatch", got)
+	}
+}
+
+func TestSniffTLSClientHelloInfoAndReplay(t *testing.T) {
+	hello := tlsTestClientHello(t, tls.VersionTLS13,
+		tlsTestSupportedVersions(t, tls.VersionTLS13, tls.VersionTLS12),
+		tlsTestServerName(t, "API.Example.Test"),
+		tlsTestALPN(t, "h2", "http/1.1"),
+		tlsTestExtension{typ: 0xfe0d},
+	)
+	conn := putback.New(newChunkConn(string(hello), "payload"), nil)
+
+	info, ok, err := sniffer.SniffTLSClientHello(
+		make([]byte, len(hello)),
+		conn,
+	)
+	if err != nil {
+		t.Fatalf("SniffTLSClientHello() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("SniffTLSClientHello() ok = false, want true")
+	}
+	if !slices.Equal(
+		info.Versions,
+		[]uint16{tls.VersionTLS13, tls.VersionTLS12},
+	) {
+		t.Fatalf(
+			"Versions = %v, want [%d %d]",
+			info.Versions,
+			tls.VersionTLS13,
+			tls.VersionTLS12,
+		)
+	}
+	if info.SNIHostname != "api.example.test" {
+		t.Fatalf(
+			"SNIHostname = %q, want api.example.test",
+			info.SNIHostname,
+		)
+	}
+	if !info.SNIEncrypted {
+		t.Fatal("SNIEncrypted = false, want true")
+	}
+	if !slices.Equal(info.ALPNProtocols, []string{"h2", "http/1.1"}) {
+		t.Fatalf(
+			"ALPNProtocols = %v, want [h2 http/1.1]",
+			info.ALPNProtocols,
+		)
+	}
+
+	if got := readAll(t, conn); got != string(hello)+"payload" {
+		t.Fatalf("replayed stream = %q, want original stream", got)
+	}
+}
+
+func TestSniffTLSClientHelloNoMatchAndReplay(t *testing.T) {
+	hello := tlsTestClientHello(t, tls.VersionTLS12,
+		tlsTestServerName(t, "api.example.test"),
+	)
+	conn := putback.New(newChunkConn(string(hello)), nil)
+
+	_, ok, err := sniffer.SniffTLSClientHello(
+		make([]byte, len(hello)-1),
+		conn,
+	)
+	if err != nil {
+		t.Fatalf("SniffTLSClientHello() error = %v", err)
+	}
+	if ok {
+		t.Fatal("SniffTLSClientHello() ok = true, want false")
+	}
+
+	if got := readAll(t, conn); got != string(hello) {
+		t.Fatalf("replayed stream = %q, want original ClientHello", got)
+	}
+}
+
+func TestSniffTLSClientHelloUsesBufferLengthAsLimit(t *testing.T) {
+	const host = "large.example.test"
+	hello := largeTLSTestClientHello(t, host)
+	if len(hello) <= sniffer.DefaultTLSClientHelloMaxBytes {
+		t.Fatalf(
+			"large ClientHello length = %d, want > %d",
+			len(hello),
+			sniffer.DefaultTLSClientHelloMaxBytes,
+		)
+	}
+
+	conn := putback.New(newChunkConn(string(hello), "payload"), nil)
+	info, ok, err := sniffer.SniffTLSClientHello(
+		make([]byte, len(hello)),
+		conn,
+	)
+	if err != nil {
+		t.Fatalf("SniffTLSClientHello() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("SniffTLSClientHello() ok = false, want true")
+	}
+	if info.SNIHostname != host {
+		t.Fatalf("SNIHostname = %q, want %s", info.SNIHostname, host)
+	}
+
+	if got := readAll(t, conn); got != string(hello)+"payload" {
+		t.Fatalf("replayed stream = %q, want original stream", got)
 	}
 }
 
@@ -1000,6 +1106,63 @@ func splitTLSClientHelloRecord(
 	return append(first, second...)
 }
 
+func largeTLSTestClientHello(t *testing.T, host string) []byte {
+	t.Helper()
+
+	sni := tlsTestServerName(t, host)
+	const maxExtensionBlockLen = 65535 - 47
+	paddingLen := maxExtensionBlockLen - (4 + len(sni.data)) - 4
+	if paddingLen <= 0 {
+		t.Fatal("test SNI extension is too large")
+	}
+	hello := tlsTestClientHello(
+		t,
+		tls.VersionTLS12,
+		sni,
+		tlsTestExtension{
+			typ:  21,
+			data: bytes.Repeat([]byte{0}, paddingLen),
+		},
+	)
+	return splitTLSClientHelloRecords(t, hello, 16*1024)
+}
+
+func splitTLSClientHelloRecords(
+	t *testing.T,
+	hello []byte,
+	maxFragment int,
+) []byte {
+	t.Helper()
+
+	if len(hello) < 5 || hello[0] != 22 {
+		t.Fatal("test input is not a TLS handshake record")
+	}
+	if maxFragment <= 0 || maxFragment > 16*1024 {
+		t.Fatal("invalid TLS record fragment size")
+	}
+	recordLength := int(binary.BigEndian.Uint16(hello[3:5]))
+	if len(hello) != 5+recordLength {
+		t.Fatal("test input must contain one complete TLS record")
+	}
+
+	payload := hello[5:]
+	out := make([]byte, 0, len(hello)+(len(payload)/maxFragment)*5)
+	for len(payload) != 0 {
+		fragmentLen := maxFragment
+		if fragmentLen > len(payload) {
+			fragmentLen = len(payload)
+		}
+		out = append(out, hello[0], hello[1], hello[2], 0, 0)
+		binary.BigEndian.PutUint16(
+			out[len(out)-2:],
+			tlsTestUint16Length(t, "TLS record fragment", fragmentLen),
+		)
+		out = append(out, payload[:fragmentLen]...)
+		payload = payload[fragmentLen:]
+	}
+	return out
+}
+
 func tlsTestServerName(t *testing.T, hostname string) tlsTestExtension {
 	t.Helper()
 
@@ -1471,25 +1634,7 @@ func handleSnifferTestProxyConn(
 }
 
 func proxySnifferTestConns(client net.Conn, upstream net.Conn) {
-	var closeOnce sync.Once
-	closeBoth := func() {
-		_ = client.Close()
-		_ = upstream.Close()
-	}
-
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		_, _ = io.Copy(upstream, client)
-		closeOnce.Do(closeBoth)
-	}()
-	go func() {
-		defer wg.Done()
-		_, _ = io.Copy(client, upstream)
-		closeOnce.Do(closeBoth)
-	}()
-	wg.Wait()
+	_ = gonnect.PipeConn(client, upstream, nil)
 }
 
 func runSnifferTestClients(

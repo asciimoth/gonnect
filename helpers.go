@@ -424,24 +424,31 @@ func joinNetErrors(a, b error) (err error) {
 //
 // PipeConn establishes a full-duplex pipe between two connections,
 // copying data from inc->out and out->inc concurrently. It blocks until
-// both directions complete or an error occurs
-// and returns the first error encountered (if any).
+// both directions complete or an error occurs and returns the first error
+// encountered, if any.
+//
+// Each copy direction calls PreClose on both connections when it stops. After
+// both directions have stopped, PipeConn calls PostClose on both connections.
+// Errors from PreClose and PostClose are ignored.
 func PipeConn(inc, out net.Conn, spawner Spawner) (err error) {
 	done := make(chan error, 1)
 	if err := spawn(spawner, func() {
 		_, err := io.Copy(inc, out)
-		_ = inc.Close()
-		_ = out.Close()
+		_ = PreClose(inc)
+		_ = PreClose(out)
 		done <- ClosedNetworkErrToNil(err)
 	}, "gonnect.PipeConn.copy"); err != nil {
 		return err
 	}
 
 	_, err = io.Copy(out, inc)
-	_ = inc.Close()
-	_ = out.Close()
+	_ = PreClose(inc)
+	_ = PreClose(out)
 
-	return joinNetErrors(err, <-done)
+	err = joinNetErrors(err, <-done)
+	_ = PostClose(inc)
+	_ = PostClose(out)
+	return err
 }
 
 // PipePacketConn copies packets bidirectionally between two packet connections.

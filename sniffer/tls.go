@@ -310,6 +310,13 @@ func (c *tlsClassifier) MinSniffBufferSize() int {
 	return c.config.minSniffBufferSize()
 }
 
+func (c *tlsClassifier) Metadata() any {
+	if c.state != Match {
+		return nil
+	}
+	return cloneTLSClientHelloInfo(c.info)
+}
+
 func (c *tlsClassifier) matchClientHello(info TLSClientHelloInfo) bool {
 	if !c.config.version.match(info.Versions) {
 		return false

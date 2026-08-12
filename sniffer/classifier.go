@@ -102,6 +102,10 @@ func (c *sizedClassifier) MinSniffBufferSize() int {
 	return c.minSize
 }
 
+func (c *sizedClassifier) Metadata() any {
+	return Metadata(c.classifier)
+}
+
 // Factory constructs a fresh classifier for one stream.
 //
 // NewClassifier must return an independent instance on every call. A Factory

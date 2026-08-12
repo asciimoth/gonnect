@@ -27,6 +27,23 @@ bounded decision.
 `Match` and `Mismatch` are terminal. `Feed(nil)` queries the initial or current
 state. The slice passed to `Feed` is read-only and can be reused after the call.
 
+Classifiers can optionally expose typed parsed data:
+
+```go
+type MetadataProvider interface {
+	Metadata() any
+}
+```
+
+`Sniff` itself does not depend on metadata. After a match, callers can inspect
+the matched classifier with `sniffer.Metadata(classifier)`. Custom classifiers
+can return any stable value, usually a small struct. The built-in TLS
+classifier returns `TLSClientHelloInfo`; the HTTP classifier returns
+`HTTPInfo`. Wrappers such as `Limit` and `WithMinSniffBufferSize` preserve child
+metadata. `Or` returns the matched child's metadata. `And` returns the single
+child metadata value when only one child exposes metadata, or `CompositeMetadata`
+when multiple children expose metadata.
+
 Factories create a fresh classifier for each connection:
 
 ```go
@@ -274,6 +291,31 @@ func route(raw net.Conn, pool bufpool.Pool) error {
 	}
 }
 ```
+
+## Network middleware
+
+`Sniffer` is a `gonnect.Network` middleware that routes calls to immutable
+output slots and can sniff outgoing TCP dials before the final route.
+
+Construct it with output slots, classifiers, and two callbacks:
+
+- `Control` runs for every `gonnect.Network` method call. It can modify the
+  call fields, choose a 1-based output slot, reject with slot 0, or request
+  interception for outgoing TCP `Dial` and `DialTCP`. An interception request
+  for any other call rejects the call as if slot 0 was selected.
+- `SniffControl` runs only after an intercepted TCP connection is sniffed. It
+  receives `SniffResult`, including the matched classifier index and metadata
+  from the matched classifier, and then chooses the final route.
+
+An intercepted dial returns a local TCP connection immediately. A background
+worker reads client-first bytes from that connection, restores all inspected
+bytes, calls `SniffControl`, opens the selected output connection, and pipes the
+original stream through unchanged.
+
+`Close` and `Down` close only connections and listeners returned by the
+`Sniffer`. They do not close the output networks. Closing one output externally
+does not change the `Sniffer` state and does not affect calls routed to other
+outputs. `IsNative` always returns false.
 
 `SniffWithPool` and `SniffFactoriesWithPool` get the scratch buffer from
 `bufpool` and return it before they return. Pass the same pool to `putback.New`

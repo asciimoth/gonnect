@@ -66,6 +66,34 @@ func (c *andClassifier) MinSniffBufferSize() int {
 	return c.minSize
 }
 
+func (c *andClassifier) Metadata() any {
+	if c.state != Match {
+		return nil
+	}
+
+	metadata := make([]any, len(c.children))
+	count := 0
+	var first any
+	for i, child := range c.children {
+		childMetadata := Metadata(child)
+		metadata[i] = childMetadata
+		if childMetadata == nil {
+			continue
+		}
+		if first == nil {
+			first = childMetadata
+		}
+		count++
+	}
+	if count == 0 {
+		return nil
+	}
+	if count == 1 {
+		return first
+	}
+	return CompositeMetadata{Children: metadata}
+}
+
 // Or returns a classifier that matches when any child matches, mismatches when
 // every child mismatches, and otherwise needs more bytes.
 //
@@ -87,6 +115,7 @@ func Or(children ...Classifier) Classifier {
 		states:   make([]State, len(copyOfChildren)),
 		minSize:  minSize,
 		state:    NeedMore,
+		match:    -1,
 	}
 }
 
@@ -95,6 +124,7 @@ type orClassifier struct {
 	states   []State
 	minSize  int
 	state    State
+	match    int
 }
 
 func (c *orClassifier) Feed(p []byte) State {
@@ -115,6 +145,7 @@ func (c *orClassifier) Feed(p []byte) State {
 		}
 		if state == Match {
 			c.state = Match
+			c.match = i
 			return c.state
 		}
 		if state != Mismatch {
@@ -130,6 +161,13 @@ func (c *orClassifier) Feed(p []byte) State {
 
 func (c *orClassifier) MinSniffBufferSize() int {
 	return c.minSize
+}
+
+func (c *orClassifier) Metadata() any {
+	if c.state != Match || c.match < 0 || c.match >= len(c.children) {
+		return nil
+	}
+	return Metadata(c.children[c.match])
 }
 
 // Not returns the boolean negation of child. NeedMore remains NeedMore, Match

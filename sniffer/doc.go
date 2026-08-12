@@ -20,6 +20,12 @@
 // default; use WithMinSniffBufferSize or FactoryWithMinSniffBufferSize when
 // they need a non-zero size.
 //
+// Classifiers can optionally implement MetadataProvider. Sniff does not use
+// metadata directly, but callers can inspect the matched classifier with
+// Metadata after Sniff returns. Built-in HTTP and TLS classifiers expose
+// HTTPInfo and TLSClientHelloInfo. Custom classifiers can expose any typed
+// value that their routing code understands.
+//
 // HTTP and HTTPFactory match HTTP request lines. HTTP2 and HTTP2Factory match
 // the cleartext HTTP/2 client preface. HTTPWithConfig and
 // HTTPFactoryWithConfig can also filter by exact or multi-value methods, exact
@@ -75,4 +81,13 @@
 //   - A putback.Conn preserves byte order, but buffered bytes do not call the
 //     wrapped connection. Read deadlines and raw socket state are observed only
 //     after the put-back buffer drains.
+//
+// Sniffer is a gonnect.Network middleware in this package. It routes all
+// Network calls to immutable output slots through a Control callback. For
+// outgoing TCP Dial and DialTCP calls, Control can request interception:
+// Sniffer returns a local TCP connection, sniffs client-first bytes from it,
+// restores those bytes, runs SniffControl with the classifier index and
+// metadata, then opens the selected output connection and pipes the stream.
+// Close and Down close only objects returned by Sniffer and never close output
+// Networks.
 package sniffer

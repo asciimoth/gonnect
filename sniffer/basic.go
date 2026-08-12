@@ -132,6 +132,10 @@ func (c *limitClassifier) MinSniffBufferSize() int {
 	return c.minSize
 }
 
+func (c *limitClassifier) Metadata() any {
+	return Metadata(c.child)
+}
+
 // LimitFactory returns a factory that applies Limit to fresh child instances.
 func LimitFactory(limit int, child Factory) Factory {
 	if limit < 0 {

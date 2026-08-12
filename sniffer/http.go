@@ -66,6 +66,19 @@ type HTTPConfig struct {
 	HostnamePatterns []string
 }
 
+// HTTPInfo is metadata parsed from an HTTP request prefix.
+//
+// Method, URL, and Version come from the request line. Hostname is normalized
+// and lower-case when it was visible from an absolute-form request-target or
+// from a Host header inspected by the classifier. Hostname can be empty when
+// the classifier did not need to inspect a Host header.
+type HTTPInfo struct {
+	Method   string
+	URL      string
+	Version  string
+	Hostname string
+}
+
 // HTTP returns a classifier that matches an HTTP request line.
 //
 // The classifier accepts any syntactically valid method token, non-empty
@@ -184,6 +197,7 @@ type httpClassifier struct {
 	line        []byte
 	headerBytes int
 	state       State
+	info        HTTPInfo
 }
 
 func (c *httpClassifier) Feed(p []byte) State {
@@ -213,6 +227,13 @@ func (c *httpClassifier) Feed(p []byte) State {
 
 func (c *httpClassifier) MinSniffBufferSize() int {
 	return c.config.minSniffBufferSize()
+}
+
+func (c *httpClassifier) Metadata() any {
+	if c.state != Match {
+		return nil
+	}
+	return c.info
 }
 
 func (c *httpClassifier) feedRequestLineByte(b byte) State {
@@ -294,14 +315,27 @@ func (c *httpClassifier) matchRequestLine() State {
 		return Mismatch
 	}
 
+	info := HTTPInfo{
+		Method:  string(method),
+		URL:     string(target),
+		Version: string(version),
+	}
+
 	if !c.config.hostname.configured() {
+		if hostname, ok := hostnameFromAbsoluteRequestTarget(target); ok {
+			info.Hostname = hostname
+		}
+		c.info = info
 		return Match
 	}
 	if hostname, ok := hostnameFromAbsoluteRequestTarget(target); ok &&
 		c.config.hostname.match(hostname) {
+		info.Hostname = hostname
+		c.info = info
 		return Match
 	}
 
+	c.info = info
 	c.phase = httpHeaderPhase
 	c.line = c.line[:0]
 	return NeedMore
@@ -328,6 +362,7 @@ func (c *httpClassifier) matchHeaderLine() State {
 	if !ok || !c.config.hostname.match(hostname) {
 		return Mismatch
 	}
+	c.info.Hostname = hostname
 	return Match
 }
 

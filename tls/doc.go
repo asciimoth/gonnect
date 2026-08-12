@@ -1,6 +1,15 @@
-// Package tls provides Network middlewares for outgoing TLS interception.
+// Package tls provides Network middlewares for TLS-aware TCP handling.
 //
-// The middleware is intended for code that accepts a gonnect.Network but does
+// ClientServerNetwork is a direct TLS wrapper. It turns TCP Dial and DialTCP
+// calls into TLS client dials, and it turns TCP Listen and ListenTCP calls into
+// TLS server listeners. A normal HTTP client that uses this Network for Dial
+// can speak to an HTTPS server. A normal HTTP server that uses this Network for
+// Listen can accept direct HTTPS clients. Client and server tls.Config values
+// are required, and optional mappings can select per-connection TLS options
+// such as ALPN protocols and client SNI host. The mappings do not change source
+// or destination addresses.
+//
+// Network is a MITM middleware intended for code that accepts a gonnect.Network but does
 // not let its caller provide a tls.Config. It detects client-first TLS traffic
 // on TCP Dial and DialTCP connections, terminates the client TLS session with a
 // leaf certificate signed by a configured CA, and opens a new upstream TLS

@@ -10,6 +10,13 @@ have been reinvented and reimplemented countless times in many Go projects.
 I created it mostly for myself, but feel free to use it in your projects or 
 [suggest features](https://github.com/asciimoth/gonnect/issues/new).
 
+## Routing rules
+
+The `routing` subpackage provides bytecode based routing rules for
+`gonnect.Router`, `gonnect/tun.Splitter`, and `gonnect/sniffer.Sniffer`.
+Rules can be built directly from bytecode or parsed from a small text format.
+See [`routing/README.md`](routing/README.md) for examples.
+
 ## Related projects
 
 There are some projects based on Gonnect or created for using with it. 
@@ -27,7 +34,6 @@ You may find them useful too:
 - [bufpool](https://github.com/asciimoth/bufpool) - Byte buffer pool interface and testing helpers
 - [putback](https://github.com/asciimoth/putback) - A minimal library that provides wrappers for common I/O interfaces, adding the ability to return read bytes back to the stream for subsequent reading
 - [mnlib](https://github.com/asciimoth/mnlib) - Mesh-oriented DNS names lib (`.meshname`, `.meship`, `.ygg`, `.pk.ygg`)
-- [gonnect-routing](https://github.com/asciimoth/gonnect-routing) - bytecode-based flexible routing rules engine for `gonnect.Router` and `gonnect/tun.Splitter`
 - [sysnet-debug](https://github.com/asciimoth/sysnet-debug) - debug implementation of OS network abstraction from `gonnect/sysnet`
 - [pmark](https://github.com/asciimoth/p-mark) - Go lib and tool for tagging processes for split routing and other purposes
 
@@ -47,4 +53,3 @@ Files in this repository are distributed under the CC0 license.
   has waived all copyright and related or neighboring rights to
   <span property="dct:title">gonnect</span>.
 </p>
-

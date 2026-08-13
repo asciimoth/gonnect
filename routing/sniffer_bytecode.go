@@ -2,6 +2,7 @@ package routing
 
 import (
 	"fmt"
+	"net"
 	"net/netip"
 	"regexp"
 	"strings"
@@ -12,29 +13,109 @@ import (
 
 const maxSnifferBytecodeSlot = 0xff
 
+// SniffClassifierOption is one KEY:VALUE option from an inline SNIFF
+// classifier specification.
+//
+// Constructor implementations receive keys after parser normalization. Values
+// are not decoded or changed by the parser.
+type SniffClassifierOption struct {
+	Key   string
+	Value string
+}
+
+// SniffClassifierConstructor builds one Sniffer classifier factory from inline
+// SNIFF options.
+//
+// The returned canonical string must identify the effective options. It is used
+// only for de-duplication, so equivalent option sets should return the same
+// canonical string. Return an empty canonical string when no option is set.
+type SniffClassifierConstructor func(
+	options []SniffClassifierOption,
+) (canonical string, factory sniffer.Factory, err error)
+
+// NamedSniffClassifierConstructor binds a constructor name to an inline SNIFF
+// classifier constructor.
+//
+// Name is case-sensitive and must be non-empty. It must not contain white space
+// or ":". Constructor must not be nil.
+type NamedSniffClassifierConstructor struct {
+	Name        string
+	Constructor SniffClassifierConstructor
+}
+
 // NamedSniffClassifier binds a rule-language name to a Sniffer classifier
 // factory.
 //
 // Name must be non-empty and must not contain white space. Factory can be any
-// implementation of sniffer.Factory. Built-in HTTP and TLS factories can carry
-// URL, host, SNI, or ALPN filters; custom factories can carry any equivalent
-// policy before bytecode tests the winning name with SNIFF.
+// implementation of sniffer.Factory. Rules can refer to the name with
+// SNIFF <name>.
 type NamedSniffClassifier struct {
 	Name    string
 	Factory sniffer.Factory
 }
 
+// SnifferRouteAction is a route target with call field changes.
+//
+// Slot is the output slot returned by OP_ROUTE. Mutation is applied to the
+// active sniffer.Call before the action is returned.
+type SnifferRouteAction struct {
+	Slot uint8
+
+	Mutation SnifferCallMutation
+}
+
+// SnifferCallMutation contains fixed values that OP_ROUTE can write to a
+// sniffer.Call.
+//
+// A Set field controls whether the paired value is written. Full endpoint
+// replacements, Src and Dst, are applied before endpoint-part replacements.
+type SnifferCallMutation struct {
+	SetNetwork bool
+	Network    string
+
+	SetSrc bool
+	Src    string
+
+	SetDst bool
+	Dst    string
+
+	SetSrcAddr bool
+	SrcAddr    string
+
+	SetSrcPort bool
+	SrcPort    string
+
+	SetDstAddr bool
+	DstAddr    string
+
+	SetDstPort bool
+	DstPort    string
+
+	SetHost bool
+	Host    string
+
+	SetService bool
+	Service    string
+
+	SetProto bool
+	Proto    string
+}
+
 // SnifferBytecodeRules contains the immutable tables and bytecode programs
 // used to build gonnect/sniffer control callbacks.
 //
-// Control runs before sniffing. It can route directly with OP_SLOT/OP_DROP or
-// request TCP interception with OP_INTERCEPT. SniffControl runs after Sniffer
-// restores inspected bytes. It can route with OP_SLOT/OP_DROP and can test the
-// matched classifier with OP_SNIFF or OP_SNIFF_NONE.
+// Control runs before sniffing. It can route directly with OP_SLOT, OP_DROP,
+// or OP_ROUTE, or request TCP interception with OP_INTERCEPT. SniffControl runs
+// after Sniffer restores inspected bytes. It can route with OP_SLOT, OP_DROP,
+// or OP_ROUTE, and it can test the matched classifier with OP_SNIFF or
+// OP_SNIFF_NONE.
 //
 // NewSnifferBytecodeRules derives Control and SniffControl from one rule text.
 // Sniffer-only segments are copied only to the phase where they make sense;
 // normal address, network, method, and slot segments are copied to both.
+//
+// Classifiers contains named classifiers supplied by the caller and generated
+// inline classifiers built from SNIFF specs such as "SNIFF HTTP URL:/blocked".
 type SnifferBytecodeRules struct {
 	Classifiers []NamedSniffClassifier
 
@@ -46,6 +127,9 @@ type SnifferBytecodeRules struct {
 	IPv6Subnets []netip.Prefix
 
 	DNSCacheStorage gdns.CacheStorage
+
+	// RouteActions contains the fixed call changes used by OP_ROUTE.
+	RouteActions []SnifferRouteAction
 
 	Control      []byte
 	SniffControl []byte
@@ -91,6 +175,7 @@ func NewBytecodeSnifferControls(
 		ipv4Subnets:  append([]IPv4Subnet(nil), rules.IPv4Subnets...),
 		ipv6Addrs:    append([]netip.Addr(nil), rules.IPv6Addrs...),
 		ipv6Subnets:  append([]netip.Prefix(nil), rules.IPv6Subnets...),
+		routeActions: append([]SnifferRouteAction(nil), rules.RouteActions...),
 		control:      append([]byte(nil), rules.Control...),
 		sniffControl: append([]byte(nil), rules.SniffControl...),
 	}
@@ -105,8 +190,9 @@ func NewBytecodeSnifferControls(
 		cfg.sniffStringOps.local {
 		cfg.dnsStorage = rules.DNSCacheStorage
 	}
-	cfg.mentionedSlots = mentionedBytecodeSlots(
+	cfg.mentionedSlots = mentionedBytecodeSlotsWithRoutes(
 		maxSnifferBytecodeSlot,
+		cfg.routeActions,
 		cfg.control,
 		cfg.sniffControl,
 	)
@@ -122,6 +208,8 @@ type bytecodeSnifferControls struct {
 	ipv4Subnets []IPv4Subnet
 	ipv6Addrs   []netip.Addr
 	ipv6Subnets []netip.Prefix
+
+	routeActions []SnifferRouteAction
 
 	control      []byte
 	sniffControl []byte
@@ -155,7 +243,7 @@ func (cfg *bytecodeSnifferControls) Control(
 	}
 	return cfg.exec(
 		cfg.control,
-		*call,
+		call,
 		sniffer.SniffResult{Index: sniffer.NoMatch},
 		cfg.controlStringOps,
 	)
@@ -169,7 +257,7 @@ func (cfg *bytecodeSnifferControls) SniffControl(
 	}
 	return cfg.exec(
 		cfg.sniffControl,
-		call.Call,
+		&call.Call,
 		call.Result,
 		cfg.sniffStringOps,
 	)
@@ -201,6 +289,16 @@ func (cfg *bytecodeSnifferControls) validate() error {
 	for i, re := range cfg.regexps {
 		if re == nil {
 			return fmt.Errorf("regexp %d is nil", i)
+		}
+	}
+	for i, action := range cfg.routeActions {
+		if action.Slot > maxSnifferBytecodeSlot {
+			return fmt.Errorf(
+				"route action %d slot %d out of range 0..%d",
+				i,
+				action.Slot,
+				maxSnifferBytecodeSlot,
+			)
 		}
 	}
 	if err := validateTables(
@@ -322,13 +420,17 @@ func (cfg *bytecodeSnifferControls) validateOpIndex(
 		if int(param) >= len(cfg.classifiers) {
 			return fail("sniff classifier", len(cfg.classifiers))
 		}
+	case OP_ROUTE:
+		if int(param) >= len(cfg.routeActions) {
+			return fail("route action", len(cfg.routeActions))
+		}
 	}
 	return nil
 }
 
 func (cfg *bytecodeSnifferControls) exec(
 	code []byte,
-	call sniffer.Call,
+	call *sniffer.Call,
 	result sniffer.SniffResult,
 	stringOps addrStringOps,
 ) sniffer.Action {
@@ -351,6 +453,16 @@ func (cfg *bytecodeSnifferControls) exec(
 					return sniffer.Action{Slot: sniffer.RejectSlot}
 				}
 				return sniffer.Action{Slot: slot}
+			}
+		case OP_ROUTE:
+			if popBool(&stack) {
+				idx, ok := bytecodeParamIndex(param, len(cfg.routeActions))
+				if !ok {
+					return sniffer.Action{Slot: sniffer.RejectSlot}
+				}
+				action := cfg.routeActions[idx]
+				applySnifferCallMutation(call, action.Mutation)
+				return sniffer.Action{Slot: int(action.Slot)}
 			}
 		case OP_INTERCEPT:
 			if popBool(&stack) {
@@ -455,13 +567,68 @@ func (cfg *bytecodeSnifferControls) exec(
 	return sniffer.Action{Slot: sniffer.RejectSlot}
 }
 
+func applySnifferCallMutation(
+	call *sniffer.Call,
+	mutation SnifferCallMutation,
+) {
+	if call == nil {
+		return
+	}
+	if mutation.SetNetwork {
+		call.Network = mutation.Network
+	}
+	if mutation.SetSrc {
+		call.Src = mutation.Src
+	}
+	if mutation.SetDst {
+		call.Dst = mutation.Dst
+	}
+	if mutation.SetSrcAddr {
+		call.Src = replaceEndpointAddr(call.Src, mutation.SrcAddr)
+	}
+	if mutation.SetSrcPort {
+		call.Src = replaceEndpointPort(call.Src, mutation.SrcPort)
+	}
+	if mutation.SetDstAddr {
+		call.Dst = replaceEndpointAddr(call.Dst, mutation.DstAddr)
+	}
+	if mutation.SetDstPort {
+		call.Dst = replaceEndpointPort(call.Dst, mutation.DstPort)
+	}
+	if mutation.SetHost {
+		call.Host = mutation.Host
+	}
+	if mutation.SetService {
+		call.Service = mutation.Service
+	}
+	if mutation.SetProto {
+		call.Proto = mutation.Proto
+	}
+}
+
+func replaceEndpointAddr(endpoint, addr string) string {
+	_, port, err := net.SplitHostPort(endpoint)
+	if err != nil {
+		return addr
+	}
+	return net.JoinHostPort(addr, port)
+}
+
+func replaceEndpointPort(endpoint, port string) string {
+	host, _, err := net.SplitHostPort(endpoint)
+	if err != nil {
+		return endpoint
+	}
+	return net.JoinHostPort(host, port)
+}
+
 func newSnifferBytecodeEval(
-	call sniffer.Call,
+	call *sniffer.Call,
 	storage gdns.CacheStorage,
 	stringOps addrStringOps,
 ) bytecodeEval {
 	dial, listen, lookup := snifferOperationClass(call.Operation)
-	laddr, raddr := snifferCallAddresses(call)
+	laddr, raddr := snifferCallAddresses(*call)
 	return bytecodeEval{
 		network: strings.ToLower(call.Network),
 		laddr:   newAddrCache(addrInput{str: laddr}, storage, stringOps.local),

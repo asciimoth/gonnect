@@ -85,6 +85,9 @@ const (
 	OP_SNIFF
 	// OP_SNIFF_NONE pushes whether sniffing found no matching classifier.
 	OP_SNIFF_NONE
+	// OP_ROUTE pops a boolean value, mutates a sniffer call, and routes to
+	// a route-action slot when it is true.
+	OP_ROUTE
 )
 
 // IPv4Subnet is an IPv4 CIDR subnet used by bytecode routing rules.
@@ -149,7 +152,7 @@ func validateBytecode(
 			return err
 		}
 		switch op {
-		case OP_DROP, OP_SLOT, OP_INTERCEPT:
+		case OP_DROP, OP_SLOT, OP_INTERCEPT, OP_ROUTE:
 			if depth < 1 {
 				return fmt.Errorf(
 					"%s bytecode offset %d: stack underflow",
@@ -207,7 +210,7 @@ func readBytecodeParam(
 	case OP_ADDR_S, OP_LADDR_S, OP_ADDR_RE, OP_LADDR_RE,
 		OP_ADDR4, OP_LADDR4, OP_ADDR6, OP_LADDR6,
 		OP_SNET4, OP_LSNET4, OP_SNET6, OP_LSNET6,
-		OP_PORT, OP_LPORT, OP_RULE, OP_SNIFF:
+		OP_PORT, OP_LPORT, OP_RULE, OP_SNIFF, OP_ROUTE:
 		if *pc+1 >= len(code) {
 			return 0, bytecodeParamUint16, fmt.Errorf(
 				"%s bytecode offset %d: missing uint16 parameter",
@@ -235,7 +238,7 @@ func readBytecodeParamUnchecked(code []byte, pc int, op byte) (uint64, int) {
 	case OP_ADDR_S, OP_LADDR_S, OP_ADDR_RE, OP_LADDR_RE,
 		OP_ADDR4, OP_LADDR4, OP_ADDR6, OP_LADDR6,
 		OP_SNET4, OP_LSNET4, OP_SNET6, OP_LSNET6,
-		OP_PORT, OP_LPORT, OP_RULE, OP_SNIFF:
+		OP_PORT, OP_LPORT, OP_RULE, OP_SNIFF, OP_ROUTE:
 		return uint64(binary.LittleEndian.Uint16(code[pc:])), pc + 2
 	default:
 		return 0, pc
@@ -249,17 +252,37 @@ type SlotReporter interface {
 }
 
 func mentionedBytecodeSlots(maxSlot int, programs ...[]byte) []int {
+	return mentionedBytecodeSlotsWithRoutes(maxSlot, nil, programs...)
+}
+
+func mentionedBytecodeSlotsWithRoutes(
+	maxSlot int,
+	routeActions []SnifferRouteAction,
+	programs ...[]byte,
+) []int {
 	seen := make([]bool, maxSlot+1)
+	mark := func(param uint64) {
+		if param == 0 {
+			return
+		}
+		slot, ok := bytecodeParamInt(param, maxSlot)
+		if ok {
+			seen[slot] = true
+		}
+	}
 	for _, code := range programs {
 		for pc := 0; pc < len(code); {
 			op := code[pc]
 			pc++
 			param, next := readBytecodeParamUnchecked(code, pc, op)
 			pc = next
-			if op == OP_SLOT && param > 0 {
-				slot, ok := bytecodeParamInt(param, maxSlot)
+			switch op {
+			case OP_SLOT:
+				mark(param)
+			case OP_ROUTE:
+				idx, ok := bytecodeParamIndex(param, len(routeActions))
 				if ok {
-					seen[slot] = true
+					mark(uint64(routeActions[idx].Slot))
 				}
 			}
 		}
@@ -664,7 +687,7 @@ func isSplitOnlyOp(op byte) bool {
 
 func isSnifferOnlyOp(op byte) bool {
 	switch op {
-	case OP_INTERCEPT, OP_SNIFF, OP_SNIFF_NONE:
+	case OP_INTERCEPT, OP_SNIFF, OP_SNIFF_NONE, OP_ROUTE:
 		return true
 	default:
 		return false

@@ -128,17 +128,46 @@ func NewSplitBytecodeRules(
 // are copied only to SniffControl. Segments that use neither Sniffer-only
 // operation are copied to both programs. A segment that uses SNIFF and ends in
 // INTERCEPT is rejected because it has no meaningful execution phase.
+//
+// SNIFF can refer to a named classifier from classifiers, or to an inline
+// classifier specification built by DefaultSniffClassifierConstructors.
 func NewSnifferBytecodeRules(
 	classifiers []NamedSniffClassifier,
 	program string,
 ) (SnifferBytecodeRules, error) {
+	return NewSnifferBytecodeRulesWithConstructors(
+		classifiers,
+		DefaultSniffClassifierConstructors(),
+		program,
+	)
+}
+
+// NewSnifferBytecodeRulesWithConstructors parses one rules program like
+// NewSnifferBytecodeRules, but uses constructors as the inline SNIFF
+// classifier collection.
+//
+// A SNIFF argument that matches a named classifier still refers to that
+// classifier. Other arguments can use this form:
+//
+//	SNIFF <constructor> [<option>:<value> ...]
+//
+// Constructor names are case-sensitive. Option names are normalized by each
+// constructor. Repeated equivalent inline specifications share one generated
+// classifier entry. Generated classifiers are appended after the named
+// classifiers, in first-use order.
+func NewSnifferBytecodeRulesWithConstructors(
+	classifiers []NamedSniffClassifier,
+	constructors []NamedSniffClassifierConstructor,
+	program string,
+) (SnifferBytecodeRules, error) {
 	p := newBytecodeParser()
-	classifiers, err := p.setSniffClassifiers(classifiers)
-	if err != nil {
+	if err := p.setSniffClassifiers(classifiers); err != nil {
+		return SnifferBytecodeRules{}, err
+	}
+	if err := p.setSniffClassifierConstructors(constructors); err != nil {
 		return SnifferBytecodeRules{}, err
 	}
 	var rules SnifferBytecodeRules
-	rules.Classifiers = append([]NamedSniffClassifier(nil), classifiers...)
 	for _, segment := range splitBytecodeRuleSegments(program) {
 		targets, err := bytecodeSnifferSegmentTargets(segment)
 		if err != nil {
@@ -181,7 +210,14 @@ type bytecodeParser struct {
 	ipv6NetIndex map[netip.Prefix]uint16
 	rules        []sysnet.Rule
 	ruleIndex    map[sysnet.Rule]uint16
-	sniffIndex   map[string]uint16
+
+	sniffClassifiers  []NamedSniffClassifier
+	sniffIndex        map[string]uint16
+	sniffConstructors map[string]SniffClassifierConstructor
+	sniffSpecIndex    map[string]uint16
+
+	routeActions     []SnifferRouteAction
+	routeActionIndex map[SnifferRouteAction]uint16
 }
 
 func newBytecodeParser() *bytecodeParser {
@@ -193,34 +229,68 @@ func newBytecodeParser() *bytecodeParser {
 		ipv6Index:    make(map[netip.Addr]uint16),
 		ipv6NetIndex: make(map[netip.Prefix]uint16),
 		ruleIndex:    make(map[sysnet.Rule]uint16),
-		sniffIndex:   make(map[string]uint16),
+
+		sniffIndex:        make(map[string]uint16),
+		sniffConstructors: make(map[string]SniffClassifierConstructor),
+		sniffSpecIndex:    make(map[string]uint16),
+		routeActionIndex:  make(map[SnifferRouteAction]uint16),
 	}
 }
 
 func (p *bytecodeParser) setSniffClassifiers(
 	classifiers []NamedSniffClassifier,
-) ([]NamedSniffClassifier, error) {
-	out := make([]NamedSniffClassifier, len(classifiers))
+) error {
 	for i, classifier := range classifiers {
-		name, err := normalizeSniffClassifierName(classifier.Name)
-		if err != nil {
-			return nil, fmt.Errorf("sniff classifier %d: %w", i, err)
+		if _, err := p.addSniffClassifier(classifier); err != nil {
+			return fmt.Errorf("sniff classifier %d: %w", i, err)
 		}
-		if classifier.Factory == nil {
-			return nil, fmt.Errorf("sniff classifier %q has nil factory", name)
-		}
-		if _, ok := p.sniffIndex[name]; ok {
-			return nil, fmt.Errorf("duplicate sniff classifier %q", name)
-		}
-		idx, err := nextTableIndex("SNIFF", i)
-		if err != nil {
-			return nil, err
-		}
-		p.sniffIndex[name] = idx
-		classifier.Name = name
-		out[i] = classifier
 	}
-	return out, nil
+	return nil
+}
+
+func (p *bytecodeParser) setSniffClassifierConstructors(
+	constructors []NamedSniffClassifierConstructor,
+) error {
+	for i, constructor := range constructors {
+		name, err := normalizeSniffClassifierConstructorName(constructor.Name)
+		if err != nil {
+			return fmt.Errorf("sniff classifier constructor %d: %w", i, err)
+		}
+		if constructor.Constructor == nil {
+			return fmt.Errorf(
+				"sniff classifier constructor %q has nil constructor",
+				name,
+			)
+		}
+		if _, ok := p.sniffConstructors[name]; ok {
+			return fmt.Errorf("duplicate sniff classifier constructor %q", name)
+		}
+		p.sniffConstructors[name] = constructor.Constructor
+	}
+	return nil
+}
+
+func (p *bytecodeParser) addSniffClassifier(
+	classifier NamedSniffClassifier,
+) (uint16, error) {
+	name, err := normalizeSniffClassifierName(classifier.Name)
+	if err != nil {
+		return 0, err
+	}
+	if classifier.Factory == nil {
+		return 0, fmt.Errorf("sniff classifier %q has nil factory", name)
+	}
+	if _, ok := p.sniffIndex[name]; ok {
+		return 0, fmt.Errorf("duplicate sniff classifier %q", name)
+	}
+	idx, err := nextTableIndex("SNIFF", len(p.sniffClassifiers))
+	if err != nil {
+		return 0, err
+	}
+	classifier.Name = name
+	p.sniffIndex[name] = idx
+	p.sniffClassifiers = append(p.sniffClassifiers, classifier)
+	return idx, nil
 }
 
 func (p *bytecodeParser) apply(rules *BytecodeRules) {
@@ -243,12 +313,16 @@ func (p *bytecodeParser) applySplit(rules *SplitBytecodeRules) {
 }
 
 func (p *bytecodeParser) applySniffer(rules *SnifferBytecodeRules) {
+	rules.Classifiers = append(
+		[]NamedSniffClassifier(nil),
+		p.sniffClassifiers...)
 	rules.Strings = append([]string(nil), p.strings...)
 	rules.Regexps = append([]*regexp.Regexp(nil), p.regexps...)
 	rules.IPv4Addrs = append([]uint32(nil), p.ipv4Addrs...)
 	rules.IPv4Subnets = append([]IPv4Subnet(nil), p.ipv4Subnets...)
 	rules.IPv6Addrs = append([]netip.Addr(nil), p.ipv6Addrs...)
 	rules.IPv6Subnets = append([]netip.Prefix(nil), p.ipv6Subnets...)
+	rules.RouteActions = append([]SnifferRouteAction(nil), p.routeActions...)
 }
 
 func (p *bytecodeParser) parseProgram(name, src string) ([]byte, error) {
@@ -326,7 +400,7 @@ func bytecodeRuleLineEndsSegment(line string) bool {
 	}
 	opName, _, _ := splitRuleLine(line)
 	switch strings.ToUpper(opName) {
-	case "DROP", "SLOT", "INTERCEPT":
+	case "DROP", "SLOT", "INTERCEPT", "ROUTE":
 		return true
 	default:
 		return false
@@ -586,6 +660,12 @@ func (p *bytecodeParser) appendOp(
 			return nil, err
 		}
 		return appendParam16(code, op, idx), nil
+	case OP_ROUTE:
+		idx, err := p.routeParam(op, arg, hasArg)
+		if err != nil {
+			return nil, err
+		}
+		return appendParam16(code, op, idx), nil
 	default:
 		return nil, fmt.Errorf("unknown opcode %d", op)
 	}
@@ -815,14 +895,117 @@ func (p *bytecodeParser) sniffParam(
 		return 0, err
 	}
 	name, err := normalizeSniffClassifierName(arg)
+	if err == nil {
+		if idx, ok := p.sniffIndex[name]; ok {
+			return idx, nil
+		}
+	}
+	idx, specErr := p.constructSniffClassifier(arg)
+	if specErr == nil {
+		return idx, nil
+	}
+	return 0, specErr
+}
+
+func (p *bytecodeParser) routeParam(
+	op byte,
+	arg string,
+	hasArg bool,
+) (uint16, error) {
+	arg, err := requiredTextArg(op, arg, hasArg)
 	if err != nil {
 		return 0, err
 	}
-	idx, ok := p.sniffIndex[name]
-	if !ok {
-		return 0, fmt.Errorf("unknown sniff classifier %q", name)
+	fields := strings.Fields(arg)
+	if len(fields) == 0 {
+		return 0, fmt.Errorf(
+			"operation %s requires an argument",
+			bytecodeName(op),
+		)
 	}
+	slot, err := strconv.ParseUint(fields[0], 10, 8)
+	if err != nil {
+		return 0, fmt.Errorf("invalid ROUTE slot %q: %w", fields[0], err)
+	}
+
+	action := SnifferRouteAction{Slot: uint8(slot)}
+	seen := make(map[string]struct{}, len(fields)-1)
+	for _, field := range fields[1:] {
+		key, value, ok := strings.Cut(field, ":")
+		key = strings.ToUpper(key)
+		if !ok || key == "" {
+			return 0, fmt.Errorf("ROUTE field %q must use KEY:VALUE", field)
+		}
+		if strings.ContainsAny(key, " \t\r\n:") {
+			return 0, fmt.Errorf("ROUTE field key %q is invalid", key)
+		}
+		if value == "" {
+			return 0, fmt.Errorf("ROUTE field %q has empty value", key)
+		}
+		if _, ok := seen[key]; ok {
+			return 0, fmt.Errorf("duplicate ROUTE field %q", key)
+		}
+		seen[key] = struct{}{}
+		if err := setSnifferRouteField(
+			&action.Mutation,
+			key,
+			value,
+		); err != nil {
+			return 0, err
+		}
+	}
+
+	if idx, ok := p.routeActionIndex[action]; ok {
+		return idx, nil
+	}
+	idx, err := nextTableIndex(bytecodeName(op), len(p.routeActions))
+	if err != nil {
+		return 0, err
+	}
+	p.routeActions = append(p.routeActions, action)
+	p.routeActionIndex[action] = idx
 	return idx, nil
+}
+
+func setSnifferRouteField(
+	mutation *SnifferCallMutation,
+	key, value string,
+) error {
+	switch key {
+	case "NETWORK":
+		mutation.SetNetwork = true
+		mutation.Network = value
+	case "SRC":
+		mutation.SetSrc = true
+		mutation.Src = value
+	case "DST":
+		mutation.SetDst = true
+		mutation.Dst = value
+	case "SRC_ADDR":
+		mutation.SetSrcAddr = true
+		mutation.SrcAddr = value
+	case "SRC_PORT":
+		mutation.SetSrcPort = true
+		mutation.SrcPort = value
+	case "DST_ADDR":
+		mutation.SetDstAddr = true
+		mutation.DstAddr = value
+	case "DST_PORT":
+		mutation.SetDstPort = true
+		mutation.DstPort = value
+	case "HOST":
+		mutation.SetHost = true
+		mutation.Host = value
+	case "SERVICE":
+		mutation.SetService = true
+		mutation.Service = value
+	case "PROTO":
+		mutation.SetProto = true
+		mutation.Proto = value
+	default:
+		return fmt.Errorf("unknown ROUTE field %q", key)
+	}
+	return nil
 }
 
 func normalizeSniffClassifierName(name string) (string, error) {
@@ -939,4 +1122,5 @@ var bytecodeOpByName = map[string]byte{
 	"INTERCEPT":  OP_INTERCEPT,
 	"SNIFF":      OP_SNIFF,
 	"SNIFF_NONE": OP_SNIFF_NONE,
+	"ROUTE":      OP_ROUTE,
 }

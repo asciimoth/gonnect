@@ -291,16 +291,6 @@ func (cfg *bytecodeSnifferControls) validate() error {
 			return fmt.Errorf("regexp %d is nil", i)
 		}
 	}
-	for i, action := range cfg.routeActions {
-		if action.Slot > maxSnifferBytecodeSlot {
-			return fmt.Errorf(
-				"route action %d slot %d out of range 0..%d",
-				i,
-				action.Slot,
-				maxSnifferBytecodeSlot,
-			)
-		}
-	}
 	if err := validateTables(
 		cfg.ipv4Subnets,
 		cfg.ipv6Addrs,
@@ -333,6 +323,13 @@ func (cfg *bytecodeSnifferControls) validateCode(
 		func(pc int, op byte, param uint64, kind bytecodeParamKind) error {
 			switch {
 			case op == OP_RULE:
+				return fmt.Errorf(
+					"%s bytecode offset %d: opcode %d is not valid for Sniffer",
+					name,
+					pc,
+					op,
+				)
+			case isDNSOnlyOp(op):
 				return fmt.Errorf(
 					"%s bytecode offset %d: opcode %d is not valid for Sniffer",
 					name,
@@ -382,46 +379,36 @@ func (cfg *bytecodeSnifferControls) validateOpIndex(
 		)
 	}
 	switch op {
-	case OP_SLOT:
-		if param > maxSnifferBytecodeSlot {
-			return fmt.Errorf(
-				"%s bytecode offset %d: slot %d out of range 0..%d",
-				name,
-				pc,
-				param,
-				maxSnifferBytecodeSlot,
-			)
-		}
 	case OP_ADDR_S, OP_LADDR_S:
-		if int(param) >= len(cfg.strings) {
+		if _, ok := bytecodeParamIndex(param, len(cfg.strings)); !ok {
 			return fail("string", len(cfg.strings))
 		}
 	case OP_ADDR_RE, OP_LADDR_RE:
-		if int(param) >= len(cfg.regexps) {
+		if _, ok := bytecodeParamIndex(param, len(cfg.regexps)); !ok {
 			return fail("regexp", len(cfg.regexps))
 		}
 	case OP_ADDR4, OP_LADDR4:
-		if int(param) >= len(cfg.ipv4Addrs) {
+		if _, ok := bytecodeParamIndex(param, len(cfg.ipv4Addrs)); !ok {
 			return fail("IPv4 address", len(cfg.ipv4Addrs))
 		}
 	case OP_ADDR6, OP_LADDR6:
-		if int(param) >= len(cfg.ipv6Addrs) {
+		if _, ok := bytecodeParamIndex(param, len(cfg.ipv6Addrs)); !ok {
 			return fail("IPv6 address", len(cfg.ipv6Addrs))
 		}
 	case OP_SNET4, OP_LSNET4:
-		if int(param) >= len(cfg.ipv4Subnets) {
+		if _, ok := bytecodeParamIndex(param, len(cfg.ipv4Subnets)); !ok {
 			return fail("IPv4 subnet", len(cfg.ipv4Subnets))
 		}
 	case OP_SNET6, OP_LSNET6:
-		if int(param) >= len(cfg.ipv6Subnets) {
+		if _, ok := bytecodeParamIndex(param, len(cfg.ipv6Subnets)); !ok {
 			return fail("IPv6 subnet", len(cfg.ipv6Subnets))
 		}
 	case OP_SNIFF:
-		if int(param) >= len(cfg.classifiers) {
+		if _, ok := bytecodeParamIndex(param, len(cfg.classifiers)); !ok {
 			return fail("sniff classifier", len(cfg.classifiers))
 		}
 	case OP_ROUTE:
-		if int(param) >= len(cfg.routeActions) {
+		if _, ok := bytecodeParamIndex(param, len(cfg.routeActions)); !ok {
 			return fail("route action", len(cfg.routeActions))
 		}
 	}

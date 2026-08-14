@@ -161,9 +161,13 @@ func (cfg *bytecodeSplitRouter) MentionedSlots() []int {
 	return append([]int(nil), cfg.mentionedSlots...)
 }
 
-func (cfg *bytecodeSplitRouter) Lock() {}
+func (cfg *bytecodeSplitRouter) Lock() {
+	_ = cfg
+}
 
-func (cfg *bytecodeSplitRouter) Unlock() {}
+func (cfg *bytecodeSplitRouter) Unlock() {
+	_ = cfg
+}
 
 func (cfg *bytecodeSplitRouter) Close() error {
 	var err error
@@ -823,6 +827,13 @@ func (cfg *bytecodeSplitRouter) validateOp(
 			op,
 		)
 	}
+	if isDNSOnlyOp(op) {
+		return fmt.Errorf(
+			"SplitRoute bytecode offset %d: opcode %d is not valid for SplitRouter",
+			pc,
+			op,
+		)
+	}
 	if kind == bytecodeParamNone {
 		return nil
 	}
@@ -1412,8 +1423,7 @@ type splitRouteCacheLastEntry struct {
 }
 
 // newSplitRuleResultCache normalizes public cache configuration. Negative
-// values disable caching, zero values select defaults, and non-positive
-// normalized values produce nil so callers can skip cache branches cheaply.
+// values disable caching, and zero values select defaults.
 func newSplitRuleResultCache(
 	ttl time.Duration,
 	maxEntries int,
@@ -1426,9 +1436,6 @@ func newSplitRuleResultCache(
 	}
 	if maxEntries == 0 {
 		maxEntries = defaultSplitRuleCacheMaxEntries
-	}
-	if ttl <= 0 || maxEntries <= 0 {
-		return nil
 	}
 	return &splitRuleResultCache{
 		ttl:        int64(ttl),
@@ -1458,9 +1465,6 @@ func newSplitRouteResultCache(
 	}
 	if routeMaxEntries == 0 {
 		routeMaxEntries = defaultSplitRuleCacheMaxEntries
-	}
-	if routeTTL <= 0 || routeMaxEntries <= 0 {
-		return nil
 	}
 	return &splitRouteResultCache{
 		ttl:        int64(routeTTL),
@@ -1653,9 +1657,6 @@ func parseIPPacket(buf []byte, offset int) (parsedIPPacket, bool) {
 		return parsedIPPacket{}, false
 	}
 	pkt := buf[offset:]
-	if len(pkt) == 0 {
-		return parsedIPPacket{}, false
-	}
 	switch pkt[0] >> 4 {
 	case 4:
 		return parseIPv4Packet(pkt)

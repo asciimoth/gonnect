@@ -88,6 +88,18 @@ const (
 	// OP_ROUTE pops a boolean value, mutates a sniffer call, and routes to
 	// a route-action slot when it is true.
 	OP_ROUTE
+	// OP_BACKEND pops a boolean value and routes a DNS request to the following
+	// backend-name table index when it is true.
+	OP_BACKEND
+	// OP_QTYPE pushes whether the first DNS question type equals the following
+	// uint16 value.
+	OP_QTYPE
+	// OP_QCLASS pushes whether the first DNS question class equals the following
+	// uint16 value.
+	OP_QCLASS
+	// OP_OPCODE pushes whether the DNS message opcode equals the following
+	// uint16 value.
+	OP_OPCODE
 )
 
 // IPv4Subnet is an IPv4 CIDR subnet used by bytecode routing rules.
@@ -152,7 +164,7 @@ func validateBytecode(
 			return err
 		}
 		switch op {
-		case OP_DROP, OP_SLOT, OP_INTERCEPT, OP_ROUTE:
+		case OP_DROP, OP_SLOT, OP_INTERCEPT, OP_ROUTE, OP_BACKEND:
 			if depth < 1 {
 				return fmt.Errorf(
 					"%s bytecode offset %d: stack underflow",
@@ -210,7 +222,8 @@ func readBytecodeParam(
 	case OP_ADDR_S, OP_LADDR_S, OP_ADDR_RE, OP_LADDR_RE,
 		OP_ADDR4, OP_LADDR4, OP_ADDR6, OP_LADDR6,
 		OP_SNET4, OP_LSNET4, OP_SNET6, OP_LSNET6,
-		OP_PORT, OP_LPORT, OP_RULE, OP_SNIFF, OP_ROUTE:
+		OP_PORT, OP_LPORT, OP_RULE, OP_SNIFF, OP_ROUTE, OP_BACKEND,
+		OP_QTYPE, OP_QCLASS, OP_OPCODE:
 		if *pc+1 >= len(code) {
 			return 0, bytecodeParamUint16, fmt.Errorf(
 				"%s bytecode offset %d: missing uint16 parameter",
@@ -238,7 +251,8 @@ func readBytecodeParamUnchecked(code []byte, pc int, op byte) (uint64, int) {
 	case OP_ADDR_S, OP_LADDR_S, OP_ADDR_RE, OP_LADDR_RE,
 		OP_ADDR4, OP_LADDR4, OP_ADDR6, OP_LADDR6,
 		OP_SNET4, OP_LSNET4, OP_SNET6, OP_LSNET6,
-		OP_PORT, OP_LPORT, OP_RULE, OP_SNIFF, OP_ROUTE:
+		OP_PORT, OP_LPORT, OP_RULE, OP_SNIFF, OP_ROUTE, OP_BACKEND,
+		OP_QTYPE, OP_QCLASS, OP_OPCODE:
 		return uint64(binary.LittleEndian.Uint16(code[pc:])), pc + 2
 	default:
 		return 0, pc
@@ -630,12 +644,6 @@ func splitHostPort(s string) (host, port string, ok bool) {
 	if err == nil {
 		return host, port, true
 	}
-	if strings.Count(s, ":") == 1 {
-		i := strings.LastIndexByte(s, ':')
-		if i > 0 && i < len(s)-1 {
-			return s[:i], s[i+1:], true
-		}
-	}
 	return "", "", false
 }
 
@@ -688,6 +696,15 @@ func isSplitOnlyOp(op byte) bool {
 func isSnifferOnlyOp(op byte) bool {
 	switch op {
 	case OP_INTERCEPT, OP_SNIFF, OP_SNIFF_NONE, OP_ROUTE:
+		return true
+	default:
+		return false
+	}
+}
+
+func isDNSOnlyOp(op byte) bool {
+	switch op {
+	case OP_BACKEND, OP_QTYPE, OP_QCLASS, OP_OPCODE:
 		return true
 	default:
 		return false

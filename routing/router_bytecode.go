@@ -260,6 +260,14 @@ func (cfg *bytecodeRouterCfg) validateCode(
 					op,
 				)
 			}
+			if isDNSOnlyOp(op) {
+				return fmt.Errorf(
+					"%s bytecode offset %d: opcode %d is not valid for RouterCfg",
+					name,
+					pc,
+					op,
+				)
+			}
 			return cfg.validateOpIndex(name, pc, op, param, kind)
 		},
 	)

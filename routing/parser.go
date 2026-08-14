@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	gdns "github.com/asciimoth/gonnect/dns"
 	"github.com/asciimoth/gonnect/sysnet"
 )
 
@@ -121,6 +122,29 @@ func NewSplitBytecodeRules(
 	return rules, nil
 }
 
+// NewDNSBytecodeRules parses the simple routing rules language into
+// DNSBytecodeRules.
+//
+// DNS rules use BACKEND as their terminal route operation:
+//
+//	BACKEND secure
+//
+// The backend name is returned by the generated dns.RouteFunc and should match
+// a backend attached to gonnect/dns.Router.
+func NewDNSBytecodeRules(route string) (DNSBytecodeRules, error) {
+	p := newBytecodeParser()
+	code, err := p.parseProgram("DNSRoute", route)
+	if err != nil {
+		return DNSBytecodeRules{}, err
+	}
+	rules := DNSBytecodeRules{Route: code}
+	p.applyDNS(&rules)
+	if _, err := NewBytecodeDNSRouteFunc(rules); err != nil {
+		return DNSBytecodeRules{}, err
+	}
+	return rules, nil
+}
+
 // NewSnifferBytecodeRules parses one rules program and derives the Sniffer
 // control and sniff-control programs from it.
 //
@@ -218,6 +242,9 @@ type bytecodeParser struct {
 
 	routeActions     []SnifferRouteAction
 	routeActionIndex map[SnifferRouteAction]uint16
+
+	backendNames []string
+	backendIndex map[string]uint16
 }
 
 func newBytecodeParser() *bytecodeParser {
@@ -234,6 +261,7 @@ func newBytecodeParser() *bytecodeParser {
 		sniffConstructors: make(map[string]SniffClassifierConstructor),
 		sniffSpecIndex:    make(map[string]uint16),
 		routeActionIndex:  make(map[SnifferRouteAction]uint16),
+		backendIndex:      make(map[string]uint16),
 	}
 }
 
@@ -325,6 +353,25 @@ func (p *bytecodeParser) applySniffer(rules *SnifferBytecodeRules) {
 	rules.RouteActions = append([]SnifferRouteAction(nil), p.routeActions...)
 }
 
+func (p *bytecodeParser) applyDNS(rules *DNSBytecodeRules) {
+	rules.Backends = append([]string(nil), p.backendNames...)
+	rules.Strings = append([]string(nil), p.strings...)
+	rules.Regexps = append([]*regexp.Regexp(nil), p.regexps...)
+	rules.IPv4Addrs = append([]uint32(nil), p.ipv4Addrs...)
+	rules.IPv4Subnets = append([]IPv4Subnet(nil), p.ipv4Subnets...)
+	rules.IPv6Addrs = append([]netip.Addr(nil), p.ipv6Addrs...)
+	rules.IPv6Subnets = append([]netip.Prefix(nil), p.ipv6Subnets...)
+}
+
+func (p *bytecodeParser) applyRemapper(rules *RemapperBytecodeRules) {
+	rules.Strings = append([]string(nil), p.strings...)
+	rules.Regexps = append([]*regexp.Regexp(nil), p.regexps...)
+	rules.IPv4Addrs = append([]uint32(nil), p.ipv4Addrs...)
+	rules.IPv4Subnets = append([]IPv4Subnet(nil), p.ipv4Subnets...)
+	rules.IPv6Addrs = append([]netip.Addr(nil), p.ipv6Addrs...)
+	rules.IPv6Subnets = append([]netip.Prefix(nil), p.ipv6Subnets...)
+}
+
 func (p *bytecodeParser) parseProgram(name, src string) ([]byte, error) {
 	return p.parseProgramLines(name, splitBytecodeRuleLines(src))
 }
@@ -400,7 +447,7 @@ func bytecodeRuleLineEndsSegment(line string) bool {
 	}
 	opName, _, _ := splitRuleLine(line)
 	switch strings.ToUpper(opName) {
-	case "DROP", "SLOT", "INTERCEPT", "ROUTE":
+	case "DROP", "SLOT", "INTERCEPT", "ROUTE", "REMAP", "BACKEND":
 		return true
 	default:
 		return false
@@ -666,6 +713,30 @@ func (p *bytecodeParser) appendOp(
 			return nil, err
 		}
 		return appendParam16(code, op, idx), nil
+	case OP_BACKEND:
+		idx, err := p.backendParam(op, arg, hasArg)
+		if err != nil {
+			return nil, err
+		}
+		return appendParam16(code, op, idx), nil
+	case OP_QTYPE:
+		v, err := dnsUintArg(op, arg, hasArg, dnsTypeNames)
+		if err != nil {
+			return nil, err
+		}
+		return appendParam16(code, op, v), nil
+	case OP_QCLASS:
+		v, err := dnsUintArg(op, arg, hasArg, dnsClassNames)
+		if err != nil {
+			return nil, err
+		}
+		return appendParam16(code, op, v), nil
+	case OP_OPCODE:
+		v, err := dnsUintArg(op, arg, hasArg, dnsOpcodeNames)
+		if err != nil {
+			return nil, err
+		}
+		return appendParam16(code, op, v), nil
 	default:
 		return nil, fmt.Errorf("unknown opcode %d", op)
 	}
@@ -936,9 +1007,6 @@ func (p *bytecodeParser) routeParam(
 		if !ok || key == "" {
 			return 0, fmt.Errorf("ROUTE field %q must use KEY:VALUE", field)
 		}
-		if strings.ContainsAny(key, " \t\r\n:") {
-			return 0, fmt.Errorf("ROUTE field key %q is invalid", key)
-		}
 		if value == "" {
 			return 0, fmt.Errorf("ROUTE field %q has empty value", key)
 		}
@@ -964,6 +1032,34 @@ func (p *bytecodeParser) routeParam(
 	}
 	p.routeActions = append(p.routeActions, action)
 	p.routeActionIndex[action] = idx
+	return idx, nil
+}
+
+func (p *bytecodeParser) backendParam(
+	op byte,
+	arg string,
+	hasArg bool,
+) (uint16, error) {
+	arg, err := requiredTextArg(op, arg, hasArg)
+	if err != nil {
+		return 0, err
+	}
+	name := strings.TrimSpace(arg)
+	if name == "" {
+		return 0, fmt.Errorf(
+			"operation %s requires a backend name",
+			bytecodeName(op),
+		)
+	}
+	if idx, ok := p.backendIndex[name]; ok {
+		return idx, nil
+	}
+	idx, err := nextTableIndex(bytecodeName(op), len(p.backendNames))
+	if err != nil {
+		return 0, err
+	}
+	p.backendNames = append(p.backendNames, name)
+	p.backendIndex[name] = idx
 	return idx, nil
 }
 
@@ -1051,6 +1147,56 @@ func parseUintArg(op byte, arg string, hasArg bool, bits int) (uint64, error) {
 	return v, nil
 }
 
+func dnsUintArg(
+	op byte,
+	arg string,
+	hasArg bool,
+	names map[string]uint16,
+) (uint16, error) {
+	if !hasArg || strings.TrimSpace(arg) == "" {
+		return 0, fmt.Errorf(
+			"operation %s requires an argument",
+			bytecodeName(op),
+		)
+	}
+	text := strings.TrimSpace(arg)
+	if v, ok := names[strings.ToUpper(text)]; ok {
+		return v, nil
+	}
+	v, err := strconv.ParseUint(text, 10, 16)
+	if err != nil {
+		return 0, fmt.Errorf(
+			"invalid %s argument %q: %w",
+			bytecodeName(op),
+			arg,
+			err,
+		)
+	}
+	return uint16(
+		v,
+	), nil //nolint:gosec // ParseUint already limited to 16 bits.
+}
+
+var dnsTypeNames = map[string]uint16{
+	"A":     gdns.TypeA,
+	"NS":    gdns.TypeNS,
+	"CNAME": gdns.TypeCNAME,
+	"SOA":   gdns.TypeSOA,
+	"PTR":   gdns.TypePTR,
+	"MX":    gdns.TypeMX,
+	"TXT":   gdns.TypeTXT,
+	"AAAA":  gdns.TypeAAAA,
+	"SRV":   gdns.TypeSRV,
+}
+
+var dnsClassNames = map[string]uint16{
+	"IN": gdns.ClassIN,
+}
+
+var dnsOpcodeNames = map[string]uint16{
+	"QUERY": uint16(gdns.OpcodeQuery),
+}
+
 func nextTableIndex(name string, n int) (uint16, error) {
 	if n > 0xffff {
 		return 0, fmt.Errorf("%s resource table has too many entries", name)
@@ -1123,4 +1269,8 @@ var bytecodeOpByName = map[string]byte{
 	"SNIFF":      OP_SNIFF,
 	"SNIFF_NONE": OP_SNIFF_NONE,
 	"ROUTE":      OP_ROUTE,
+	"BACKEND":    OP_BACKEND,
+	"QTYPE":      OP_QTYPE,
+	"QCLASS":     OP_QCLASS,
+	"OPCODE":     OP_OPCODE,
 }

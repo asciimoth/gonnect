@@ -12,7 +12,12 @@ import (
 )
 
 // CheckSupport returns the set of supported socket options on this platform.
-// Darwin (macOS) supports buffer size and interface binding, but not routing marks.
+//
+// Darwin support is currently broken and not verified. This file can fail to
+// build until the Darwin socket constants are fixed.
+//
+// Darwin (macOS) supports buffer size and interface binding, but not routing
+// marks.
 func CheckSupport() Support {
 	return Support{
 		BufSize:         true,
@@ -24,6 +29,10 @@ func CheckSupport() Support {
 
 // SetBufSize sets both receive and send buffer sizes for the socket.
 // This function uses unprivileged SO_RCVBUF and SO_SNDBUF options.
+//
+// For compatibility with Darwin socket behavior, this function ignores
+// SO_RCVBUF and SO_SNDBUF errors after the raw socket is acquired. Use
+// GetBuffSize to verify the applied values when the exact size matters.
 func SetBufSize(a any, size int) error {
 	return Control(a, func(f uintptr) {
 		fd := int(f)
@@ -67,7 +76,7 @@ func GetRoutingMark(a any) (mark uint32, err error) {
 // SetBindToInterface binds the socket to a specific network interface.
 // On Darwin, this uses IP_BOUND_IF for IPv4 and IPV6_BOUND_IF for IPv6.
 // The function determines the appropriate protocol based on the connection's
-// network type.
+// local or remote IP family.
 func SetBindToInterface(a any, i gonnect.NetworkInterface) error {
 	conn, ok := a.(net.Conn)
 	if !ok {
@@ -78,26 +87,21 @@ func SetBindToInterface(a any, i gonnect.NetworkInterface) error {
 		return err
 	}
 
-	network := ""
-	if la := conn.LocalAddr(); la != nil && la.Network() != "" {
-		network = la.Network()
-	} else if ra := conn.RemoteAddr(); ra != nil && ra.Network() != "" {
-		network = ra.Network()
-	}
-	if network == "" {
+	family := connIPFamily(conn)
+	if family == socketIPFamilyUnknown {
 		return ErrUnsupported
 	}
 
 	return control(a, func(fd uintptr) error {
-		switch network {
-		case "ip4", "tcp4", "udp4", "ip", "tcp", "udp":
+		switch family {
+		case socketIPFamily4:
 			if err := unix.SetsockoptInt(
 				int(fd), unix.IPPROTO_IP, unix.IP_BOUND_IF, id,
 			); err != nil {
 				return fmt.Errorf("set IP_BOUND_IF: %w", err)
 			}
 			return nil
-		case "ip6", "tcp6", "udp6":
+		case socketIPFamily6:
 			if err := unix.SetsockoptInt(
 				int(fd), unix.IPPROTO_IPV6, unix.IPV6_BOUND_IF, id,
 			); err != nil {

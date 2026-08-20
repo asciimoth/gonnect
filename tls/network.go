@@ -33,7 +33,8 @@ var _ interface {
 } = (*Network)(nil)
 
 const (
-	defaultLeafTTL = 24 * time.Hour
+	defaultLeafTTL      = 24 * time.Hour
+	maxLeafCacheEntries = 256
 )
 
 var (
@@ -113,6 +114,9 @@ type Network struct {
 	leafTTL         time.Duration
 	filter          compiledInterceptionFilter
 	spawner         gonnect.Spawner
+
+	leafMu    sync.Mutex
+	leafCache map[string]stdtls.Certificate
 }
 
 // NewNetwork wraps network with TLS MITM behavior.
@@ -681,7 +685,61 @@ func (n *Network) upstreamConfig(
 }
 
 func (n *Network) leafCertificate(host string) (stdtls.Certificate, error) {
-	return leafCertificate(n.ca, n.caCert, n.leafTTL, host)
+	key := leafCacheKey(host)
+	now := time.Now()
+
+	n.leafMu.Lock()
+	if n.leafCache != nil {
+		if cert, ok := n.leafCache[key]; ok &&
+			cert.Leaf != nil &&
+			cert.Leaf.NotAfter.After(now) {
+			n.leafMu.Unlock()
+			return cert, nil
+		}
+		delete(n.leafCache, key)
+	}
+	n.leafMu.Unlock()
+
+	cert, err := leafCertificate(n.ca, n.caCert, n.leafTTL, host)
+	if err != nil {
+		return stdtls.Certificate{}, err
+	}
+
+	n.leafMu.Lock()
+	defer n.leafMu.Unlock()
+	if n.leafCache == nil {
+		n.leafCache = make(map[string]stdtls.Certificate)
+	}
+	if cached, ok := n.leafCache[key]; ok &&
+		cached.Leaf != nil &&
+		cached.Leaf.NotAfter.After(now) {
+		return cached, nil
+	}
+	n.leafCache[key] = cert
+	n.evictLeafCacheLocked()
+	return cert, nil
+}
+
+func (n *Network) evictLeafCacheLocked() {
+	for len(n.leafCache) > maxLeafCacheEntries {
+		var evictKey string
+		var evictExpiry time.Time
+		for key, cert := range n.leafCache {
+			expiry := time.Time{}
+			if cert.Leaf != nil {
+				expiry = cert.Leaf.NotAfter
+			}
+			if evictKey == "" || expiry.Before(evictExpiry) {
+				evictKey = key
+				evictExpiry = expiry
+			}
+		}
+		delete(n.leafCache, evictKey)
+	}
+}
+
+func leafCacheKey(host string) string {
+	return strings.ToLower(strings.TrimSuffix(host, "."))
 }
 
 func leafCertificate(

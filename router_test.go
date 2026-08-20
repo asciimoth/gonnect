@@ -756,6 +756,95 @@ func TestRouterResolverOverridesLookupAndPreResolvesDial(t *testing.T) {
 	}
 }
 
+func TestRouterDialListenResolutionStopsOnClose(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(context.Context, *gonnect.Router) error
+	}{
+		{
+			name: "DialTCP",
+			call: func(ctx context.Context, r *gonnect.Router) error {
+				c, err := r.DialTCP(ctx, "tcp", "", "blocked.test:80")
+				if c != nil {
+					_ = c.Close()
+				}
+				return err
+			},
+		},
+		{
+			name: "ListenTCP",
+			call: func(ctx context.Context, r *gonnect.Router) error {
+				l, err := r.ListenTCP(ctx, "tcp", "blocked.test:0")
+				if l != nil {
+					_ = l.Close()
+				}
+				return err
+			},
+		},
+		{
+			name: "DialUDP",
+			call: func(ctx context.Context, r *gonnect.Router) error {
+				c, err := r.DialUDP(ctx, "udp", "", "blocked.test:80")
+				if c != nil {
+					_ = c.Close()
+				}
+				return err
+			},
+		},
+		{
+			name: "ListenUDP",
+			call: func(ctx context.Context, r *gonnect.Router) error {
+				c, err := r.ListenUDP(ctx, "udp", "blocked.test:0")
+				if c != nil {
+					_ = c.Close()
+				}
+				return err
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			r := gonnect.NewRouter(nil)
+			resolver := &blockingRouterResolver{started: make(chan struct{})}
+			r.SetResolver(resolver)
+			if err := r.Attach(1, gonnect.NewLoopbackNetwork()); err != nil {
+				t.Fatalf("Attach(1) error = %v", err)
+			}
+			defer r.Close()
+
+			done := make(chan error, 1)
+			go func() {
+				done <- tt.call(ctx, r)
+			}()
+
+			select {
+			case <-resolver.started:
+			case <-time.After(time.Second):
+				t.Fatal("resolver was not called")
+			}
+
+			if err := r.Close(); err != nil {
+				t.Fatalf("Close() error = %v", err)
+			}
+
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf(
+						"%s error = %v, want context.Canceled",
+						tt.name,
+						err,
+					)
+				}
+			case <-time.After(time.Second):
+				t.Fatalf("%s did not stop after router close", tt.name)
+			}
+		})
+	}
+}
+
 func TestRouterSubscribeCloser(t *testing.T) {
 	r := gonnect.NewRouter(nil)
 	closer := &routerTestCloser{}
@@ -849,6 +938,22 @@ type routerTestResolver struct {
 	gonnect.RejectNetwork
 	hosts map[string][]net.IP
 	ports map[string]int
+}
+
+type blockingRouterResolver struct {
+	gonnect.RejectNetwork
+
+	once    sync.Once
+	started chan struct{}
+}
+
+func (r *blockingRouterResolver) LookupHost(
+	ctx context.Context,
+	host string,
+) ([]string, error) {
+	r.once.Do(func() { close(r.started) })
+	<-ctx.Done()
+	return nil, ctx.Err()
 }
 
 func (r *routerTestResolver) LookupHost(

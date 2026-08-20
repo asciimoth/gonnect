@@ -533,7 +533,12 @@ func (r *Router) DialTCP(
 	ctx context.Context,
 	network, laddr, raddr string,
 ) (TCPConn, error) {
-	var err error
+	ctx, cancel, gen, done, err := r.begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer cancel()
+
 	laddr, err = r.resolveNetAddr(ctx, network, laddr)
 	if err != nil {
 		return nil, err
@@ -542,8 +547,8 @@ func (r *Router) DialTCP(
 	if err != nil {
 		return nil, err
 	}
-	slot, backend, ctx, cancel, gen, done, err := r.beginRouted(
-		ctx,
+	slot, backend, err := r.routeStarted(
+		gen,
 		func(cfg RouterCfg) int {
 			if cfg == nil {
 				return routerDefaultSlot
@@ -555,7 +560,6 @@ func (r *Router) DialTCP(
 	if err != nil {
 		return nil, err
 	}
-	defer cancel()
 	c, err := runDetachedOp(
 		r.spawner,
 		ctx,
@@ -575,13 +579,18 @@ func (r *Router) ListenTCP(
 	ctx context.Context,
 	network, laddr string,
 ) (TCPListener, error) {
-	var err error
+	ctx, cancel, gen, done, err := r.begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer cancel()
+
 	laddr, err = r.resolveNetAddr(ctx, network, laddr)
 	if err != nil {
 		return nil, err
 	}
-	slot, backend, ctx, cancel, gen, done, err := r.beginRouted(
-		ctx,
+	slot, backend, err := r.routeStarted(
+		gen,
 		func(cfg RouterCfg) int {
 			if cfg == nil {
 				return routerDefaultSlot
@@ -593,7 +602,6 @@ func (r *Router) ListenTCP(
 	if err != nil {
 		return nil, err
 	}
-	defer cancel()
 	l, err := runDetachedOp(
 		r.spawner,
 		ctx,
@@ -613,7 +621,12 @@ func (r *Router) DialUDP(
 	ctx context.Context,
 	network, laddr, raddr string,
 ) (UDPConn, error) {
-	var err error
+	ctx, cancel, gen, done, err := r.begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer cancel()
+
 	laddr, err = r.resolveNetAddr(ctx, network, laddr)
 	if err != nil {
 		return nil, err
@@ -622,8 +635,8 @@ func (r *Router) DialUDP(
 	if err != nil {
 		return nil, err
 	}
-	slot, backend, ctx, cancel, gen, done, err := r.beginRouted(
-		ctx,
+	slot, backend, err := r.routeStarted(
+		gen,
 		func(cfg RouterCfg) int {
 			if cfg == nil {
 				return routerDefaultSlot
@@ -635,7 +648,6 @@ func (r *Router) DialUDP(
 	if err != nil {
 		return nil, err
 	}
-	defer cancel()
 	c, err := runDetachedOp(
 		r.spawner,
 		ctx,
@@ -658,7 +670,12 @@ func (r *Router) ListenUDP(
 	if !IsUDPNetwork(network) {
 		return nil, net.UnknownNetworkError(network)
 	}
-	var err error
+	ctx, cancel, gen, done, err := r.begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer cancel()
+
 	laddr, err = r.resolveNetAddr(ctx, network, laddr)
 	if err != nil {
 		return nil, err
@@ -666,11 +683,6 @@ func (r *Router) ListenUDP(
 	if _, _, err := net.SplitHostPort(laddr); err != nil {
 		return nil, listenError(network, laddr)
 	}
-	ctx, cancel, gen, done, err := r.begin(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer cancel()
 
 	c, err := runDetachedOp(
 		r.spawner,
@@ -979,6 +991,31 @@ func (r *Router) begin(
 		}
 	}()
 	return opCtx, cancel, gen, done, nil
+}
+
+func (r *Router) routeStarted(
+	gen uint64,
+	selectSlot func(RouterCfg) int,
+	rejectErr func() error,
+) (int, Network, error) {
+	r.mu.Lock()
+	if !r.up || r.closed || r.gen != gen {
+		r.mu.Unlock()
+		return 0, nil, net.ErrClosed
+	}
+	cfg := r.cfg
+	r.mu.Unlock()
+
+	slot := selectSlot(cfg)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.up || r.closed || r.gen != gen {
+		return 0, nil, net.ErrClosed
+	}
+	if !routerValidSlot(slot) || r.slots[slot-1] == nil {
+		return 0, nil, rejectErr()
+	}
+	return slot, r.slots[slot-1], nil
 }
 
 func (r *Router) beginLookup(

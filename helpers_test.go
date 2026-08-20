@@ -455,6 +455,13 @@ func TestReadNullTerminatedString(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:    "zero capacity buffer",
+			input:   []byte("hello\x00"),
+			bufSize: 0,
+			want:    "",
+			wantErr: true,
+		},
+		{
 			name:    "multiple nulls",
 			input:   []byte("test\x00\x00"),
 			bufSize: 10,

@@ -197,7 +197,9 @@ func PickIP(ips []net.IP, prefer int) net.IP {
 // It returns the resulting string (excluding the null terminator).
 // An error is returned if the string exceeds buf's capacity or if reading fails.
 func ReadNullTerminatedString(r io.Reader, buf []byte) (string, error) {
-	// Should be cap(buf) >= 1
+	if cap(buf) < 1 {
+		return "", errors.New("buffer capacity must be at least 1")
+	}
 	buf = buf[:1]
 	for {
 		n, err := r.Read(buf[len(buf)-1:])

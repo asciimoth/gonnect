@@ -91,7 +91,11 @@ func (r *Resolver) LookupIP(
 		if err != nil {
 			return nil, err
 		}
-		return filterNetIPs([]net.IP{ip}, network), nil
+		out := filterNetIPs([]net.IP{ip}, network)
+		if len(out) == 0 {
+			return nil, noSuchHost(address)
+		}
+		return out, nil
 	}
 
 	if !r.isSpecialName(address) {
@@ -363,6 +367,10 @@ func (r *Resolver) exchangeToServer(
 ) (*dns.Msg, error) {
 	msg := new(dns.Msg)
 	msg.SetQuestion(dns.Fqdn(name), qtype)
+
+	if r.Network == nil {
+		return nil, noSuchHost(name)
+	}
 
 	conn, err := r.Network.Dial(
 		ctx,

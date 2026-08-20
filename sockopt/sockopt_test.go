@@ -37,6 +37,43 @@ func (c fakeRawConn) Write(func(fd uintptr) bool) error {
 	return c.err
 }
 
+type fakeNetConn struct {
+	local  net.Addr
+	remote net.Addr
+}
+
+func (c fakeNetConn) Read([]byte) (int, error) {
+	return 0, ErrUnsupported
+}
+
+func (c fakeNetConn) Write([]byte) (int, error) {
+	return 0, ErrUnsupported
+}
+
+func (c fakeNetConn) Close() error {
+	return nil
+}
+
+func (c fakeNetConn) LocalAddr() net.Addr {
+	return c.local
+}
+
+func (c fakeNetConn) RemoteAddr() net.Addr {
+	return c.remote
+}
+
+func (c fakeNetConn) SetDeadline(time.Time) error {
+	return nil
+}
+
+func (c fakeNetConn) SetReadDeadline(time.Time) error {
+	return nil
+}
+
+func (c fakeNetConn) SetWriteDeadline(time.Time) error {
+	return nil
+}
+
 func TestIgnoreUnsupported(t *testing.T) {
 	if err := IgnoreUnsupported(nil); err != nil {
 		t.Fatalf("IgnoreUnsupported(nil) = %v, want nil", err)
@@ -52,6 +89,56 @@ func TestIgnoreUnsupported(t *testing.T) {
 	want := errors.New("other")
 	if err := IgnoreUnsupported(want); !errors.Is(err, want) {
 		t.Fatalf("IgnoreUnsupported(other) = %v, want %v", err, want)
+	}
+}
+
+func TestConnIPFamilyUsesAddressIP(t *testing.T) {
+	tests := []struct {
+		name string
+		conn net.Conn
+		want socketIPFamily
+	}{
+		{
+			name: "tcp network with ipv4 local address",
+			conn: fakeNetConn{
+				local: &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 80},
+			},
+			want: socketIPFamily4,
+		},
+		{
+			name: "tcp network with ipv6 local address",
+			conn: fakeNetConn{
+				local: &net.TCPAddr{IP: net.ParseIP("2001:db8::1"), Port: 80},
+			},
+			want: socketIPFamily6,
+		},
+		{
+			name: "udp network with ipv6 local address",
+			conn: fakeNetConn{
+				local: &net.UDPAddr{IP: net.ParseIP("2001:db8::2"), Port: 53},
+			},
+			want: socketIPFamily6,
+		},
+		{
+			name: "remote fallback",
+			conn: fakeNetConn{
+				remote: &net.TCPAddr{IP: net.ParseIP("2001:db8::3"), Port: 443},
+			},
+			want: socketIPFamily6,
+		},
+		{
+			name: "unknown address family",
+			conn: fakeNetConn{},
+			want: socketIPFamilyUnknown,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := connIPFamily(tt.conn); got != tt.want {
+				t.Fatalf("connIPFamily() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 

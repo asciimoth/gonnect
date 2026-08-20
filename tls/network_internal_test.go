@@ -2,10 +2,15 @@ package tls
 
 import (
 	"bytes"
+	"crypto/rand"
+	"crypto/rsa"
 	stdtls "crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/binary"
 	"io"
 	"math"
+	"math/big"
 	"net"
 	"testing"
 	"time"
@@ -13,6 +18,93 @@ import (
 	"github.com/asciimoth/gonnect/putback"
 	"github.com/asciimoth/gonnect/sniffer"
 )
+
+func TestNetworkLeafCertificateCache(t *testing.T) {
+	ca, caCert := internalTestCA(t, time.Hour)
+	network := &Network{
+		ca:      ca,
+		caCert:  caCert,
+		leafTTL: time.Hour,
+	}
+
+	first, err := network.leafCertificate("Example.TEST.")
+	if err != nil {
+		t.Fatalf("leafCertificate() error = %v", err)
+	}
+	second, err := network.leafCertificate("example.test")
+	if err != nil {
+		t.Fatalf("leafCertificate() second error = %v", err)
+	}
+	if first.Leaf.SerialNumber.Cmp(second.Leaf.SerialNumber) != 0 {
+		t.Fatal("leafCertificate() did not reuse cached certificate")
+	}
+}
+
+func TestNetworkLeafCertificateCacheRefreshesExpiredEntry(t *testing.T) {
+	ca, caCert := internalTestCA(t, time.Hour)
+	network := &Network{
+		ca:      ca,
+		caCert:  caCert,
+		leafTTL: time.Hour,
+		leafCache: map[string]stdtls.Certificate{
+			"example.test": {
+				Leaf: &x509.Certificate{
+					NotAfter: time.Now().Add(-time.Second),
+				},
+			},
+		},
+	}
+
+	cert, err := network.leafCertificate("example.test")
+	if err != nil {
+		t.Fatalf("leafCertificate() error = %v", err)
+	}
+	if !cert.Leaf.NotAfter.After(time.Now()) {
+		t.Fatal("leafCertificate() returned expired certificate")
+	}
+}
+
+func internalTestCA(
+	t *testing.T,
+	ttl time.Duration,
+) (stdtls.Certificate, *x509.Certificate) {
+	t.Helper()
+
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	now := time.Now()
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "gonnect.test"},
+		NotBefore:    now.Add(-time.Minute),
+		NotAfter:     now.Add(ttl),
+		KeyUsage: x509.KeyUsageCertSign |
+			x509.KeyUsageDigitalSignature,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	der, err := x509.CreateCertificate(
+		rand.Reader,
+		template,
+		template,
+		&priv.PublicKey,
+		priv,
+	)
+	if err != nil {
+		t.Fatalf("CreateCertificate() error = %v", err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatalf("ParseCertificate() error = %v", err)
+	}
+	return stdtls.Certificate{
+		Certificate: [][]byte{der},
+		PrivateKey:  priv,
+		Leaf:        cert,
+	}, cert
+}
 
 func TestSniffRouteUsesConfiguredLargeBuffer(t *testing.T) {
 	const host = "large.example.test"

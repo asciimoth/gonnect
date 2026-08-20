@@ -2,6 +2,7 @@
 package dns
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -121,7 +122,7 @@ func TestWireRecordTypes(t *testing.T) {
 				Type:  TypeTXT,
 				Class: ClassIN,
 				TTL:   1,
-				Data:  []byte("hello"),
+				Data:  txtRDATA("hello"),
 			},
 			{
 				Name:  "example.test.",
@@ -157,8 +158,76 @@ func TestWireRecordTypes(t *testing.T) {
 	if len(got.Answers) != len(m.Answers) {
 		t.Fatalf("answers = %d", len(got.Answers))
 	}
-	if string(got.Answers[3].Data) != "hello" {
+	if !bytes.Equal(got.Answers[3].Data, txtRDATA("hello")) {
 		t.Fatalf("TXT data = %q", got.Answers[3].Data)
+	}
+}
+
+func TestWireTXTPreservesRDATA(t *testing.T) {
+	txt := append(txtRDATA("hello", "", "mesh"), 4, 0, 1, 2, 3)
+	m := &Message{
+		ID:       8,
+		Response: true,
+		Answers: []Resource{
+			{
+				Name:  "example.test.",
+				Type:  TypeTXT,
+				Class: ClassIN,
+				TTL:   1,
+				Data:  txt,
+			},
+		},
+	}
+	pkt, err := Pack(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := Unpack(pkt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Answers) != 1 {
+		t.Fatalf("answers = %d", len(got.Answers))
+	}
+	if !bytes.Equal(got.Answers[0].Data, txt) {
+		t.Fatalf("TXT RDATA = %v, want %v", got.Answers[0].Data, txt)
+	}
+}
+
+func TestWireTXTAllowsLongTextAsSegments(t *testing.T) {
+	first := strings.Repeat("a", 255)
+	second := strings.Repeat("b", 45)
+	txt := txtRDATA(first, second)
+	m := &Message{
+		ID:       9,
+		Response: true,
+		Answers: []Resource{
+			{
+				Name:  "example.test.",
+				Type:  TypeTXT,
+				Class: ClassIN,
+				TTL:   1,
+				Data:  txt,
+			},
+		},
+	}
+	pkt, err := Pack(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := Unpack(pkt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Answers) != 1 {
+		t.Fatalf("answers = %d", len(got.Answers))
+	}
+	if !bytes.Equal(got.Answers[0].Data, txt) {
+		t.Fatalf(
+			"TXT RDATA length = %d, want %d",
+			len(got.Answers[0].Data),
+			len(txt),
+		)
 	}
 }
 
@@ -695,6 +764,36 @@ func TestClientTCPAndServerDetach(t *testing.T) {
 	}
 }
 
+func TestClientUDPRetriesTruncatedResponseOverTCP(t *testing.T) {
+	ln := gonnect.NewLoopbackNetwork()
+	upstream := NewResolverProvider(ln, time.Second, nil)
+	defer upstream.Close()
+
+	pc, err := ln.ListenPacket(context.Background(), "udp4", "127.0.0.1:5363")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close()
+	go serveOneTruncatedUDP(t, pc)
+
+	lnr, err := ln.Listen(context.Background(), "tcp4", "127.0.0.1:5363")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lnr.Close()
+	go serveOneTCP(t, lnr, upstream)
+
+	client := NewClient(ln.Dial, nil, nil, "udp://127.0.0.1:5363")
+	defer client.Close()
+	resp, err := Query(context.Background(), client, aQuery("localhost."))
+	if err != nil || len(resp.Answers) == 0 {
+		t.Fatalf("udp client TCP retry resp=%#v err=%v", resp, err)
+	}
+	if resp.Truncated {
+		t.Fatal("client returned truncated UDP response")
+	}
+}
+
 func TestClientDoTUsesBootstrapAndCustomTLSConfig(t *testing.T) {
 	ln := gonnect.NewLoopbackNetwork()
 	upstream := NewResolverProvider(ln, time.Second, nil)
@@ -1136,6 +1235,18 @@ func prefName(pref uint16, name string) []byte {
 	return append(out, name...)
 }
 
+func txtRDATA(segments ...string) []byte {
+	var out []byte
+	for _, s := range segments {
+		if len(s) > 255 {
+			panic("TXT test segment exceeds 255 bytes")
+		}
+		out = append(out, byte(len(s)))
+		out = append(out, s...)
+	}
+	return out
+}
+
 func srvData(priority, weight, port uint16, target string) []byte {
 	out := make([]byte, 6, 6+len(target))
 	binary.BigEndian.PutUint16(out[0:2], priority)
@@ -1179,6 +1290,31 @@ func serveOneTCP(t *testing.T, l net.Listener, upstream Interface) {
 	binary.BigEndian.PutUint16(lenBuf[:], uint16(len(pkt)))
 	_, err = conn.Write(append(lenBuf[:], pkt...))
 	if err != nil {
+		t.Error(err)
+	}
+}
+
+func serveOneTruncatedUDP(t *testing.T, conn net.PacketConn) {
+	t.Helper()
+	buf := make([]byte, maxDNSMessageSize)
+	n, addr, err := conn.ReadFrom(buf)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	msg, err := Unpack(buf[:n])
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	resp := responseFor(msg)
+	resp.Truncated = true
+	pkt, err := Pack(resp)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	if _, err := conn.WriteTo(pkt, addr); err != nil {
 		t.Error(err)
 	}
 }

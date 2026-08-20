@@ -2,6 +2,7 @@ package tun
 
 import (
 	"errors"
+	"io"
 	"os"
 )
 
@@ -43,6 +44,9 @@ func (p *Channel) Read(
 	sizes []int,
 	offset int,
 ) (n int, err error) {
+	if offset < 0 {
+		return 0, errTunInvalidOffset
+	}
 	select {
 	case <-p.closeCh:
 		err = ErrReadOnClosedChan
@@ -50,7 +54,14 @@ func (p *Channel) Read(
 	case pkg := <-p.pkgs:
 		n = min(len(bufs), len(sizes), len(pkg.bufs))
 		for i := range n {
-			sizes[i] = copy(bufs[i][offset:], pkg.bufs[i][pkg.offset:])
+			size := len(pkg.bufs[i]) - pkg.offset
+			if offset > len(bufs[i]) || size > len(bufs[i])-offset {
+				err = io.ErrShortBuffer
+				n = i
+				break
+			}
+			copy(bufs[i][offset:offset+size], pkg.bufs[i][pkg.offset:])
+			sizes[i] = size
 		}
 		select {
 		case <-p.closeCh:
@@ -62,6 +73,9 @@ func (p *Channel) Read(
 }
 
 func (p *Channel) Write(bufs [][]byte, offset int) (written int, err error) {
+	if err = validatePacketOffset(bufs, offset); err != nil {
+		return 0, err
+	}
 	for {
 		if written >= len(bufs) {
 			return

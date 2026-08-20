@@ -1029,10 +1029,16 @@ func validDNSOverTCPQuery(message []byte) bool {
 
 func skipDNSName(message []byte, offset int) (int, bool) {
 	nameBytes := 0
+	returnOffset := 0
+	visited := make(map[int]struct{})
 	for {
 		if !protocolHasBytes(message, offset, 1) {
 			return 0, false
 		}
+		if _, ok := visited[offset]; ok {
+			return 0, false
+		}
+		visited[offset] = struct{}{}
 
 		length := int(message[offset])
 		switch length & 0xc0 {
@@ -1043,6 +1049,9 @@ func skipDNSName(message []byte, offset int) (int, bool) {
 				return 0, false
 			}
 			if length == 0 {
+				if returnOffset != 0 {
+					return returnOffset, true
+				}
 				return offset, true
 			}
 			if !protocolHasBytes(message, offset, length) {
@@ -1061,7 +1070,10 @@ func skipDNSName(message []byte, offset int) (int, bool) {
 			if pointer >= len(message) {
 				return 0, false
 			}
-			return offset + 2, true
+			if returnOffset == 0 {
+				returnOffset = offset + 2
+			}
+			offset = pointer
 		default:
 			return 0, false
 		}

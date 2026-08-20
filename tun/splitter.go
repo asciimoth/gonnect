@@ -330,6 +330,17 @@ func (s *Splitter) readBackend(n *splitterBackend) {
 			}
 			continue
 		}
+		if err := validateReadPacketSizes(
+			bufs,
+			sizes,
+			offset,
+			count,
+		); err != nil {
+			if errors.Is(err, ErrDetachedTunDown) {
+				n.setUp(false)
+			}
+			continue
+		}
 		targets := s.routeBatch(n, bufs, count, offset)
 		if len(targets) == 0 {
 			continue
@@ -617,10 +628,7 @@ func cloneBackendPackets(
 ) [][]byte {
 	packets := make([][]byte, count)
 	for i := range count {
-		size := 0
-		if offset < len(bufs[i]) {
-			size = min(sizes[i], len(bufs[i])-offset)
-		}
+		size := sizes[i]
 		packets[i] = clonePacketBuffer(pool, bufs[i][offset:offset+size])
 	}
 	return packets
@@ -748,12 +756,12 @@ func (f *SplitFrontend) Read(
 		n := min(len(bufs), len(sizes), len(r.bufs))
 		defer putBuffers(r.pool, r.bufs)
 		for i := range n {
-			if offset > len(bufs[i]) {
-				return i, errors.New(
-					"tun: splitter frontend read offset beyond buffer",
-				)
+			size := len(r.bufs[i])
+			if offset > len(bufs[i]) || size > len(bufs[i])-offset {
+				return i, io.ErrShortBuffer
 			}
-			sizes[i] = copy(bufs[i][offset:], r.bufs[i])
+			copy(bufs[i][offset:offset+size], r.bufs[i])
+			sizes[i] = size
 		}
 		return n, nil
 	}
@@ -762,6 +770,9 @@ func (f *SplitFrontend) Read(
 func (f *SplitFrontend) Write(bufs [][]byte, offset int) (int, error) {
 	if offset < f.MWO() {
 		return 0, ErrSplitterSmallOffset
+	}
+	if err := validatePacketOffset(bufs, offset); err != nil {
+		return 0, err
 	}
 	writes, done, err := f.writeChannel()
 	if err != nil {

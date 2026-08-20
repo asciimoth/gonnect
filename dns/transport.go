@@ -195,7 +195,7 @@ func (c *Client) exchange(
 	}
 	var last error
 	for _, addr := range addrs {
-		resp, err := c.exchangeOne(ctx, network, addr, pkt)
+		resp, err := c.exchangeOne(ctx, network, addr, pkt, wire.ID)
 		if err == nil && resp.ID != wire.ID {
 			err = errors.New("dns: response ID mismatch")
 		}
@@ -280,10 +280,18 @@ func (c *Client) exchangeOne(
 	network string,
 	addr serverAddr,
 	pkt []byte,
+	expectedID uint16,
 ) (*Message, error) {
 	switch network {
 	case "udp":
-		return c.exchangeUDP(ctx, addr.addr, pkt)
+		resp, err := c.exchangeUDP(ctx, addr.addr, pkt)
+		if err != nil {
+			return nil, err
+		}
+		if resp.ID == expectedID && resp.Truncated {
+			return c.exchangeStream(ctx, "tcp", addr.addr, pkt, "")
+		}
+		return resp, nil
 	case "tcp":
 		return c.exchangeStream(ctx, "tcp", addr.addr, pkt, "")
 	case "dot":
@@ -309,7 +317,7 @@ func (c *Client) exchangeUDP(
 	if _, err = conn.Write(pkt); err != nil {
 		return nil, err
 	}
-	buf := make([]byte, 1500)
+	buf := make([]byte, maxDNSMessageSize)
 	n, err := conn.Read(buf)
 	if err != nil {
 		return nil, err

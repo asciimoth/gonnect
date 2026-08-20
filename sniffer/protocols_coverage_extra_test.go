@@ -396,9 +396,9 @@ func TestCoverageDNSOverTCPBranches(t *testing.T) {
 	if _, ok := skipDNSName([]byte{0xc0}, 0); ok {
 		t.Fatal("truncated DNS pointer was valid")
 	}
-	offset, ok := skipDNSName([]byte{0xc0, 0}, 0)
-	if !ok || offset != 2 {
-		t.Fatalf("DNS pointer = (%d, %v), want (2, true)", offset, ok)
+	offset, ok := skipDNSName([]byte{0, 0xc0, 0}, 1)
+	if !ok || offset != 3 {
+		t.Fatalf("DNS pointer = (%d, %v), want (3, true)", offset, ok)
 	}
 	if _, ok := skipDNSName([]byte{0x40}, 0); ok {
 		t.Fatal("reserved DNS label form was valid")

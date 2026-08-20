@@ -228,6 +228,26 @@ func TestDNSOverTCPClassifier(t *testing.T) {
 		t.Fatalf("bad name state = %v, want Mismatch", got)
 	}
 
+	compressedName := testDNSOverTCPQueryWithCompressedSecondQuestion()
+	if got := sniffer.DNSOverTCP().Feed(compressedName); got != sniffer.Match {
+		t.Fatalf("compressed name state = %v, want Match", got)
+	}
+
+	badNameTarget := testDNSOverTCPQuery("example.test")
+	badNameTarget[14] = 0xc0
+	badNameTarget[15] = 0x00
+	badTargetClassifier := sniffer.DNSOverTCP()
+	if got := badTargetClassifier.Feed(badNameTarget); got != sniffer.Mismatch {
+		t.Fatalf("bad name target state = %v, want Mismatch", got)
+	}
+
+	loopName := testDNSOverTCPQuery("example.test")
+	loopName[14] = 0xc0
+	loopName[15] = 0x0c
+	if got := sniffer.DNSOverTCP().Feed(loopName); got != sniffer.Mismatch {
+		t.Fatalf("loop name state = %v, want Mismatch", got)
+	}
+
 	factory := sniffer.DNSOverTCPFactoryWithConfig(sniffer.DNSOverTCPConfig{
 		MaxMessageBytes: 64,
 	})
@@ -628,6 +648,28 @@ func testDNSOverTCPQuery(name string) []byte {
 	binary.BigEndian.PutUint16(query, testUint16Len(len(message)))
 	query = append(query, message...)
 	return query
+}
+
+func testDNSOverTCPQueryWithCompressedSecondQuestion() []byte {
+	const (
+		dnsTCPHeaderBytes = 2
+		dnsHeaderBytes    = 12
+	)
+
+	query := testDNSOverTCPQuery("example.test")
+	message := append([]byte(nil), query[dnsTCPHeaderBytes:]...)
+	binary.BigEndian.PutUint16(message[4:6], 2)
+	message = append(message, 0xc0, dnsHeaderBytes)
+	message = binary.BigEndian.AppendUint16(message, 1)
+	message = binary.BigEndian.AppendUint16(message, 1)
+
+	compressedQuery := make(
+		[]byte,
+		dnsTCPHeaderBytes,
+		len(message)+dnsTCPHeaderBytes,
+	)
+	binary.BigEndian.PutUint16(compressedQuery, testUint16Len(len(message)))
+	return append(compressedQuery, message...)
 }
 
 func splitDNSLabels(name string) []string {

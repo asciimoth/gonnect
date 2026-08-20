@@ -4,10 +4,19 @@
 // across different operating systems including Linux, Darwin, FreeBSD, OpenBSD,
 // other Unix-like systems and Windows. It supports buffer size configuration,
 // routing marks (where available), and binding sockets to specific network interfaces.
+//
+// Darwin support is currently marked as broken. Do not rely on this package on
+// Darwin until it is fixed and cross-compile checks pass again.
+//
+// Some non-Linux SetBufSize implementations ignore SO_RCVBUF and SO_SNDBUF
+// errors after the raw socket was acquired. This is intentional compatibility
+// behavior for platforms where one side can fail while the socket stays usable.
+// Use GetBuffSize after SetBufSize when the exact applied value is important.
 package sockopt
 
 import (
 	"errors"
+	"net"
 	"reflect"
 	"strings"
 	"syscall"
@@ -133,4 +142,55 @@ func networkInterfaceNameIndex(
 		}
 	}
 	return i.Name(), i.Index(), nil
+}
+
+type socketIPFamily int
+
+const (
+	socketIPFamilyUnknown socketIPFamily = iota
+	socketIPFamily4
+	socketIPFamily6
+)
+
+func addrIPFamily(addr net.Addr) socketIPFamily {
+	ip := addrIP(addr)
+	if ip == nil {
+		return socketIPFamilyUnknown
+	}
+	if ip.To4() != nil {
+		return socketIPFamily4
+	}
+	if ip.To16() != nil {
+		return socketIPFamily6
+	}
+	return socketIPFamilyUnknown
+}
+
+func connIPFamily(conn net.Conn) socketIPFamily {
+	if family := addrIPFamily(
+		conn.LocalAddr(),
+	); family != socketIPFamilyUnknown {
+		return family
+	}
+	return addrIPFamily(conn.RemoteAddr())
+}
+
+func addrIP(addr net.Addr) net.IP {
+	if addr == nil {
+		return nil
+	}
+	switch a := addr.(type) {
+	case *net.TCPAddr:
+		return a.IP
+	case *net.UDPAddr:
+		return a.IP
+	case *net.IPAddr:
+		return a.IP
+	}
+
+	host, _, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		host = addr.String()
+	}
+	return net.ParseIP(host)
 }

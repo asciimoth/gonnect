@@ -2,6 +2,8 @@
 package tun_test
 
 import (
+	"errors"
+	"io"
 	"sync"
 	"testing"
 
@@ -128,7 +130,7 @@ func TestChan(t *testing.T) {
 			writerBatchSize: 4,
 			writerBufSize:   2,
 
-			exp:             "acegikmoqsuwy",
+			exp:             "",
 			readerBatchSize: 3,
 			readerBufSize:   1,
 		},
@@ -170,4 +172,30 @@ func TestChan(t *testing.T) {
 		})
 	}
 
+}
+
+func TestChanReadShortBuffer(t *testing.T) {
+	t.Parallel()
+
+	ch := tun.NewChan()
+	defer ch.Close()
+
+	writeDone := make(chan error, 1)
+	go func() {
+		_, err := ch.Write([][]byte{[]byte("abcd")}, 0)
+		writeDone <- err
+	}()
+
+	buf := make([]byte, 2)
+	sizes := make([]int, 1)
+	n, err := ch.Read([][]byte{buf}, sizes, 0)
+	if n != 0 {
+		t.Fatalf("Read() n = %d, want 0", n)
+	}
+	if !errors.Is(err, io.ErrShortBuffer) {
+		t.Fatalf("Read() error = %v, want io.ErrShortBuffer", err)
+	}
+
+	_ = ch.Close()
+	<-writeDone
 }

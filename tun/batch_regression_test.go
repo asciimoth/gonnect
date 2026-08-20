@@ -512,3 +512,163 @@ func TestIOReadUsesTunBatchSizeAndBuffersRemainingPackets(t *testing.T) {
 		t.Fatalf("underlying read calls = %d, want 2", got)
 	}
 }
+
+func TestIOPendingReadShortBufferKeepsPacket(t *testing.T) {
+	t.Parallel()
+
+	src := newMockTun(2, 32, 0, 0)
+	src.enqueueRead(mockReadResult{
+		packets: [][]byte{[]byte("a"), []byte("bcde")},
+	})
+	w := NewIO(src, nil)
+
+	buf := make([]byte, 1)
+	n, err := w.Read(buf)
+	if err != nil || n != 1 || string(buf) != "a" {
+		t.Fatalf("first Read() = %d, %v, %q; want 1, nil, a", n, err, buf)
+	}
+
+	n, err = w.Read(make([]byte, 2))
+	if n != 0 || !errors.Is(err, io.ErrShortBuffer) {
+		t.Fatalf("short Read() = %d, %v; want 0, io.ErrShortBuffer", n, err)
+	}
+
+	buf = make([]byte, 4)
+	n, err = w.Read(buf)
+	if err != nil || n != 4 || string(buf) != "bcde" {
+		t.Fatalf("retry Read() = %d, %v, %q; want 4, nil, bcde", n, err, buf)
+	}
+}
+
+func TestDetachedTunReadShortBuffer(t *testing.T) {
+	t.Parallel()
+
+	pool := bufpool.NewTestDebugPool(t)
+	defer pool.Close()
+
+	src := newMockTun(1, 32, 0, 0)
+	d := Detach(src, nil, pool)
+	defer func() {
+		_ = d.Close()
+		_ = src.Close()
+		d.Wait()
+	}()
+
+	src.enqueueRead(mockReadResult{packets: [][]byte{[]byte("abcd")}})
+	sizes := make([]int, 1)
+	n, err := d.Read([][]byte{make([]byte, 2)}, sizes, 0)
+	if n != 0 || !errors.Is(err, io.ErrShortBuffer) {
+		t.Fatalf("Read() = %d, %v; want 0, io.ErrShortBuffer", n, err)
+	}
+}
+
+func TestSplitFrontendReadShortBuffer(t *testing.T) {
+	t.Parallel()
+
+	pool := bufpool.NewTestDebugPool(t)
+	defer pool.Close()
+
+	backend := newMockTun(1, 32, 0, 0)
+	s := NewSplitter(nil, pool)
+	defer func() { _ = s.Close() }()
+	if err := s.Attach(backend); err != nil {
+		t.Fatalf("Attach() error = %v", err)
+	}
+	f := s.Get(1)
+	if err := f.Up(); err != nil {
+		t.Fatalf("Up() error = %v", err)
+	}
+
+	backend.enqueueRead(mockReadResult{packets: [][]byte{[]byte("abcd")}})
+	sizes := make([]int, 1)
+	n, err := f.Read([][]byte{make([]byte, 2)}, sizes, 0)
+	if n != 0 || !errors.Is(err, io.ErrShortBuffer) {
+		t.Fatalf("Read() = %d, %v; want 0, io.ErrShortBuffer", n, err)
+	}
+}
+
+func TestJoinerReadShortBuffer(t *testing.T) {
+	t.Parallel()
+
+	pool := bufpool.NewTestDebugPool(t)
+	defer pool.Close()
+
+	src := newMockTun(1, 32, 0, 0)
+	j := NewJoiner(nil, pool)
+	defer func() { _ = j.Close() }()
+	if err := j.AttachSecondary(src); err != nil {
+		t.Fatalf("AttachSecondary() error = %v", err)
+	}
+
+	src.enqueueRead(mockReadResult{packets: [][]byte{[]byte("abcd")}})
+	sizes := make([]int, 1)
+	n, err := j.Read([][]byte{make([]byte, j.MRO()+2)}, sizes, j.MRO())
+	if n != 0 || !errors.Is(err, io.ErrShortBuffer) {
+		t.Fatalf("Read() = %d, %v; want 0, io.ErrShortBuffer", n, err)
+	}
+}
+
+func TestJoinerWriteOffsetBeyondBuffer(t *testing.T) {
+	t.Parallel()
+
+	j := NewJoiner(nil, nil)
+	defer func() { _ = j.Close() }()
+
+	n, err := j.Write([][]byte{make([]byte, j.MWO())}, j.MWO()+1)
+	if n != 0 || !errors.Is(err, io.ErrShortBuffer) {
+		t.Fatalf("Write() = %d, %v; want 0, io.ErrShortBuffer", n, err)
+	}
+}
+
+func TestSplitterDropsOversizedBackendPacket(t *testing.T) {
+	t.Parallel()
+
+	backend := &oversizedReadTun{
+		mockTun: newMockTun(1, 32, 0, 0),
+		ready:   make(chan struct{}),
+	}
+	s := NewSplitter(nil, nil)
+	defer func() { _ = s.Close() }()
+	if err := s.Attach(backend); err != nil {
+		t.Fatalf("Attach() error = %v", err)
+	}
+	f := s.Get(1)
+	if err := f.Up(); err != nil {
+		t.Fatalf("Up() error = %v", err)
+	}
+
+	<-backend.ready
+	done := make(chan error, 1)
+	go func() {
+		_, err := f.Read([][]byte{make([]byte, 32)}, make([]int, 1), 0)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		t.Fatalf("frontend received invalid packet; Read() error = %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	_ = s.Close()
+	<-done
+}
+
+type oversizedReadTun struct {
+	*mockTun
+	ready chan struct{}
+	once  bool
+}
+
+func (t *oversizedReadTun) Read(
+	bufs [][]byte,
+	sizes []int,
+	offset int,
+) (int, error) {
+	if !t.once {
+		t.once = true
+		close(t.ready)
+		sizes[0] = len(bufs[0]) - offset + 1
+		return 1, nil
+	}
+	return t.mockTun.Read(bufs, sizes, offset)
+}

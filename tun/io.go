@@ -39,11 +39,13 @@ func (r *IO) Read(p []byte) (int, error) {
 
 	if len(r.pending) > 0 {
 		packet := r.pending[0]
+		if len(packet) > len(p) {
+			return 0, io.ErrShortBuffer
+		}
 		r.pending[0] = nil
 		r.pending = r.pending[1:]
-		n := min(len(packet), len(p))
-		copy(p, packet[:n])
-		return n, nil
+		copy(p, packet)
+		return len(packet), nil
 	}
 
 	packetSize := len(p)
@@ -71,8 +73,20 @@ func (r *IO) Read(p []byte) (int, error) {
 		}
 		return 0, io.EOF
 	}
+	if err := validateReadPacketSizes(bufs, sizes, r.ro, n); err != nil {
+		for i := range bufs {
+			bufpool.PutBuffer(r.pool, bufs[i])
+		}
+		return 0, err
+	}
+	if sizes[0] > len(p) {
+		for i := range bufs {
+			bufpool.PutBuffer(r.pool, bufs[i])
+		}
+		return 0, io.ErrShortBuffer
+	}
 
-	readLen := min(sizes[0], len(p))
+	readLen := sizes[0]
 	copy(p, bufs[0][r.ro:r.ro+readLen])
 
 	for i := 1; i < n; i++ {

@@ -79,6 +79,30 @@ func TestResolverLookupIPMeship(t *testing.T) {
 	}
 }
 
+func TestResolverLookupIPMeshipNoIPv4Address(t *testing.T) {
+	t.Parallel()
+
+	const host = "aiag7sesed2aaxgcgbnevruwpy.meship"
+	r := &meshnames.Resolver{Network: &mapNetwork{}}
+
+	ips, err := r.LookupIP(context.Background(), "ip4", host)
+	if err == nil {
+		t.Fatalf("LookupIP() = %v, nil error; want no such host", ips)
+	}
+
+	var dnsErr *net.DNSError
+	if !errors.As(err, &dnsErr) {
+		t.Fatalf("LookupIP() error type = %T, want *net.DNSError", err)
+	}
+	if dnsErr.Name != host || !dnsErr.IsNotFound {
+		t.Fatalf(
+			"LookupIP() error = %#v, want no such host for %q",
+			dnsErr,
+			host,
+		)
+	}
+}
+
 func TestResolverSupportsYggFormats(t *testing.T) {
 	t.Parallel()
 
@@ -352,6 +376,30 @@ func TestResolverWithoutFallbackRejectsNonSpecialNames(t *testing.T) {
 	if dnsErr.Err != want.Err || dnsErr.Server != want.Server ||
 		dnsErr.IsNotFound != want.IsNotFound {
 		t.Fatalf("LookupHost() error = %#v, want %#v", dnsErr, want)
+	}
+}
+
+func TestResolverSpecialNameWithoutNetworkReturnsError(t *testing.T) {
+	t.Parallel()
+
+	const host = "svc.aiag7sesed2aaxgcgbnevruwpy.meshname"
+	r := &meshnames.Resolver{}
+
+	ips, err := r.LookupIP(context.Background(), "ip6", host)
+	if err == nil {
+		t.Fatalf("LookupIP() = %v, nil error; want no such host", ips)
+	}
+
+	var dnsErr *net.DNSError
+	if !errors.As(err, &dnsErr) {
+		t.Fatalf("LookupIP() error type = %T, want *net.DNSError", err)
+	}
+	if dnsErr.Name != host || !dnsErr.IsNotFound {
+		t.Fatalf(
+			"LookupIP() error = %#v, want no such host for %q",
+			dnsErr,
+			host,
+		)
 	}
 }
 

@@ -40,7 +40,9 @@ import (
 // Callers must treat nil owner as no usable owner information, even when err is
 // nil.
 func GetIncomingConnOwner(conn net.Conn) (*SocketOwner, error) {
-	gonnect.GetWrapped(conn)
+	if wrapped, ok := gonnect.GetWrapped(conn).(net.Conn); ok {
+		conn = wrapped
+	}
 
 	owner, err := getIncomingUnixPeerOwner(conn)
 	if err == nil && owner != nil {

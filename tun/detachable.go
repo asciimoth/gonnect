@@ -386,10 +386,12 @@ func (d *DetachedTun) Read(
 		n := min(len(bufs), len(sizes), len(r.bufs))
 		defer putBuffers(r.pool, r.bufs)
 		for i := range n {
-			if offset > len(bufs[i]) {
-				return i, errors.New("tun: read offset beyond buffer")
+			size := len(r.bufs[i])
+			if offset > len(bufs[i]) || size > len(bufs[i])-offset {
+				return i, io.ErrShortBuffer
 			}
-			sizes[i] = copy(bufs[i][offset:], r.bufs[i])
+			copy(bufs[i][offset:offset+size], r.bufs[i])
+			sizes[i] = size
 		}
 		return n, nil
 	}
@@ -398,6 +400,9 @@ func (d *DetachedTun) Read(
 func (d *DetachedTun) Write(bufs [][]byte, offset int) (int, error) {
 	if offset < 0 {
 		return 0, errors.New("tun: negative write offset")
+	}
+	if err := validatePacketOffset(bufs, offset); err != nil {
+		return 0, err
 	}
 	writes, done, req, err := d.writeRequest(bufs, offset)
 	if err != nil {
@@ -611,12 +616,17 @@ func (d *DetachedTun) readPump(
 			}
 			return
 		}
+		if err := validateReadPacketSizes(bufs, sizes, d.mro, n); err != nil {
+			select {
+			case <-done:
+				return
+			case reads <- detachedTunRead{err: err}:
+			}
+			return
+		}
 		packets := make([][]byte, n)
 		for i := range n {
-			size := 0
-			if len(bufs[i]) > d.mro {
-				size = min(sizes[i], len(bufs[i])-d.mro)
-			}
+			size := sizes[i]
 			packets[i] = clonePacketBuffer(
 				d.pool,
 				bufs[i][d.mro:d.mro+size],

@@ -304,6 +304,9 @@ func (j *Joiner) Write(bufs [][]byte, offset int) (int, error) {
 	if offset < joinerOffset {
 		return 0, ErrJoinerSmallOffset
 	}
+	if err := validatePacketOffset(bufs, offset); err != nil {
+		return 0, err
+	}
 	j.mu.Lock()
 	if j.closed {
 		j.mu.Unlock()
@@ -390,12 +393,15 @@ func (j *Joiner) readPending(
 	}
 	n := min(len(bufs), len(sizes), len(j.pending))
 	for i := range n {
-		if offset > len(bufs[i]) {
-			return i, errors.New("tun: joiner read offset beyond buffer")
+		size := len(j.pending[i].packet)
+		if offset > len(bufs[i]) || size > len(bufs[i])-offset {
+			return i, io.ErrShortBuffer
 		}
 	}
 	for i := range n {
-		sizes[i] = copy(bufs[i][offset:], j.pending[i].packet)
+		size := len(j.pending[i].packet)
+		copy(bufs[i][offset:offset+size], j.pending[i].packet)
+		sizes[i] = size
 	}
 	putJoinerPendingLocked(j.pending[:n])
 	j.pending = j.pending[n:]
@@ -451,12 +457,17 @@ func (j *Joiner) readNested(n *joinerNested) {
 			}
 			continue
 		}
+		if err := validateReadPacketSizes(
+			bufs,
+			sizes,
+			offset,
+			count,
+		); err != nil {
+			continue
+		}
 		packets := make([][]byte, count)
 		for i := range count {
-			size := 0
-			if len(bufs[i]) > offset {
-				size = min(sizes[i], len(bufs[i])-offset)
-			}
+			size := sizes[i]
 			packets[i] = clonePacketBuffer(
 				j.pool,
 				bufs[i][offset:offset+size],

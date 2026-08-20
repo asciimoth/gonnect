@@ -2,8 +2,8 @@
 
 package gonnect
 
-import "golang.org/x/sys/unix"
-
-func setNativeRecvAnyIf(fd int) error {
-	return unix.SetsockoptInt(fd, unix.IPPROTO_IP, unix.IP_RECVANYIF, 1)
+func setNativeRecvAnyIf(_ int) error {
+	// Darwin support is not verified. Keep RecvAnyIf disabled until the
+	// correct macOS socket option is tested.
+	return ErrUnsupported
 }

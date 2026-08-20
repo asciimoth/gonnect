@@ -150,10 +150,15 @@ func packResource(
 			Target:   target,
 		})
 	case TypeTXT:
-		return b.TXTResource(
-			h,
-			dnsmessage.TXTResource{TXT: []string{string(data)}},
-		)
+		if _, ok := txtSegments(data); ok {
+			return b.UnknownResource(h, dnsmessage.UnknownResource{
+				Type: h.Type,
+				Data: data,
+			})
+		}
+		return b.TXTResource(h, dnsmessage.TXTResource{
+			TXT: rawTXTSegments(data),
+		})
 	default:
 		return b.UnknownResource(h, dnsmessage.UnknownResource{Data: data})
 	}
@@ -252,6 +257,7 @@ func resourceData(body dnsmessage.ResourceBody) []byte {
 	case *dnsmessage.TXTResource:
 		var out []byte
 		for _, s := range b.TXT {
+			out = append(out, byte(len(s)))
 			out = append(out, s...)
 		}
 		return out
@@ -260,6 +266,33 @@ func resourceData(body dnsmessage.ResourceBody) []byte {
 	default:
 		return nil
 	}
+}
+
+func txtSegments(data []byte) ([]string, bool) {
+	var out []string
+	for len(data) > 0 {
+		n := int(data[0])
+		data = data[1:]
+		if n > len(data) {
+			return nil, false
+		}
+		out = append(out, string(data[:n]))
+		data = data[n:]
+	}
+	return out, true
+}
+
+func rawTXTSegments(data []byte) []string {
+	if len(data) == 0 {
+		return []string{""}
+	}
+	out := make([]string, 0, (len(data)+254)/255)
+	for len(data) > 0 {
+		n := min(len(data), 255)
+		out = append(out, string(data[:n]))
+		data = data[n:]
+	}
+	return out
 }
 
 func wireName(name string) (dnsmessage.Name, error) {

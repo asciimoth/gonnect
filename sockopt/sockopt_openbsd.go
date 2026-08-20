@@ -23,6 +23,10 @@ func CheckSupport() Support {
 
 // SetBufSize sets both receive and send buffer sizes for the socket.
 // This function uses unprivileged SO_RCVBUF and SO_SNDBUF options.
+//
+// For compatibility with OpenBSD socket behavior, this function ignores
+// SO_RCVBUF and SO_SNDBUF errors after the raw socket is acquired. Use
+// GetBuffSize to verify the applied values when the exact size matters.
 func SetBufSize(a any, size int) error {
 	return Control(a, func(f uintptr) {
 		fd := int(f)

@@ -23,6 +23,10 @@ func CheckSupport() Support {
 }
 
 // SetBufSize sets both receive and send buffer sizes for the socket.
+//
+// For compatibility with Windows socket behavior, this function ignores
+// SO_RCVBUF and SO_SNDBUF errors after the raw socket is acquired. Use
+// GetBuffSize to verify the applied values when the exact size matters.
 func SetBufSize(a any, size int) error {
 	return Control(a, func(f uintptr) {
 		fd := int(f)
@@ -84,21 +88,15 @@ func SetBindToInterface(a any, i gonnect.NetworkInterface) error {
 		return err
 	}
 
-	network := ""
-	if la := conn.LocalAddr(); la != nil && la.Network() != "" {
-		network = la.Network()
-	} else if ra := conn.RemoteAddr(); ra != nil && ra.Network() != "" {
-		network = ra.Network()
-	}
-
-	if network == "" {
+	family := connIPFamily(conn)
+	if family == socketIPFamilyUnknown {
 		return ErrUnsupported
 	}
 
 	return control(a, func(fd uintptr) error {
 		h := windows.Handle(fd)
-		switch network {
-		case "ip4", "tcp4", "udp4", "ip", "tcp", "udp":
+		switch family {
+		case socketIPFamily4:
 			if err := windows.SetsockoptInt(
 				h, windows.IPPROTO_IP, 0x1f,
 				// Windows expects the IPv4 interface index in network byte order.
@@ -107,17 +105,8 @@ func SetBindToInterface(a any, i gonnect.NetworkInterface) error {
 				return fmt.Errorf("set IP_UNICAST_IF: %w", err)
 			}
 			return nil
-		case "ip6", "tcp6", "udp6":
-			var ip net.IP
-			if la := conn.LocalAddr(); la != nil {
-				host, _, err := net.SplitHostPort(la.String())
-				if err != nil {
-					return err
-				}
-				ip = net.ParseIP(host)
-			} else {
-				return ErrUnsupported
-			}
+		case socketIPFamily6:
+			ip := addrIP(conn.LocalAddr())
 			if ip == nil || ip.IsUnspecified() {
 				if err := windows.SetsockoptInt(
 					h, windows.IPPROTO_IPV6, 0x1f, id,

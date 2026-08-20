@@ -49,8 +49,15 @@ var (
 // A connection is accepted when at least one UID, GID, or username rule matches
 // its resolved owner. Empty rules match nothing.
 type Rules struct {
-	UIDs      []uint32
-	GIDs      []uint32
+	// UIDs are OS user IDs accepted from sockowner results.
+	UIDs []uint32
+
+	// GIDs are OS group IDs accepted from sockowner results.
+	GIDs []uint32
+
+	// Usernames are resolved when the protected listener is created and again
+	// for each accepted connection. A username rule matches only when both
+	// resolutions produce the same UID as the connection owner.
 	Usernames []string
 }
 

@@ -103,9 +103,13 @@ func GetRoutingMark(a any) (mark uint32, err error) {
 // SetBindToInterface binds the socket to a specific network interface
 // using the SO_BINDTODEVICE option. This requires appropriate privileges.
 func SetBindToInterface(a any, i gonnect.NetworkInterface) error {
+	name, _, err := networkInterfaceNameIndex(i)
+	if err != nil {
+		return err
+	}
 	return control(a, func(fd uintptr) error {
-		if err := unix.BindToDevice(int(fd), i.Name()); err != nil {
-			return fmt.Errorf("bind SO_BINDTODEVICE %q: %w", i.Name(), err)
+		if err := unix.BindToDevice(int(fd), name); err != nil {
+			return fmt.Errorf("bind SO_BINDTODEVICE %q: %w", name, err)
 		}
 		return nil
 	})

@@ -89,8 +89,8 @@ type ServerPolicySpec struct {
 // remote servers.
 //
 // A ServerPolicy is safe for concurrent use. Create one with
-// CompileServerPolicy. Use TLSClientConfig, TLSClientConfigForServer, or
-// NewHTTPTransport to attach it to TLS connections.
+// CompileServerPolicy. Use TLSClientConfig or TLSClientConfigForServer to
+// attach it to TLS connections.
 type ServerPolicy struct {
 	roots *x509.CertPool
 

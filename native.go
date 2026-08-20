@@ -169,6 +169,11 @@ func nativePortNetwork(network string) string {
 	return network
 }
 
+func nativeDialNeedsResolution(network string) bool {
+	return strings.HasPrefix(network, "tcp") ||
+		strings.HasPrefix(network, "udp")
+}
+
 func nativeHostsPaths() []string {
 	if runtime.GOOS != "windows" {
 		return []string{"/etc/hosts"}
@@ -286,8 +291,18 @@ func (c NativeConfig) Build() *NativeNetwork {
 	if c.ResolverCfg != nil {
 		rc = *c.ResolverCfg
 	}
+	resolverDial := rc.Dial
+	rc.Dial = func(ctx context.Context, network, address string) (net.Conn, error) {
+		err := n.doFilter(network, address, actionDial)
+		if err != nil {
+			return nil, err
+		}
+		if resolverDial != nil {
+			return resolverDial(ctx, network, address)
+		}
+		return n.dialer.DialContext(ctx, network, address)
+	}
 	r := rc.Build()
-	r.Dial = n.dialInternal
 	n.resolver = &r
 
 	n.dialer = net.Dialer{
@@ -568,10 +583,19 @@ func (n *NativeNetwork) Dial(
 	ctx context.Context,
 	network, address string,
 ) (net.Conn, error) {
+	if nativeDialNeedsResolution(network) {
+		ip, port, err := n.resolveAddr(ctx, network, address, actionDial)
+		if err != nil {
+			return nil, err
+		}
+		return n.dialer.DialContext(ctx, network, nativeJoinIPPort(ip, port))
+	}
+
 	err := n.doFilter(network, address, actionDial)
 	if err != nil {
 		return nil, err
 	}
+
 	return n.dialer.DialContext(ctx, network, address)
 }
 

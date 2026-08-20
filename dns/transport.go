@@ -18,6 +18,56 @@ import (
 
 const maxDNSMessageSize = 1<<16 - 1
 
+const (
+	defaultPacketMaxConcurrentRequests = 256
+	defaultPacketRequestTimeout        = 5 * time.Second
+)
+
+// PacketOptions configures DNS packet request handling.
+//
+// MaxConcurrentRequests limits active packet handlers. Extra packets wait at
+// the packet input path, which applies backpressure to the caller or listener.
+// Values less than 1 use a safe default.
+//
+// RequestTimeout limits one forwarded request. Values less than 1 use a safe
+// default.
+type PacketOptions struct {
+	MaxConcurrentRequests int
+	RequestTimeout        time.Duration
+}
+
+func normalizePacketOptions(opts PacketOptions) PacketOptions {
+	if opts.MaxConcurrentRequests < 1 {
+		opts.MaxConcurrentRequests = defaultPacketMaxConcurrentRequests
+	}
+	if opts.RequestTimeout < 1 {
+		opts.RequestTimeout = defaultPacketRequestTimeout
+	}
+	return opts
+}
+
+type packetLimiter chan struct{}
+
+func newPacketLimiter(limit int) packetLimiter {
+	return make(packetLimiter, limit)
+}
+
+func (l packetLimiter) acquire(ctx context.Context) bool {
+	select {
+	case l <- struct{}{}:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func (l packetLimiter) release() {
+	select {
+	case <-l:
+	default:
+	}
+}
+
 // Client is a simple DNS client for udp://, tcp://, and dot:// servers.
 //
 // It sends supported DNS query messages to the configured servers and returns
@@ -146,6 +196,9 @@ func (c *Client) exchange(
 	var last error
 	for _, addr := range addrs {
 		resp, err := c.exchangeOne(ctx, network, addr, pkt)
+		if err == nil && resp.ID != wire.ID {
+			err = errors.New("dns: response ID mismatch")
+		}
 		if err == nil {
 			return resp, nil
 		}
@@ -335,6 +388,8 @@ type Server struct {
 	conn    net.PacketConn
 	p       *provider
 	spawner gonnect.Spawner
+	timeout time.Duration
+	limit   packetLimiter
 
 	mu       sync.Mutex
 	upstream Interface
@@ -350,7 +405,23 @@ func NewServer(
 	upstream Interface,
 	spawner gonnect.Spawner,
 ) *Server {
-	s := &Server{conn: conn, spawner: spawner}
+	return NewServerWithOptions(conn, upstream, spawner, PacketOptions{})
+}
+
+// NewServerWithOptions starts serving DNS packets from conn.
+func NewServerWithOptions(
+	conn net.PacketConn,
+	upstream Interface,
+	spawner gonnect.Spawner,
+	opts PacketOptions,
+) *Server {
+	opts = normalizePacketOptions(opts)
+	s := &Server{
+		conn:    conn,
+		spawner: spawner,
+		timeout: opts.RequestTimeout,
+		limit:   newPacketLimiter(opts.MaxConcurrentRequests),
+	}
 	s.Attach(upstream)
 	ctx, cancel := context.WithCancel(context.Background())
 	s.p = &provider{
@@ -405,9 +476,14 @@ func (s *Server) serve(ctx context.Context) {
 			return
 		}
 		pkt := append([]byte(nil), buf[:n]...)
+		if !s.limit.acquire(ctx) {
+			return
+		}
 		if err := spawn(s.spawner, func() {
+			defer s.limit.release()
 			s.handlePacket(ctx, pkt, addr)
 		}, "dns.Server.handlePacket"); err != nil {
+			s.limit.release()
 			return
 		}
 	}
@@ -428,7 +504,7 @@ func (s *Server) handlePacket(ctx context.Context, pkt []byte, addr net.Addr) {
 		s.write(addr, resp)
 		return
 	}
-	qctx, cancel := context.WithCancel(ctx)
+	qctx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
 	go func() {
 		select {

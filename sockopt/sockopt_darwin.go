@@ -3,6 +3,7 @@
 package sockopt
 
 import (
+	"fmt"
 	"net"
 	"time"
 
@@ -70,44 +71,43 @@ func GetRoutingMark(a any) (mark uint32, err error) {
 func SetBindToInterface(a any, i gonnect.NetworkInterface) error {
 	conn, ok := a.(net.Conn)
 	if !ok {
-		return nil
-	}
-	rc, err1 := gonnect.SyscallConn(a)
-	if err1 != nil {
-		return err1
-	}
-	if rc == nil {
 		return ErrUnsupported
 	}
+	_, id, err := networkInterfaceNameIndex(i)
+	if err != nil {
+		return err
+	}
 
-	network := "ip4"
+	network := ""
 	if la := conn.LocalAddr(); la != nil && la.Network() != "" {
 		network = la.Network()
 	} else if ra := conn.RemoteAddr(); ra != nil && ra.Network() != "" {
 		network = ra.Network()
 	}
-
-	id := i.Index()
-
-	var err2 error
-	err1 = rc.Control(func(fd uintptr) {
-		switch network {
-		case "ip4", "tcp4", "udp4", "ip", "tcp", "udp":
-			err2 = unix.SetsockoptInt(
-				int(fd), unix.IPPROTO_IP, unix.IP_BOUND_IF, id,
-			)
-		case "ip6", "tcp6", "udp6":
-			err2 = unix.SetsockoptInt(
-				int(fd), unix.IPPROTO_IPV6, unix.IPV6_BOUND_IF, id,
-			)
-		}
-	})
-
-	if err1 != nil {
-		return err1
+	if network == "" {
+		return ErrUnsupported
 	}
 
-	return err2
+	return control(a, func(fd uintptr) error {
+		switch network {
+		case "ip4", "tcp4", "udp4", "ip", "tcp", "udp":
+			if err := unix.SetsockoptInt(
+				int(fd), unix.IPPROTO_IP, unix.IP_BOUND_IF, id,
+			); err != nil {
+				return fmt.Errorf("set IP_BOUND_IF: %w", err)
+			}
+			return nil
+		case "ip6", "tcp6", "udp6":
+			if err := unix.SetsockoptInt(
+				int(fd), unix.IPPROTO_IPV6, unix.IPV6_BOUND_IF, id,
+			); err != nil {
+				return fmt.Errorf("set IPV6_BOUND_IF: %w", err)
+			}
+			return nil
+		default:
+			return ErrUnsupported
+		}
+	})
 }
 
 // SetTCPTimeout sets the TCP user timeout.

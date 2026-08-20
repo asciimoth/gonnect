@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 const (
@@ -33,6 +34,8 @@ type IPPacketCallback func([]byte)
 type IPPacketAdapter struct {
 	upstream Interface
 	callback IPPacketCallback
+	timeout  time.Duration
+	limit    packetLimiter
 
 	done   chan struct{}
 	closed atomic.Bool
@@ -45,10 +48,22 @@ func NewIPPacketAdapter(
 	upstream Interface,
 	callback IPPacketCallback,
 ) *IPPacketAdapter {
+	return NewIPPacketAdapterWithOptions(upstream, callback, PacketOptions{})
+}
+
+// NewIPPacketAdapterWithOptions creates an adapter backed by upstream.
+func NewIPPacketAdapterWithOptions(
+	upstream Interface,
+	callback IPPacketCallback,
+	opts PacketOptions,
+) *IPPacketAdapter {
+	opts = normalizePacketOptions(opts)
 	done := make(chan struct{})
 	return &IPPacketAdapter{
 		upstream: upstream,
 		callback: callback,
+		timeout:  opts.RequestTimeout,
+		limit:    newPacketLimiter(opts.MaxConcurrentRequests),
 		done:     done,
 	}
 }
@@ -79,15 +94,27 @@ func (a *IPPacketAdapter) feedPacket(pkt []byte) {
 	if err != nil || msg.Response {
 		return
 	}
-	go a.handleRequest(req, msg)
+	ctx, cancel := a.queryContext()
+	if !a.limit.acquire(ctx) {
+		cancel()
+		return
+	}
+	go a.handleRequest(ctx, cancel, req, msg)
 }
 
-func (a *IPPacketAdapter) handleRequest(req ipPacketRequest, msg *Message) {
+func (a *IPPacketAdapter) handleRequest(
+	ctx context.Context,
+	cancel context.CancelFunc,
+	req ipPacketRequest,
+	msg *Message,
+) {
+	defer a.limit.release()
+	defer cancel()
 	if a.closed.Load() {
 		return
 	}
 	clientID := msg.ID
-	resp := a.query(msg)
+	resp := a.query(ctx, msg)
 	if resp == nil || a.closed.Load() {
 		return
 	}
@@ -99,14 +126,12 @@ func (a *IPPacketAdapter) handleRequest(req ipPacketRequest, msg *Message) {
 	a.emit(pkt)
 }
 
-func (a *IPPacketAdapter) query(msg *Message) *Message {
+func (a *IPPacketAdapter) query(ctx context.Context, msg *Message) *Message {
 	if a.upstream == nil {
 		resp := responseFor(msg)
 		resp.RCode = RCodeServerFailure
 		return resp
 	}
-	ctx, cancel := a.queryContext()
-	defer cancel()
 	resp, err := Query(ctx, a.upstream, msg)
 	if err == nil {
 		return resp
@@ -120,7 +145,20 @@ func (a *IPPacketAdapter) query(msg *Message) *Message {
 }
 
 func (a *IPPacketAdapter) queryContext() (context.Context, context.CancelFunc) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx := context.Background()
+	if a != nil && a.timeout > 0 {
+		ctxWithTimeout, cancel := context.WithTimeout(ctx, a.timeout)
+		ctx = ctxWithTimeout
+		return a.closeAwareContext(ctx, cancel)
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	return a.closeAwareContext(ctx, cancel)
+}
+
+func (a *IPPacketAdapter) closeAwareContext(
+	ctx context.Context,
+	cancel context.CancelFunc,
+) (context.Context, context.CancelFunc) {
 	if a == nil || a.done == nil {
 		return ctx, cancel
 	}

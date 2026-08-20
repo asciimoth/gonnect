@@ -42,6 +42,19 @@ type mockTun struct {
 	events chan Event
 }
 
+type mtuSignalTun struct {
+	*mockTun
+	once sync.Once
+	seen chan struct{}
+}
+
+func (t *mtuSignalTun) MTU() (int, error) {
+	t.once.Do(func() {
+		close(t.seen)
+	})
+	return t.mockTun.MTU()
+}
+
 func newMockTun(batchSize, mtu, mwo, mro int) *mockTun {
 	t := &mockTun{
 		batchSize: batchSize,
@@ -52,6 +65,28 @@ func newMockTun(batchSize, mtu, mwo, mro int) *mockTun {
 	}
 	t.cond = sync.NewCond(&t.mu)
 	return t
+}
+
+func waitForForwarderMutex(
+	t *testing.T,
+	f *Forwarder,
+	timeout time.Duration,
+) {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	for {
+		if f.mu.TryLock() {
+			f.mu.Unlock()
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal(
+				"forwarder mutex stayed locked while config send was blocked",
+			)
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 func (t *mockTun) File() *os.File { return nil }
@@ -245,6 +280,66 @@ func TestCopyOneWayRetriesRetryableReadCapacityError(t *testing.T) {
 		wantPackets,
 	) {
 		t.Fatalf("written packets = %q, want %q", got, wantPackets)
+	}
+}
+
+func TestForwarderSetReadTunDoesNotHoldMutexDuringConfigSend(t *testing.T) {
+	t.Parallel()
+
+	frw := &Forwarder{
+		chCfgRead: make(chan *frwCfg, 2),
+	}
+	frw.chCfgRead <- &frwCfg{}
+	frw.chCfgRead <- &frwCfg{}
+
+	src := &mtuSignalTun{
+		mockTun: newMockTun(1, 1500, 0, 0),
+		seen:    make(chan struct{}),
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		frw.SetReadTun(src)
+	}()
+
+	<-src.seen
+	waitForForwarderMutex(t, frw, 100*time.Millisecond)
+
+	<-frw.chCfgRead
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("SetReadTun stayed blocked after config channel had space")
+	}
+}
+
+func TestForwarderSetWriteTunDoesNotHoldMutexDuringConfigSend(t *testing.T) {
+	t.Parallel()
+
+	frw := &Forwarder{
+		chCfgWrite: make(chan *frwCfg, 2),
+	}
+	frw.chCfgWrite <- &frwCfg{}
+	frw.chCfgWrite <- &frwCfg{}
+
+	dst := &mtuSignalTun{
+		mockTun: newMockTun(1, 1500, 0, 0),
+		seen:    make(chan struct{}),
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		frw.SetWriteTun(dst)
+	}()
+
+	<-dst.seen
+	waitForForwarderMutex(t, frw, 100*time.Millisecond)
+
+	<-frw.chCfgWrite
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("SetWriteTun stayed blocked after config channel had space")
 	}
 }
 

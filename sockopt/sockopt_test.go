@@ -215,6 +215,34 @@ func TestLinuxSocketOptions(t *testing.T) {
 	}
 }
 
+func TestLinuxSocketOptionErrors(t *testing.T) {
+	badFD := ^uintptr(0)
+
+	err := SetRoutingMark(fakeRawConn{fd: badFD}, FwmarkIstio)
+	if err == nil {
+		t.Fatal("SetRoutingMark(bad fd) = nil, want error")
+	}
+
+	err = SetBindToInterface(fakeRawConn{fd: badFD}, nil)
+	if !errors.Is(err, ErrUnsupported) {
+		t.Fatalf(
+			"SetBindToInterface(nil interface) = %v, want ErrUnsupported",
+			err,
+		)
+	}
+
+	err = SetBindToInterface(
+		struct{}{},
+		&gonnect.LiteralInterface{NameVal: "lo"},
+	)
+	if !errors.Is(err, ErrUnsupported) {
+		t.Fatalf(
+			"SetBindToInterface(unsupported input) = %v, want ErrUnsupported",
+			err,
+		)
+	}
+}
+
 func TestLinuxTCPOptions(t *testing.T) {
 	ln, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {

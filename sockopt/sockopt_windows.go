@@ -3,6 +3,7 @@
 package sockopt
 
 import (
+	"fmt"
 	"math/bits"
 	"net"
 	"time"
@@ -76,14 +77,11 @@ func GetRoutingMark(a any) (mark uint32, err error) {
 func SetBindToInterface(a any, i gonnect.NetworkInterface) error {
 	conn, ok := a.(net.Conn)
 	if !ok {
-		return nil
-	}
-	rc, err1 := gonnect.SyscallConn(a)
-	if err1 != nil {
-		return err1
-	}
-	if rc == nil {
 		return ErrUnsupported
+	}
+	_, id, err := networkInterfaceNameIndex(i)
+	if err != nil {
+		return err
 	}
 
 	network := ""
@@ -94,43 +92,45 @@ func SetBindToInterface(a any, i gonnect.NetworkInterface) error {
 	}
 
 	if network == "" {
-		return nil
+		return ErrUnsupported
 	}
 
-	var err2 error
-	err1 = rc.Control(func(fd uintptr) {
+	return control(a, func(fd uintptr) error {
 		h := windows.Handle(fd)
 		switch network {
 		case "ip4", "tcp4", "udp4", "ip", "tcp", "udp":
-			err2 = windows.SetsockoptInt(
+			if err := windows.SetsockoptInt(
 				h, windows.IPPROTO_IP, 0x1f,
-				// Fuck winapi
-				int(bits.ReverseBytes32(uint32(i.Index()))),
-			)
+				// Windows expects the IPv4 interface index in network byte order.
+				int(bits.ReverseBytes32(uint32(id))),
+			); err != nil {
+				return fmt.Errorf("set IP_UNICAST_IF: %w", err)
+			}
+			return nil
 		case "ip6", "tcp6", "udp6":
 			var ip net.IP
 			if la := conn.LocalAddr(); la != nil {
-				host, _, err1 := net.SplitHostPort(la.String())
-				if err1 != nil {
-					return
+				host, _, err := net.SplitHostPort(la.String())
+				if err != nil {
+					return err
 				}
 				ip = net.ParseIP(host)
 			} else {
-				return
+				return ErrUnsupported
 			}
 			if ip == nil || ip.IsUnspecified() {
-				err2 = windows.SetsockoptInt(
-					h, windows.IPPROTO_IPV6, 0x1f, i.Index(),
-				)
+				if err := windows.SetsockoptInt(
+					h, windows.IPPROTO_IPV6, 0x1f, id,
+				); err != nil {
+					return fmt.Errorf("set IPV6_UNICAST_IF: %w", err)
+				}
+				return nil
 			}
+			return ErrUnsupported
+		default:
+			return ErrUnsupported
 		}
 	})
-
-	if err1 != nil {
-		return err1
-	}
-
-	return err2
 }
 
 // SetTCPTimeout sets the TCP user timeout.

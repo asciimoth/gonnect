@@ -185,6 +185,9 @@ type TunOpts struct {
 	MTU int
 }
 
+// Copy converts b into an independent DefaultTunOpts value. The copied value
+// contains the same addresses, routes, and MTU, but has empty Include and
+// Exclude rule lists.
 func (b *TunOpts) Copy() DefaultTunOpts {
 	c := DefaultTunOpts{
 		MTU: b.MTU,

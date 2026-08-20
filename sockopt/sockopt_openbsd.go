@@ -3,6 +3,7 @@
 package sockopt
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/asciimoth/gonnect"
@@ -56,13 +57,16 @@ func SetRoutingMark(a any, mark uint32) error {
 	if mark > unix.RT_TABLEID_MAX {
 		return unix.EINVAL
 	}
-	return Control(a, func(fd uintptr) {
-		_ = unix.SetsockoptInt(
+	return control(a, func(fd uintptr) error {
+		if err := unix.SetsockoptInt(
 			int(fd),
 			unix.SOL_SOCKET,
 			unix.SO_RTABLE,
 			int(mark),
-		)
+		); err != nil {
+			return fmt.Errorf("set SO_RTABLE: %w", err)
+		}
+		return nil
 	})
 }
 

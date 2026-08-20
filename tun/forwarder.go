@@ -28,8 +28,9 @@ type frwCfg struct {
 //
 // For bi-directional forwarding see Point2Point.
 type Forwarder struct {
-	wg sync.WaitGroup
-	mu sync.Mutex
+	wg        sync.WaitGroup
+	mu        sync.Mutex
+	cfgSendWg sync.WaitGroup
 
 	stopped bool
 
@@ -92,6 +93,8 @@ func (f *Forwarder) Stop() {
 		_ = f.tunWrite.Close()
 	}
 
+	f.cfgSendWg.Wait()
+
 	close(f.chCfgWrite)
 	close(f.chCfgRead)
 
@@ -116,8 +119,8 @@ func (f *Forwarder) Stop() {
 // If the forwarder is stopped, this call does nothing.
 func (f *Forwarder) SetReadTun(tun Tun) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	if f.stopped {
+		f.mu.Unlock()
 		return
 	}
 
@@ -137,11 +140,16 @@ func (f *Forwarder) SetReadTun(tun Tun) {
 		}
 	}
 
-	f.chCfgRead <- &frwCfg{
+	cfg := &frwCfg{
 		tun:    tun,
 		offset: offset,
 		mtu:    mtu,
 	}
+	f.cfgSendWg.Add(1)
+	f.mu.Unlock()
+
+	defer f.cfgSendWg.Done()
+	f.chCfgRead <- cfg
 }
 
 // SetWriteTun dynamically replaces the TUN device used for writing.
@@ -149,8 +157,8 @@ func (f *Forwarder) SetReadTun(tun Tun) {
 // If the forwarder is stopped, this call does nothing.
 func (f *Forwarder) SetWriteTun(tun Tun) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	if f.stopped {
+		f.mu.Unlock()
 		return
 	}
 
@@ -170,11 +178,16 @@ func (f *Forwarder) SetWriteTun(tun Tun) {
 		}
 	}
 
-	f.chCfgWrite <- &frwCfg{
+	cfg := &frwCfg{
 		tun:    tun,
 		offset: offset,
 		mtu:    mtu,
 	}
+	f.cfgSendWg.Add(1)
+	f.mu.Unlock()
+
+	defer f.cfgSendWg.Done()
+	f.chCfgWrite <- cfg
 }
 
 func frwWriter(

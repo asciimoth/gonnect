@@ -99,6 +99,43 @@ func TestNativeNetworkDialNoResolver(t *testing.T) {
 	}
 }
 
+func TestNativeNetworkDialFiltersResolvedIP(t *testing.T) {
+	t.Parallel()
+
+	const wantResolved = "127.0.0.1:443"
+	var sawOriginal atomic.Bool
+	var sawResolved atomic.Bool
+	n := gonnect.NativeConfig{
+		Filter: func(network, address string) bool {
+			switch address {
+			case "blocked.test:443":
+				sawOriginal.Store(true)
+			case wantResolved:
+				sawResolved.Store(true)
+				return true
+			}
+			return false
+		},
+	}.Build()
+	dns := newNativeStaticDNS(net.IPv4(127, 0, 0, 1))
+	t.Cleanup(func() { _ = dns.Close() })
+	n.SetResolver(gdns.NewResolver(dns))
+
+	if _, err := n.Dial(
+		context.Background(),
+		"tcp4",
+		"blocked.test:443",
+	); err == nil {
+		t.Fatal("Dial() error = nil, want resolved endpoint filter error")
+	}
+	if !sawOriginal.Load() {
+		t.Fatal("filter did not see original hostname endpoint")
+	}
+	if !sawResolved.Load() {
+		t.Fatalf("filter did not see resolved endpoint %s", wantResolved)
+	}
+}
+
 func TestNativeNetworkTypedDialUsesControls(t *testing.T) {
 	t.Parallel()
 
@@ -332,6 +369,11 @@ type nativeNameErrorDNS struct {
 	calls atomic.Int32
 }
 
+type nativeStaticDNS struct {
+	ch chan gdns.Request
+	ip net.IP
+}
+
 func newNativeNameErrorDNS() *nativeNameErrorDNS {
 	d := &nativeNameErrorDNS{ch: make(chan gdns.Request)}
 	go func() {
@@ -349,9 +391,51 @@ func newNativeNameErrorDNS() *nativeNameErrorDNS {
 	return d
 }
 
+func newNativeStaticDNS(ip net.IP) *nativeStaticDNS {
+	d := &nativeStaticDNS{
+		ch: make(chan gdns.Request),
+		ip: append(net.IP(nil), ip...),
+	}
+	go func() {
+		for req := range d.ch {
+			resp := &gdns.Message{
+				ID:       req.Message.ID,
+				Response: true,
+				RCode:    gdns.RCodeSuccess,
+				Questions: append(
+					[]gdns.Question(nil),
+					req.Message.Questions...,
+				),
+			}
+			for _, q := range req.Message.Questions {
+				if q.Type != gdns.TypeA {
+					resp.RCode = gdns.RCodeNameError
+					break
+				}
+				resp.Answers = append(resp.Answers, gdns.Resource{
+					Name:  q.Name,
+					Type:  gdns.TypeA,
+					Class: gdns.ClassIN,
+					TTL:   60,
+					Data:  append([]byte(nil), d.ip.To4()...),
+				})
+			}
+			req.Reply <- gdns.Response{Message: resp}
+		}
+	}()
+	return d
+}
+
 func (d *nativeNameErrorDNS) Requests() chan<- gdns.Request { return d.ch }
 
 func (d *nativeNameErrorDNS) Close() error {
+	close(d.ch)
+	return nil
+}
+
+func (d *nativeStaticDNS) Requests() chan<- gdns.Request { return d.ch }
+
+func (d *nativeStaticDNS) Close() error {
 	close(d.ch)
 	return nil
 }

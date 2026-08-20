@@ -116,9 +116,9 @@ func (r *Router) DetachRouter() error {
 }
 
 func (r *Router) handle(root context.Context, req Request) {
-	backend, done := r.current(req.Message)
-	if backend == nil {
-		sendResponse(req, nil, ErrNoUpstream)
+	backend, done, err := r.current(req.Message)
+	if err != nil {
+		sendResponse(req, nil, err)
 		return
 	}
 	ctx := req.Context
@@ -140,27 +140,32 @@ func (r *Router) handle(root context.Context, req Request) {
 	sendResponse(req, resp, err)
 }
 
-func (r *Router) current(msg *Message) (Interface, <-chan struct{}) {
+func (r *Router) current(msg *Message) (Interface, <-chan struct{}, error) {
 	r.mu.Lock()
 	if r.closed || r.route == nil {
 		done := r.done
 		r.mu.Unlock()
-		return nil, done
+		return nil, done, ErrNoUpstream
 	}
 	route := r.route
+	done := r.done
 	r.mu.Unlock()
 
 	name := route(msg)
-	if name == "" {
-		r.mu.Lock()
-		done := r.done
-		r.mu.Unlock()
-		return nil, done
-	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.backends[name], r.done
+	if done != r.done {
+		return nil, done, context.Canceled
+	}
+	if name == "" {
+		return nil, done, ErrNoUpstream
+	}
+	backend := r.backends[name]
+	if backend == nil {
+		return nil, done, ErrNoUpstream
+	}
+	return backend, done, nil
 }
 
 func (r *Router) cancelLocked() {

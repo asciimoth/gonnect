@@ -149,6 +149,83 @@ func TestServerCloseCancelsForwardedRequestAndClosesPacketConn(t *testing.T) {
 	}
 }
 
+func TestServerAppliesPacketBackpressure(t *testing.T) {
+	ln := gonnect.NewLoopbackNetwork()
+	up := &manualDNS{requests: make(chan Request, 2)}
+
+	serverConn, err := ln.ListenPacket(
+		context.Background(),
+		"udp4",
+		"127.0.0.1:5358",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServerWithOptions(
+		serverConn,
+		up,
+		nil,
+		PacketOptions{
+			MaxConcurrentRequests: 1,
+			RequestTimeout:        time.Hour,
+		},
+	)
+	defer server.Close()
+
+	clientConn, err := ln.Dial(context.Background(), "udp4", "127.0.0.1:5358")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientConn.Close()
+	writeDNSQuery(t, clientConn, aQuery("one.test."))
+	req1 := recvDNSRequest(t, up.requests)
+	writeDNSQuery(t, clientConn, aQuery("two.test."))
+	assertNoDNSRequest(t, up.requests)
+
+	resp := responseFor(req1.Message)
+	req1.Reply <- Response{Message: resp}
+	waitForDNSResponse(t, clientConn)
+	_ = recvDNSRequest(t, up.requests)
+}
+
+func TestServerCancelsSlowUpstreamAtDeadline(t *testing.T) {
+	ln := gonnect.NewLoopbackNetwork()
+	up := &manualDNS{requests: make(chan Request, 1)}
+
+	serverConn, err := ln.ListenPacket(
+		context.Background(),
+		"udp4",
+		"127.0.0.1:5359",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServerWithOptions(
+		serverConn,
+		up,
+		nil,
+		PacketOptions{
+			MaxConcurrentRequests: 1,
+			RequestTimeout:        20 * time.Millisecond,
+		},
+	)
+	defer server.Close()
+
+	clientConn, err := ln.Dial(context.Background(), "udp4", "127.0.0.1:5359")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientConn.Close()
+	writeDNSQuery(t, clientConn, aQuery("slow.test."))
+	req := recvDNSRequest(t, up.requests)
+	select {
+	case <-req.Context.Done():
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for request deadline")
+	}
+	waitForDNSResponse(t, clientConn)
+}
+
 func mustCloseQuickly(t *testing.T, d Interface, name string) {
 	t.Helper()
 	done := make(chan error, 1)
@@ -201,6 +278,30 @@ func waitForUDPDatagram(t *testing.T, conn net.PacketConn) {
 	_, _, err := conn.ReadFrom(make([]byte, 512))
 	if err != nil {
 		t.Fatalf("timed out waiting for UDP datagram: %v", err)
+	}
+}
+
+func writeDNSQuery(t *testing.T, conn net.Conn, msg *Message) {
+	t.Helper()
+	pkt, err := Pack(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = conn.Write(pkt); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func waitForDNSResponse(t *testing.T, conn net.Conn) {
+	t.Helper()
+	if err := conn.SetReadDeadline(
+		time.Now().Add(500 * time.Millisecond),
+	); err != nil {
+		t.Fatal(err)
+	}
+	_, err := conn.Read(make([]byte, 512))
+	if err != nil {
+		t.Fatalf("timed out waiting for DNS response: %v", err)
 	}
 }
 

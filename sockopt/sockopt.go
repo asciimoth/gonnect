@@ -8,6 +8,7 @@ package sockopt
 
 import (
 	"errors"
+	"reflect"
 	"strings"
 	"syscall"
 
@@ -115,4 +116,21 @@ func GetFd(a any) (fd int, err error) {
 		fd = NOFD
 	}
 	return
+}
+
+func networkInterfaceNameIndex(
+	i helpers.NetworkInterface,
+) (string, int, error) {
+	if i == nil {
+		return "", 0, ErrUnsupported
+	}
+	v := reflect.ValueOf(i)
+	switch v.Kind() { //nolint:exhaustive // Only nilable kinds matter here.
+	case reflect.Chan, reflect.Func, reflect.Interface,
+		reflect.Map, reflect.Pointer, reflect.Slice:
+		if v.IsNil() {
+			return "", 0, ErrUnsupported
+		}
+	}
+	return i.Name(), i.Index(), nil
 }

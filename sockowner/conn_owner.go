@@ -35,8 +35,10 @@ import (
 // socket?".
 //
 // If the peer is remote, in another network namespace, already closed, hidden by
-// procfs permissions, or not representable by the platform backend, nil is
-// returned.
+// procfs permissions, not representable by the platform backend, or on a
+// platform that does not expose owner metadata, the returned owner can be nil.
+// Callers must treat nil owner as no usable owner information, even when err is
+// nil.
 func GetIncomingConnOwner(conn net.Conn) (*SocketOwner, error) {
 	gonnect.GetWrapped(conn)
 

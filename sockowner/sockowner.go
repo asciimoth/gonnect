@@ -15,20 +15,33 @@ import (
 )
 
 var (
-	ErrNilIP              = errors.New("nil IP")
-	ErrInvIP              = errors.New("mixed or invalid IP addrs")
-	ErrAEx                = errors.New("ambiguous exact socket match")
-	ErrAUW                = errors.New("ambiguous UDP wildcard socket match")
-	ErrConnNil            = errors.New("nil connection")
-	ErrAddrNil            = errors.New("nil address")
+	// ErrNilIP reports that a required flow IP address is nil.
+	ErrNilIP = errors.New("nil IP")
+	// ErrInvIP reports mixed IP families or an invalid IP address.
+	ErrInvIP = errors.New("mixed or invalid IP addrs")
+	// ErrAEx reports more than one exact socket owner match.
+	ErrAEx = errors.New("ambiguous exact socket match")
+	// ErrAUW reports more than one UDP wildcard socket owner match.
+	ErrAUW = errors.New("ambiguous UDP wildcard socket match")
+	// ErrConnNil reports a nil connection argument.
+	ErrConnNil = errors.New("nil connection")
+	// ErrAddrNil reports a connection with a nil local or remote address.
+	ErrAddrNil = errors.New("nil address")
+	// ErrAddrTypeUnexpected reports local and remote address type mismatch.
 	ErrAddrTypeUnexpected = errors.New("addr type unexpected")
-	ErrNoOwner            = errors.New("no socket owner info")
-	ErrProtocol           = errors.New("protocol")
-	ErrNotIPPacket        = errors.New("not an IPv4 or IPv6 packet")
-	ErrShortPacket        = errors.New("packet is too short")
-	ErrNonFirstFragment   = errors.New(
+	// ErrNoOwner reports that no socket owner information is available.
+	ErrNoOwner = errors.New("no socket owner info")
+	// ErrProtocol reports an unsupported transport protocol.
+	ErrProtocol = errors.New("protocol")
+	// ErrNotIPPacket reports packet data that is not IPv4 or IPv6.
+	ErrNotIPPacket = errors.New("not an IPv4 or IPv6 packet")
+	// ErrShortPacket reports a packet that is too short for its headers.
+	ErrShortPacket = errors.New("packet is too short")
+	// ErrNonFirstFragment reports an IP fragment without a transport header.
+	ErrNonFirstFragment = errors.New(
 		"non-first fragment has no transport header",
 	)
+	// ErrMalformedPacket reports a malformed IP packet.
 	ErrMalformedPacket = errors.New("malformed IP packet")
 )
 
@@ -142,6 +155,9 @@ type SocketOwner struct {
 //     network namespace visible to the current process.
 //   - Permissions, hidepid, containers, pid namespaces, and procfs policy can
 //     hide owning processes.
+//   - Unsupported or restricted platforms can return a nil owner with a nil
+//     error. Callers must treat a nil owner as "no usable owner information",
+//     even when err is nil.
 func GetSockOwner(flow FlowTuple) (*SocketOwner, error) {
 	return getSockOwner(flow)
 }

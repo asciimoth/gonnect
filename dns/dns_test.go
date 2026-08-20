@@ -162,6 +162,44 @@ func TestWireRecordTypes(t *testing.T) {
 	}
 }
 
+func TestWirePackRejectsInvalidNames(t *testing.T) {
+	invalidName := strings.Repeat("a", 64) + ".example.test."
+	for _, tt := range []struct {
+		name string
+		msg  *Message
+	}{
+		{
+			name: "question",
+			msg: &Message{
+				Questions: []Question{
+					{Name: invalidName, Type: TypeA, Class: ClassIN},
+				},
+			},
+		},
+		{
+			name: "resource data",
+			msg: &Message{
+				Response: true,
+				Answers: []Resource{
+					{
+						Name:  "example.test.",
+						Type:  TypeCNAME,
+						Class: ClassIN,
+						TTL:   1,
+						Data:  []byte(invalidName),
+					},
+				},
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := Pack(tt.msg); err == nil {
+				t.Fatal("Pack succeeded with invalid DNS name")
+			}
+		})
+	}
+}
+
 func TestDetachedChainCancelsWithoutClosingUpstream(t *testing.T) {
 	up := newBlockingDNS()
 	d1 := Detach(up, nil)
@@ -685,6 +723,38 @@ func TestClientDoTUsesBootstrapAndCustomTLSConfig(t *testing.T) {
 	}
 }
 
+func TestClientRejectsMismatchedResponseID(t *testing.T) {
+	cert, _ := testTLSCert(t, "dns.test")
+	for _, scheme := range []string{"udp", "tcp", "dot"} {
+		t.Run(scheme, func(t *testing.T) {
+			dial := func(
+				ctx context.Context,
+				network, address string,
+			) (net.Conn, error) {
+				clientConn, serverConn := net.Pipe()
+				go serveMismatchedID(t, scheme, serverConn, cert)
+				return clientConn, nil
+			}
+			client := NewClient(dial, nil, nil, scheme+"://127.0.0.1:5353")
+			if scheme == "dot" {
+				client.TLSConfig = &tls.Config{
+					// The test only needs TLS framing. ID validation is tested
+					// after the handshake completes.
+					InsecureSkipVerify: true, //nolint:gosec
+					MinVersion:         tls.VersionTLS12,
+				}
+			}
+			defer client.Close()
+
+			_, err := Query(context.Background(), client, aQuery("localhost."))
+			if err == nil ||
+				!strings.Contains(err.Error(), "response ID mismatch") {
+				t.Fatalf("error = %v, want response ID mismatch", err)
+			}
+		})
+	}
+}
+
 func TestClientRejectsHostnameServerWithoutBootstrap(t *testing.T) {
 	var dials atomic.Int32
 	dial := func(ctx context.Context, network, address string) (net.Conn, error) {
@@ -1130,6 +1200,70 @@ func serveOneTLS(
 		MinVersion:   tls.VersionTLS12,
 	})
 	serveDNSStreamConn(t, tlsConn, upstream)
+}
+
+func serveMismatchedID(
+	t *testing.T,
+	scheme string,
+	conn net.Conn,
+	cert tls.Certificate,
+) {
+	t.Helper()
+	defer conn.Close()
+	if scheme == "dot" {
+		conn = tls.Server(conn, &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS12,
+		})
+	}
+	if scheme == "udp" {
+		var buf [1500]byte
+		n, err := conn.Read(buf[:])
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		writeMismatchedIDPacket(t, conn, buf[:n])
+		return
+	}
+	var lenBuf [2]byte
+	if _, err := io.ReadFull(conn, lenBuf[:]); err != nil {
+		t.Error(err)
+		return
+	}
+	buf := make([]byte, binary.BigEndian.Uint16(lenBuf[:]))
+	if _, err := io.ReadFull(conn, buf); err != nil {
+		t.Error(err)
+		return
+	}
+	pkt := mismatchedIDPacket(t, buf)
+	binary.BigEndian.PutUint16(lenBuf[:], uint16(len(pkt)))
+	if _, err := conn.Write(append(lenBuf[:], pkt...)); err != nil {
+		t.Error(err)
+	}
+}
+
+func writeMismatchedIDPacket(t *testing.T, conn net.Conn, pkt []byte) {
+	t.Helper()
+	resp := mismatchedIDPacket(t, pkt)
+	if _, err := conn.Write(resp); err != nil {
+		t.Error(err)
+	}
+}
+
+func mismatchedIDPacket(t *testing.T, pkt []byte) []byte {
+	t.Helper()
+	msg, err := Unpack(pkt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := responseFor(msg)
+	resp.ID++
+	out, err := Pack(resp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
 }
 
 func serveDNSStreamConn(t *testing.T, conn net.Conn, upstream Interface) {

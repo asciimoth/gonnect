@@ -4,6 +4,7 @@ package dns
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 )
@@ -277,6 +278,54 @@ func TestRouterMutationsCancelInFlightRequests(t *testing.T) {
 	}
 	if !up.sawCancel() {
 		t.Fatal("upstream did not observe router cancellation")
+	}
+}
+
+func TestRouterMutationCancelsStaleRouteResult(t *testing.T) {
+	r := NewRouter(nil)
+	up := newControlledDNS()
+	other := newNamedDNS("other")
+	defer r.Close()
+	defer up.Close()
+	defer other.Close()
+
+	if err := r.Attach("up", up); err != nil {
+		t.Fatalf("Attach(up) error = %v", err)
+	}
+	routeStarted := make(chan struct{})
+	routeContinue := make(chan struct{})
+	var once sync.Once
+	if err := r.AttachRouter(func(*Message) string {
+		once.Do(func() { close(routeStarted) })
+		<-routeContinue
+		return "up"
+	}); err != nil {
+		t.Fatalf("AttachRouter() error = %v", err)
+	}
+
+	queryDone := make(chan error, 1)
+	go func() {
+		_, err := Query(context.Background(), r, aQuery("stale.test."))
+		queryDone <- err
+	}()
+	mustRecv(t, routeStarted, "router route function start")
+	if err := r.Attach("other", other); err != nil {
+		t.Fatalf("Attach(other) error = %v", err)
+	}
+	close(routeContinue)
+
+	select {
+	case err := <-queryDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("query error = %v, want context canceled", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("timed out waiting for stale router query")
+	}
+	select {
+	case <-up.started:
+		t.Fatal("stale route result started backend lookup")
+	default:
 	}
 }
 

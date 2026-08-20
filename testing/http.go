@@ -133,7 +133,7 @@ func RunSimpleHTTPForNetworks(t *testing.T, a, b NetAddrPair) {
 	t.Helper()
 
 	ctx := context.Background()
-	lnA, err := a.Network.Listen(ctx, "tcp", b.Addr)
+	lnA, err := a.Network.Listen(ctx, "tcp", a.Addr)
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
@@ -143,7 +143,7 @@ func RunSimpleHTTPForNetworks(t *testing.T, a, b NetAddrPair) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	defer lnA.Close()
+	defer lnB.Close()
 
 	RunSimpleHTTPTest(t, lnA, b.Network.Dial)
 	RunSimpleHTTPTest(t, lnB, a.Network.Dial)

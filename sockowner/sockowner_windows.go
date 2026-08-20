@@ -164,30 +164,66 @@ func findWindowsUDPOwnerPID(flow FlowTuple, family int) (uint32, error) {
 
 	switch family {
 	case 4:
-		localIP := binary.LittleEndian.Uint32(flow.LocalIP.To4())
 		rows := unsafe.Slice((*mibUDPRowOwnerPID)(rowsPtr), count)
-
-		for _, row := range rows {
-			if row.LocalAddr == localIP &&
-				windowsPort(row.LocalPort) == flow.LocalPort {
-				return row.OwningPID, nil
-			}
-		}
+		return findWindowsUDP4OwnerPID(flow, rows)
 
 	case 6:
-		localIP := ip16Array(flow.LocalIP)
 		count, ok := windowsTableRowCount[mibUDP6RowOwnerPID](buf)
 		if !ok {
 			return 0, ErrNoOwner
 		}
 		rows := unsafe.Slice((*mibUDP6RowOwnerPID)(rowsPtr), count)
+		return findWindowsUDP6OwnerPID(flow, rows)
+	}
 
-		for _, row := range rows {
-			if row.LocalAddr == localIP &&
-				windowsPort(row.LocalPort) == flow.LocalPort {
-				return row.OwningPID, nil
+	return 0, ErrNoOwner
+}
+
+func findWindowsUDP4OwnerPID(
+	flow FlowTuple,
+	rows []mibUDPRowOwnerPID,
+) (uint32, error) {
+	localIP := binary.LittleEndian.Uint32(flow.LocalIP.To4())
+
+	var pid uint32
+	matched := false
+	for _, row := range rows {
+		if row.LocalAddr == localIP &&
+			windowsPort(row.LocalPort) == flow.LocalPort {
+			if matched && row.OwningPID != pid {
+				return 0, ErrAUW
 			}
+			pid = row.OwningPID
+			matched = true
 		}
+	}
+	if matched {
+		return pid, nil
+	}
+
+	return 0, ErrNoOwner
+}
+
+func findWindowsUDP6OwnerPID(
+	flow FlowTuple,
+	rows []mibUDP6RowOwnerPID,
+) (uint32, error) {
+	localIP := ip16Array(flow.LocalIP)
+
+	var pid uint32
+	matched := false
+	for _, row := range rows {
+		if row.LocalAddr == localIP &&
+			windowsPort(row.LocalPort) == flow.LocalPort {
+			if matched && row.OwningPID != pid {
+				return 0, ErrAUW
+			}
+			pid = row.OwningPID
+			matched = true
+		}
+	}
+	if matched {
+		return pid, nil
 	}
 
 	return 0, ErrNoOwner

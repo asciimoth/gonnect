@@ -3,6 +3,7 @@
 package sockopt
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/asciimoth/gonnect"
@@ -52,13 +53,16 @@ func GetBuffSize(a any) (recvSize, sendSize int, err error) {
 
 // SetRoutingMark sets the routing mark (SO_USER_COOKIE) on the socket.
 func SetRoutingMark(a any, mark uint32) error {
-	return Control(a, func(fd uintptr) {
-		_ = unix.SetsockoptInt(
+	return control(a, func(fd uintptr) error {
+		if err := unix.SetsockoptInt(
 			int(fd),
 			unix.SOL_SOCKET,
 			unix.SO_USER_COOKIE,
 			int(mark),
-		)
+		); err != nil {
+			return fmt.Errorf("set SO_USER_COOKIE: %w", err)
+		}
+		return nil
 	})
 }
 

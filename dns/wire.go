@@ -26,8 +26,12 @@ func Pack(m *Message) ([]byte, error) {
 		return nil, err
 	}
 	for _, q := range m.Questions {
+		name, err := wireName(q.Name)
+		if err != nil {
+			return nil, err
+		}
 		if err := b.Question(dnsmessage.Question{
-			Name:  wireName(q.Name),
+			Name:  name,
 			Type:  dnsmessage.Type(q.Type),
 			Class: dnsmessage.Class(q.Class),
 		}); err != nil {
@@ -55,8 +59,12 @@ func packSection(
 		return err
 	}
 	for _, rr := range rrs {
+		name, err := wireName(rr.Name)
+		if err != nil {
+			return err
+		}
 		h := dnsmessage.ResourceHeader{
-			Name:  wireName(rr.Name),
+			Name:  name,
 			Type:  dnsmessage.Type(rr.Type),
 			Class: dnsmessage.Class(rr.Class),
 			TTL:   rr.TTL,
@@ -89,37 +97,57 @@ func packResource(
 		copy(a[:], data)
 		return b.AAAAResource(h, dnsmessage.AAAAResource{AAAA: a})
 	case TypeCNAME:
+		cname, err := wireName(string(data))
+		if err != nil {
+			return err
+		}
 		return b.CNAMEResource(
 			h,
-			dnsmessage.CNAMEResource{CNAME: wireName(string(data))},
+			dnsmessage.CNAMEResource{CNAME: cname},
 		)
 	case TypeNS:
+		ns, err := wireName(string(data))
+		if err != nil {
+			return err
+		}
 		return b.NSResource(
 			h,
-			dnsmessage.NSResource{NS: wireName(string(data))},
+			dnsmessage.NSResource{NS: ns},
 		)
 	case TypePTR:
+		ptr, err := wireName(string(data))
+		if err != nil {
+			return err
+		}
 		return b.PTRResource(
 			h,
-			dnsmessage.PTRResource{PTR: wireName(string(data))},
+			dnsmessage.PTRResource{PTR: ptr},
 		)
 	case TypeMX:
 		if len(data) < 3 {
 			return errors.New("dns: invalid MX data")
 		}
+		mx, err := wireName(string(data[2:]))
+		if err != nil {
+			return err
+		}
 		return b.MXResource(h, dnsmessage.MXResource{
 			Pref: binary.BigEndian.Uint16(data[:2]),
-			MX:   wireName(string(data[2:])),
+			MX:   mx,
 		})
 	case TypeSRV:
 		if len(data) < 7 {
 			return errors.New("dns: invalid SRV data")
 		}
+		target, err := wireName(string(data[6:]))
+		if err != nil {
+			return err
+		}
 		return b.SRVResource(h, dnsmessage.SRVResource{
 			Priority: binary.BigEndian.Uint16(data[0:2]),
 			Weight:   binary.BigEndian.Uint16(data[2:4]),
 			Port:     binary.BigEndian.Uint16(data[4:6]),
-			Target:   wireName(string(data[6:])),
+			Target:   target,
 		})
 	case TypeTXT:
 		return b.TXTResource(
@@ -234,12 +262,12 @@ func resourceData(body dnsmessage.ResourceBody) []byte {
 	}
 }
 
-func wireName(name string) dnsmessage.Name {
+func wireName(name string) (dnsmessage.Name, error) {
 	n, err := dnsmessage.NewName(absName(name))
-	if err == nil {
-		return n
+	if err != nil {
+		return dnsmessage.Name{}, err
 	}
-	return dnsmessage.MustNewName(".")
+	return n, nil
 }
 
 func absName(name string) string {

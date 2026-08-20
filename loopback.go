@@ -379,7 +379,7 @@ func (ln *LoopbackNetwork) LookupNetIP(
 	}
 	if IsLocal(address) {
 		ip4, _ := netip.AddrFromSlice(net.ParseIP("127.0.0.1").To4())
-		ip6, _ := netip.AddrFromSlice(net.ParseIP("::1").To4())
+		ip6 := netip.MustParseAddr("::1")
 		if strings.HasSuffix(network, "4") {
 			return []netip.Addr{ip4}, nil
 		}

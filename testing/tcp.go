@@ -198,7 +198,7 @@ func RunTcpPingPongForNetworks(t *testing.T, a, b NetAddrPair) {
 
 	ctx := context.Background()
 
-	lnA, err := a.Network.Listen(ctx, "tcp", b.Addr)
+	lnA, err := a.Network.Listen(ctx, "tcp", a.Addr)
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}

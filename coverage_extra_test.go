@@ -1127,16 +1127,22 @@ func TestLoopbackLookupAndStateBranches(t *testing.T) {
 		"ip6",
 		"localhost",
 	); err != nil ||
-		len(ips) != 1 {
-		t.Fatalf("LookupNetIP(ip6 localhost) = %v, %v, want one nil", ips, err)
+		len(ips) != 1 ||
+		ips[0] != netip.MustParseAddr("::1") {
+		t.Fatalf("LookupNetIP(ip6 localhost) = %v, %v, want ::1 nil", ips, err)
 	}
 	if ips, err := ln.LookupNetIP(
 		ctx,
 		"ip",
 		"localhost",
 	); err != nil ||
-		len(ips) != 2 {
-		t.Fatalf("LookupNetIP(ip localhost) = %v, %v, want two nil", ips, err)
+		len(ips) != 2 ||
+		ips[1] != netip.MustParseAddr("::1") {
+		t.Fatalf(
+			"LookupNetIP(ip localhost) = %v, %v, want 127.0.0.1 and ::1 nil",
+			ips,
+			err,
+		)
 	}
 	if _, err := ln.LookupNetIP(ctx, "ip", "example.invalid"); err == nil {
 		t.Fatal("LookupNetIP(non-local) returned nil error")

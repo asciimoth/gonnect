@@ -233,6 +233,93 @@ func TestIPPacketAdapterCloseSuppressesLateResponses(t *testing.T) {
 	assertNoDNSRequest(t, upstream.requests)
 }
 
+func TestIPPacketAdapterAppliesBackpressure(t *testing.T) {
+	upstream := &manualDNS{requests: make(chan Request, 2)}
+	responses := make(chan []byte, 2)
+	adapter := NewIPPacketAdapterWithOptions(
+		upstream,
+		func(pkt []byte) { responses <- pkt },
+		PacketOptions{
+			MaxConcurrentRequests: 1,
+			RequestTimeout:        time.Hour,
+		},
+	)
+	t.Cleanup(func() {
+		if err := adapter.Close(); err != nil {
+			t.Fatalf("adapter Close() error = %v", err)
+		}
+	})
+
+	raw1 := testIPv4DNSPacket(
+		t,
+		[4]byte{10, 0, 0, 2},
+		[4]byte{10, 0, 0, 53},
+		dnsPort,
+		aQuery("one.test."),
+	)
+	raw2 := testIPv4DNSPacket(
+		t,
+		[4]byte{10, 0, 0, 3},
+		[4]byte{10, 0, 0, 53},
+		dnsPort,
+		aQuery("two.test."),
+	)
+	adapter.FeedPacket(raw1)
+	req1 := recvDNSRequest(t, upstream.requests)
+
+	feed2Done := make(chan struct{})
+	go func() {
+		adapter.FeedPacket(raw2)
+		close(feed2Done)
+	}()
+	assertNoDNSRequest(t, upstream.requests)
+	select {
+	case <-feed2Done:
+		t.Fatal("second FeedPacket returned while the limiter was full")
+	default:
+	}
+
+	resp := responseFor(req1.Message)
+	req1.Reply <- Response{Message: resp}
+	recvIPPacket(t, responses)
+	<-feed2Done
+	_ = recvDNSRequest(t, upstream.requests)
+}
+
+func TestIPPacketAdapterCancelsSlowUpstreamAtDeadline(t *testing.T) {
+	upstream := &manualDNS{requests: make(chan Request, 1)}
+	responses := make(chan []byte, 1)
+	adapter := NewIPPacketAdapterWithOptions(
+		upstream,
+		func(pkt []byte) { responses <- pkt },
+		PacketOptions{
+			MaxConcurrentRequests: 1,
+			RequestTimeout:        20 * time.Millisecond,
+		},
+	)
+	t.Cleanup(func() {
+		if err := adapter.Close(); err != nil {
+			t.Fatalf("adapter Close() error = %v", err)
+		}
+	})
+
+	raw := testIPv4DNSPacket(
+		t,
+		[4]byte{10, 0, 0, 2},
+		[4]byte{10, 0, 0, 53},
+		dnsPort,
+		aQuery("slow.test."),
+	)
+	adapter.FeedPacket(raw)
+	req := recvDNSRequest(t, upstream.requests)
+	select {
+	case <-req.Context.Done():
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for request deadline")
+	}
+	assertNoIPPacket(t, responses)
+}
+
 type manualDNS struct {
 	requests chan Request
 }
@@ -384,6 +471,17 @@ func assertNoDNSRequest(t *testing.T, ch <-chan Request) {
 	case req := <-ch:
 		t.Fatalf("unexpected DNS request: %#v", req.Message)
 	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func recvDNSRequest(t *testing.T, ch <-chan Request) Request {
+	t.Helper()
+	select {
+	case req := <-ch:
+		return req
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for DNS request")
+		return Request{}
 	}
 }
 

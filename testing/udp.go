@@ -31,7 +31,7 @@ type DialPacketFunc func(addr net.Addr) (gonnect.PacketConn, error)
 // doesn't support Write/Read, the helper will fall back to WriteTo/ReadFrom.
 //
 // Protocol summary:
-//   - Client and server exchange "ping <n>\n" / "pong <n>\n" for n = 0..9.
+//   - Client and server exchange "ping <n>\n" / "pong <n>\n" for n = 1..rounds.
 //   - For each ping n the client will resend the same ping up to maxAttempts times (default 30)
 //     until it receives a matching "pong n".
 //   - Server ignores out-of-order pings (seq > expected) and resends pongs for duplicates.
@@ -52,7 +52,7 @@ func RunUDPPingPongTest(
 	// overall test timeout to avoid hangs
 	deadline := time.After(testTimeout)
 	serverAddr := pc.LocalAddr()
-	lastRoundStr := strconv.Itoa(rounds - 1)
+	lastRoundStr := strconv.Itoa(rounds)
 	t.Logf("server listening at %s\n", serverAddr)
 
 	// server goroutine: single goroutine handles all incoming pings and replies,
@@ -61,7 +61,7 @@ func RunUDPPingPongTest(
 	wg.Go(func() {
 		buf := make([]byte, 2048)
 		recvCount := 0
-		completedClients := 0
+		completedClients := make(map[string]struct{}, numClients)
 		for {
 			n, srcAddr, err := pc.ReadFrom(buf)
 			if err != nil {
@@ -103,8 +103,8 @@ func RunUDPPingPongTest(
 				t.Logf("server replied to %s: %q\n", srcAddr, reply)
 			}
 			if seq == lastRoundStr {
-				completedClients += 1
-				if completedClients >= numClients {
+				completedClients[srcAddr.String()] = struct{}{}
+				if len(completedClients) >= numClients {
 					t.Log("Server finishing")
 					return
 				}
@@ -209,13 +209,13 @@ func RunUDPPingPongTest(
 					)
 				}
 				if !received {
-					// don't fail the test outright; log that this sequence gave up after retries
-					t.Logf(
+					t.Errorf(
 						"client %d seq %d: giving up after %d attempts\n",
 						clientID,
 						seq,
 						maxRetries,
 					)
+					return
 				}
 				// small pause between rounds
 				time.Sleep(roundDelay)

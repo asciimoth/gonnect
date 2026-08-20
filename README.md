@@ -17,6 +17,12 @@ The `routing` subpackage provides bytecode based routing rules for
 Rules can be built directly from bytecode or parsed from a small text format.
 See [`routing/README.md`](routing/README.md) for examples.
 
+## Mesh DNS names
+
+The `dns/meshnames` subpackage provides a `gonnect.Resolver` implementation
+for mesh-oriented DNS names (`.meshname`, `.meship`, `.ygg`, and `.pk.ygg`).
+See [`dns/meshnames/README.md`](dns/meshnames/README.md) for examples.
+
 ## Related projects
 
 There are some projects based on Gonnect or created for using with it. 
@@ -29,11 +35,9 @@ You may find them useful too:
 - [wgo](https://github.com/asciimoth/wgo) - [WireGuard](https://www.wireguard.com/) library based on gonnect-netstack, tuntap, batchudp with [amnesia obfuscation](https://github.com/amnezia-vpn/amneziawg-go) support
 - [wg-web-demo](https://github.com/asciimoth/wg-web-demo) - browser WASM demonstration of HTTP over WireGuard over socks-over-websocket using userspace TCP/IP stack 
 - [socksgo](https://github.com/asciimoth/socksgo) - The most complete, compatible, feature-rich, and extensible SOCKS library for Go
-- [mnlib](https://github.com/asciimoth/mnlib) - mesh-oriented DNS names lib 
 - [batchudp](https://github.com/asciimoth/batchudp) - UDP transport package extracted from wireguard-go/conn
 - [bufpool](https://github.com/asciimoth/bufpool) - Byte buffer pool interface and testing helpers
 - [putback](https://github.com/asciimoth/putback) - A minimal library that provides wrappers for common I/O interfaces, adding the ability to return read bytes back to the stream for subsequent reading
-- [mnlib](https://github.com/asciimoth/mnlib) - Mesh-oriented DNS names lib (`.meshname`, `.meship`, `.ygg`, `.pk.ygg`)
 - [sysnet-debug](https://github.com/asciimoth/sysnet-debug) - debug implementation of OS network abstraction from `gonnect/sysnet`
 - [pmark](https://github.com/asciimoth/p-mark) - Go lib and tool for tagging processes for split routing and other purposes
 

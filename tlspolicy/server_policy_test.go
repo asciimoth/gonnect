@@ -239,6 +239,30 @@ func TestVerifyServerRepeatsIdentityCheck(t *testing.T) {
 	}
 }
 
+func TestServerConnectionVerifierFunc(t *testing.T) {
+	t.Parallel()
+
+	var nilVerifier ServerConnectionVerifierFunc
+	if err := nilVerifier.VerifyServer(ServerVerification{}); err == nil {
+		t.Fatal("nil ServerConnectionVerifierFunc returned nil error")
+	}
+
+	marker := errors.New("verify failed")
+	verifier := ServerConnectionVerifierFunc(
+		func(ServerVerification) error {
+			return marker
+		},
+	)
+	if err := verifier.VerifyServer(
+		ServerVerification{},
+	); !errors.Is(
+		err,
+		marker,
+	) {
+		t.Fatalf("VerifyServer() error = %v, want marker", err)
+	}
+}
+
 func TestTLSClientConfigRequiresServerIdentity(t *testing.T) {
 	t.Parallel()
 

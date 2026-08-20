@@ -120,6 +120,39 @@ func TestTLSClassifierConfig(t *testing.T) {
 	}
 }
 
+func TestTLSClassifierMetadata(t *testing.T) {
+	hello := testTLSClientHello(
+		t,
+		tls.VersionTLS13,
+		"api.example.test",
+		[]string{"h2", "http/1.1"},
+	)
+	classifier := sniffer.TLS()
+	if got := sniffer.Metadata(classifier); got != nil {
+		t.Fatalf("initial Metadata() = %#v, want nil", got)
+	}
+	if got := classifier.Feed(hello); got != sniffer.Match {
+		t.Fatalf("Feed() = %v, want Match", got)
+	}
+	info, ok := sniffer.Metadata(classifier).(sniffer.TLSClientHelloInfo)
+	if !ok || info.SNIHostname != "api.example.test" ||
+		!slices.Contains(info.ALPNProtocols, "h2") {
+		t.Fatalf(
+			"Metadata() = %#v, want ClientHello info",
+			sniffer.Metadata(classifier),
+		)
+	}
+
+	info.SNIHostname = "changed.example.test"
+	again, ok := sniffer.Metadata(classifier).(sniffer.TLSClientHelloInfo)
+	if !ok {
+		t.Fatalf("Metadata() = %#v, want ClientHello info", again)
+	}
+	if again.SNIHostname != "api.example.test" {
+		t.Fatalf("Metadata() returned aliased info: %#v", again)
+	}
+}
+
 func TestTLSClassifierEncryptedClientHelloFlag(t *testing.T) {
 	hello := tlsTestClientHello(t, tls.VersionTLS13,
 		tlsTestSupportedVersions(t, tls.VersionTLS13),

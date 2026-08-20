@@ -269,6 +269,85 @@ func TestControlAndGetFd(t *testing.T) {
 	}
 }
 
+func TestControlRawConnReturnsRawConnError(t *testing.T) {
+	want := syscall.EBADF
+	err := controlRawConn(fakeRawConn{err: want}, func(uintptr) error {
+		t.Fatal("callback must not run when RawConn.Control fails")
+		return nil
+	})
+	if !errors.Is(err, want) {
+		t.Fatalf("controlRawConn() = %v, want %v", err, want)
+	}
+}
+
+func TestNetworkInterfaceNameIndexRejectsTypedNil(t *testing.T) {
+	var iface *gonnect.LiteralInterface
+	if _, _, err := networkInterfaceNameIndex(
+		iface,
+	); !errors.Is(
+		err,
+		ErrUnsupported,
+	) {
+		t.Fatalf(
+			"networkInterfaceNameIndex(typed nil) = %v, want ErrUnsupported",
+			err,
+		)
+	}
+
+	name, index, err := networkInterfaceNameIndex(&gonnect.LiteralInterface{
+		NameVal:  "lo",
+		IndexVal: 7,
+	})
+	if err != nil {
+		t.Fatalf("networkInterfaceNameIndex(valid) error = %v", err)
+	}
+	if name != "lo" || index != 7 {
+		t.Fatalf(
+			"networkInterfaceNameIndex(valid) = %q, %d, want lo, 7",
+			name,
+			index,
+		)
+	}
+}
+
+func TestAddrIPParsesStringAddresses(t *testing.T) {
+	tests := []struct {
+		name string
+		addr net.Addr
+		want net.IP
+	}{
+		{
+			name: "ip addr",
+			addr: &net.IPAddr{IP: net.IPv4(192, 0, 2, 1)},
+			want: net.IPv4(192, 0, 2, 1),
+		},
+		{
+			name: "host port string",
+			addr: stringAddr("198.51.100.2:443"),
+			want: net.IPv4(198, 51, 100, 2),
+		},
+		{
+			name: "plain ip string",
+			addr: stringAddr("203.0.113.3"),
+			want: net.IPv4(203, 0, 113, 3),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := addrIP(tt.addr); !got.Equal(tt.want) {
+				t.Fatalf("addrIP() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+type stringAddr string
+
+func (a stringAddr) Network() string { return "test" }
+
+func (a stringAddr) String() string { return string(a) }
+
 func TestLinuxSocketOptions(t *testing.T) {
 	support := CheckSupport()
 	if !support.BufSize || !support.RoutingMark || !support.BindToInterface ||

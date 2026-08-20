@@ -157,3 +157,51 @@ func TestFetchAuthorityCatalogRejectsTypedNilFetcher(t *testing.T) {
 		t.Fatal("FetchAuthorityCatalog accepted a typed nil AuthorityFetcher")
 	}
 }
+
+func TestAuthorityFetcherFuncRejectsNil(t *testing.T) {
+	t.Parallel()
+
+	var fetcher AuthorityFetcherFunc
+	if _, err := fetcher.FetchAuthorities(context.Background()); err == nil {
+		t.Fatal("nil AuthorityFetcherFunc returned nil error")
+	}
+}
+
+func TestFetchAuthorityCatalogRejectsBadInputsAndFetcherErrors(t *testing.T) {
+	t.Parallel()
+
+	var nilContext context.Context
+	if _, err := FetchAuthorityCatalog(nilContext, AuthorityFetcherFunc(
+		func(context.Context) ([]AuthorityCandidate, error) {
+			return nil, nil
+		},
+	)); err == nil {
+		t.Fatal("FetchAuthorityCatalog accepted nil context")
+	}
+
+	if _, err := FetchAuthorityCatalog(context.Background(), nil); err == nil {
+		t.Fatal("FetchAuthorityCatalog accepted nil fetcher")
+	}
+
+	marker := errors.New("fetch failed")
+	_, err := FetchAuthorityCatalog(context.Background(), AuthorityFetcherFunc(
+		func(context.Context) ([]AuthorityCandidate, error) {
+			return nil, marker
+		},
+	))
+	if !errors.Is(err, marker) {
+		t.Fatalf("FetchAuthorityCatalog error = %v, want marker", err)
+	}
+}
+
+func TestNewAuthorityCatalogRejectsMalformedDER(t *testing.T) {
+	t.Parallel()
+
+	_, err := NewAuthorityCatalog([]AuthorityCandidate{{
+		DER:    []byte("not der"),
+		Source: AuthoritySource{Name: "test"},
+	}})
+	if err == nil {
+		t.Fatal("NewAuthorityCatalog accepted malformed DER")
+	}
+}

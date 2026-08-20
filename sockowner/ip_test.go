@@ -122,6 +122,200 @@ func TestFlowTupleFromIPv6NonFirstFragment(t *testing.T) {
 	}
 }
 
+func TestFlowTupleFromIPv6ExtensionHeaderErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		packet  []byte
+		wantErr error
+	}{
+		{
+			name: "short options header",
+			packet: ipv6Packet(
+				ipv6ExtDestinationOptions,
+				net.ParseIP("fd00::1"),
+				net.ParseIP("2001:db8::1"),
+				[]byte{ipProtoUDP},
+			),
+			wantErr: ErrShortPacket,
+		},
+		{
+			name: "truncated options payload",
+			packet: ipv6Packet(
+				ipv6ExtRouting,
+				net.ParseIP("fd00::1"),
+				net.ParseIP("2001:db8::1"),
+				[]byte{ipProtoUDP, 1, 0, 0, 0, 0, 0, 0},
+			),
+			wantErr: ErrShortPacket,
+		},
+		{
+			name: "short fragment header",
+			packet: ipv6Packet(
+				ipv6ExtFragment,
+				net.ParseIP("fd00::1"),
+				net.ParseIP("2001:db8::1"),
+				[]byte{ipProtoUDP},
+			),
+			wantErr: ErrShortPacket,
+		},
+		{
+			name: "short ah header",
+			packet: ipv6Packet(
+				ipv6ExtAH,
+				net.ParseIP("fd00::1"),
+				net.ParseIP("2001:db8::1"),
+				[]byte{ipProtoUDP},
+			),
+			wantErr: ErrShortPacket,
+		},
+		{
+			name: "truncated ah payload",
+			packet: ipv6Packet(
+				ipv6ExtAH,
+				net.ParseIP("fd00::1"),
+				net.ParseIP("2001:db8::1"),
+				[]byte{ipProtoUDP, 2, 0, 0, 0, 0, 0, 0},
+			),
+			wantErr: ErrShortPacket,
+		},
+		{
+			name: "no next header",
+			packet: ipv6Packet(
+				ipv6NoNextHeader,
+				net.ParseIP("fd00::1"),
+				net.ParseIP("2001:db8::1"),
+				[]byte{0},
+			),
+			wantErr: ErrProtocol,
+		},
+		{
+			name: "esp",
+			packet: ipv6Packet(
+				ipProtoESP,
+				net.ParseIP("fd00::1"),
+				net.ParseIP("2001:db8::1"),
+				[]byte{0},
+			),
+			wantErr: ErrProtocol,
+		},
+		{
+			name: "unsupported next header",
+			packet: ipv6Packet(
+				1,
+				net.ParseIP("fd00::1"),
+				net.ParseIP("2001:db8::1"),
+				[]byte{0},
+			),
+			wantErr: ErrProtocol,
+		},
+		{
+			name: "jumbogram",
+			packet: ipv6Packet(
+				ipProtoUDP,
+				net.ParseIP("fd00::1"),
+				net.ParseIP("2001:db8::1"),
+				udpHeader(1, 2),
+			),
+			wantErr: ErrMalformedPacket,
+		},
+	}
+	binary.BigEndian.PutUint16(tests[len(tests)-1].packet[4:6], 0)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := FlowTupleFromOutgoingIPPacket(tt.packet)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf(
+					"FlowTupleFromOutgoingIPPacket() error = %v, want %v",
+					err,
+					tt.wantErr,
+				)
+			}
+		})
+	}
+}
+
+func TestFlowTupleFromIPPacketHeaderErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		packet  []byte
+		wantErr error
+	}{
+		{name: "empty", packet: nil, wantErr: ErrShortPacket},
+		{name: "bad version", packet: []byte{0xf0}, wantErr: ErrNotIPPacket},
+		{name: "short ipv4", packet: []byte{0x45}, wantErr: ErrShortPacket},
+		{
+			name:    "bad ipv4 ihl",
+			packet:  append([]byte{0x44}, make([]byte, 19)...),
+			wantErr: ErrMalformedPacket,
+		},
+		{
+			name:    "short ipv4 ihl",
+			packet:  append([]byte{0x46}, make([]byte, 19)...),
+			wantErr: ErrShortPacket,
+		},
+		{
+			name: "bad ipv4 total length",
+			packet: func() []byte {
+				p := ipv4Packet(
+					ipProtoUDP,
+					net.IPv4(10, 0, 0, 1),
+					net.IPv4(10, 0, 0, 2),
+					udpHeader(1, 2),
+				)
+				binary.BigEndian.PutUint16(p[2:4], 19)
+				return p
+			}(),
+			wantErr: ErrMalformedPacket,
+		},
+		{
+			name: "short ipv4 total length",
+			packet: func() []byte {
+				p := ipv4Packet(
+					ipProtoUDP,
+					net.IPv4(10, 0, 0, 1),
+					net.IPv4(10, 0, 0, 2),
+					udpHeader(1, 2),
+				)
+				binary.BigEndian.PutUint16(p[2:4], uint16(len(p)+1))
+				return p
+			}(),
+			wantErr: ErrShortPacket,
+		},
+		{name: "short ipv6", packet: []byte{0x60}, wantErr: ErrShortPacket},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := FlowTupleFromOutgoingIPPacket(tt.packet)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf(
+					"FlowTupleFromOutgoingIPPacket() error = %v, want %v",
+					err,
+					tt.wantErr,
+				)
+			}
+		})
+	}
+}
+
+func TestMakeFlowTuplePanicsOnUnknownDirection(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("makeFlowTuple did not panic")
+		}
+	}()
+
+	_ = makeFlowTuple(
+		net.IPv4(1, 1, 1, 1),
+		1,
+		net.IPv4(2, 2, 2, 2),
+		2,
+		"udp",
+		packetDirection(99),
+	)
+}
+
 func TestFlowTupleFromIPPacketMalformedTransportHeaders(t *testing.T) {
 	tests := []struct {
 		name    string

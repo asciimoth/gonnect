@@ -50,7 +50,9 @@ func RunUDPPingPongTest(
 	t.Helper()
 
 	// overall test timeout to avoid hangs
-	deadline := time.After(testTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
 	serverAddr := pc.LocalAddr()
 	lastRoundStr := strconv.Itoa(rounds)
 	t.Logf("server listening at %s\n", serverAddr)
@@ -58,6 +60,7 @@ func RunUDPPingPongTest(
 	// server goroutine: single goroutine handles all incoming pings and replies,
 	// but drops every dropEvery'th packet to simulate loss.
 	var wg sync.WaitGroup
+	errCh := make(chan error, numClients)
 	wg.Go(func() {
 		buf := make([]byte, 2048)
 		recvCount := 0
@@ -65,6 +68,11 @@ func RunUDPPingPongTest(
 		for {
 			n, srcAddr, err := pc.ReadFrom(buf)
 			if err != nil {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
 				// Any other error log and continue
 				t.Logf("server read error: %v\n", err)
 				continue
@@ -117,7 +125,8 @@ func RunUDPPingPongTest(
 
 			cc, err := dial(serverAddr)
 			if err != nil {
-				t.Fatalf("client %d dial: %v", clientID, err)
+				errCh <- fmt.Errorf("client %d dial: %w", clientID, err)
+				return
 			}
 			defer cc.Close()
 
@@ -137,11 +146,12 @@ func RunUDPPingPongTest(
 				for attempt := 1; attempt <= maxRetries && !received; attempt++ {
 					// check global test timeout to avoid infinite waits
 					select {
-					case <-deadline:
-						t.Errorf(
-							"test timeout reached while client %d waiting (seq %d)",
+					case <-ctx.Done():
+						errCh <- fmt.Errorf(
+							"test timeout reached while client %d waiting (seq %d): %w",
 							clientID,
 							seq,
+							ctx.Err(),
 						)
 						return
 					default:
@@ -209,7 +219,7 @@ func RunUDPPingPongTest(
 					)
 				}
 				if !received {
-					t.Errorf(
+					errCh <- fmt.Errorf(
 						"client %d seq %d: giving up after %d attempts\n",
 						clientID,
 						seq,
@@ -233,8 +243,34 @@ func RunUDPPingPongTest(
 	select {
 	case <-done:
 		// good
-	case <-deadline:
+	case err := <-errCh:
+		cancel()
+		_ = pc.Close()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Log(
+				"timeout waiting for UDP ping-pong goroutines to stop after error",
+			)
+		}
+		t.Fatal(err)
+	case <-ctx.Done():
+		cancel()
+		_ = pc.Close()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Log(
+				"timeout waiting for UDP ping-pong goroutines to stop after timeout",
+			)
+		}
 		t.Fatalf("test timed out after %v", testTimeout)
+	}
+
+	select {
+	case err := <-errCh:
+		t.Fatal(err)
+	default:
 	}
 
 	t.Log("ping-pong test with simulated loss finished")
@@ -244,7 +280,7 @@ func RunUdpPingPongForNetworks(t *testing.T, a, b NetAddrPair) {
 	t.Helper()
 
 	ctx := context.Background()
-	lnA, err := a.Network.ListenUDP(ctx, "udp", b.Addr)
+	lnA, err := a.Network.ListenUDP(ctx, "udp", a.Addr)
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}

@@ -306,6 +306,14 @@ func (w *partialErrWriter) Write(p []byte) (int, error) {
 	return n, w.err
 }
 
+type invalidCountWriter struct {
+	n int
+}
+
+func (w invalidCountWriter) Write([]byte) (int, error) {
+	return w.n, nil
+}
+
 func TestPutBackOrdering(t *testing.T) {
 	raw := newMemoryConn("tail")
 	conn := putback.New(raw, nil)
@@ -648,6 +656,38 @@ func TestTCPWriteToWithPoolKeepsBufferAfterPartialWriteError(t *testing.T) {
 	pool.assertIdle()
 }
 
+func TestTCPWriteToRejectsInvalidBufferedWriteCounts(t *testing.T) {
+	for name, count := range map[string]int{
+		"negative":  -1,
+		"too-large": len("head") + 1,
+		"zero":      0,
+	} {
+		t.Run(name, func(t *testing.T) {
+			raw := newTCPMemoryConn("tail")
+			conn := putback.New(raw, nil)
+			conn.PutBack([]byte("head"))
+
+			tcp, ok := conn.(gonnect.TCPConn)
+			if !ok {
+				t.Fatal("New returned non-TCP wrapper")
+			}
+			written, err := tcp.WriteTo(invalidCountWriter{n: count})
+			if !errors.Is(err, io.ErrShortWrite) {
+				t.Fatalf("WriteTo() error = %v, want io.ErrShortWrite", err)
+			}
+			if written != 0 {
+				t.Fatalf("WriteTo() written = %d, want 0", written)
+			}
+			if raw.writeToCalls != 0 {
+				t.Fatalf(
+					"underlying WriteTo calls = %d, want 0",
+					raw.writeToCalls,
+				)
+			}
+		})
+	}
+}
+
 func TestBufferedReadDoesNotAlsoReadUnderlying(t *testing.T) {
 	raw := newMemoryConn("underlying")
 	conn := putback.New(raw, nil)
@@ -913,6 +953,47 @@ func TestTCPWriteToStopsOnDeferredEOF(t *testing.T) {
 	written, err := tcp.WriteTo(&out)
 	if err != nil {
 		t.Fatalf("WriteTo: %v", err)
+	}
+	if out.String() != "head" {
+		t.Fatalf("WriteTo output = %q, want head", out.String())
+	}
+	if written != int64(len("head")) {
+		t.Fatalf("WriteTo bytes = %d, want %d", written, len("head"))
+	}
+	if raw.writeToCalls != 0 {
+		t.Fatalf("underlying WriteTo calls = %d, want 0", raw.writeToCalls)
+	}
+}
+
+func TestTCPWriteToReturnsDeferredNonEOF(t *testing.T) {
+	marker := errors.New("read failed")
+	raw := &tcpBytesAndErrorConn{
+		bytesAndErrorConn: &bytesAndErrorConn{
+			data: []byte("tail"),
+			err:  marker,
+		},
+	}
+	conn := putback.New(raw, nil)
+
+	buf := make([]byte, 8)
+	n, err := conn.Read(buf)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if got := string(buf[:n]); got != "tail" {
+		t.Fatalf("Read bytes = %q, want tail", got)
+	}
+
+	conn.PutBack([]byte("head"))
+
+	var out bytes.Buffer
+	tcp, ok := conn.(gonnect.TCPConn)
+	if !ok {
+		t.Fatalf("New returned non-TCP wrapper")
+	}
+	written, err := tcp.WriteTo(&out)
+	if !errors.Is(err, marker) {
+		t.Fatalf("WriteTo error = %v, want marker", err)
 	}
 	if out.String() != "head" {
 		t.Fatalf("WriteTo output = %q, want head", out.String())

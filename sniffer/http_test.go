@@ -17,6 +17,9 @@ import (
 
 func TestHTTPClassifierMatchesArbitraryRequestLine(t *testing.T) {
 	classifier := sniffer.HTTP()
+	if got := sniffer.Metadata(classifier); got != nil {
+		t.Fatalf("initial Metadata() = %#v, want nil", got)
+	}
 	if got := classifier.Feed(nil); got != sniffer.NeedMore {
 		t.Fatalf("initial state = %v, want NeedMore", got)
 	}
@@ -30,6 +33,15 @@ func TestHTTPClassifierMatchesArbitraryRequestLine(t *testing.T) {
 	}
 	if got := classifier.Feed([]byte("ignored")); got != sniffer.Match {
 		t.Fatalf("state after Match = %v, want Match", got)
+	}
+	info, ok := sniffer.Metadata(classifier).(sniffer.HTTPInfo)
+	if !ok || info.Method != "WEIRD-METHOD" ||
+		info.URL != "/path?q=1" ||
+		info.Version != "HTTP/9.custom" {
+		t.Fatalf(
+			"Metadata() = %#v, want parsed HTTP info",
+			sniffer.Metadata(classifier),
+		)
 	}
 }
 

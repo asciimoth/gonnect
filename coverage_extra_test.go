@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"os"
 	"reflect"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -55,6 +56,120 @@ func TestCallbacksRunMethods(t *testing.T) {
 		t.Fatalf("RunOnAcceptTCP error = %v, want %v", err, cbErr)
 	}
 }
+
+func TestIsTimeout(t *testing.T) {
+	if IsTimeout(nil) {
+		t.Fatal("IsTimeout(nil) = true")
+	}
+	if !IsTimeout(context.DeadlineExceeded) {
+		t.Fatal("IsTimeout(context.DeadlineExceeded) = false")
+	}
+	if !IsTimeout(os.ErrDeadlineExceeded) {
+		t.Fatal("IsTimeout(os.ErrDeadlineExceeded) = false")
+	}
+	if !IsTimeout(timeoutError{}) {
+		t.Fatal("IsTimeout(net timeout error) = false")
+	}
+	if !IsTimeout(errors.New("read tcp: i/o timeout")) {
+		t.Fatal("IsTimeout(i/o timeout string) = false")
+	}
+	if IsTimeout(errors.New("different")) {
+		t.Fatal("IsTimeout(different) = true")
+	}
+}
+
+func TestNativePortNetwork(t *testing.T) {
+	tests := map[string]string{
+		"tcp":  "tcp",
+		"tcp4": "tcp",
+		"tcp6": "tcp",
+		"udp":  "udp",
+		"udp4": "udp",
+		"udp6": "udp",
+		"unix": "unix",
+		"ip":   "ip",
+	}
+
+	for network, want := range tests {
+		if got := nativePortNetwork(network); got != want {
+			t.Fatalf("nativePortNetwork(%q) = %q, want %q", network, got, want)
+		}
+	}
+}
+
+func TestSpawnWgNilSpawner(t *testing.T) {
+	var wg sync.WaitGroup
+	done := make(chan struct{})
+
+	if err := spawnWg(nil, func() {
+		close(done)
+	}, &wg, "test"); err != nil {
+		t.Fatalf("spawnWg(nil) error = %v", err)
+	}
+
+	wg.Wait()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("spawnWg worker did not run")
+	}
+}
+
+func TestLoopbackRegistryIsVoidAndPipeAddrs(t *testing.T) {
+	var tcpReg *loopbackTCPRegistry
+	if !tcpReg.IsVoid() {
+		t.Fatal("nil TCP registry IsVoid() = false")
+	}
+	tcpReg = &loopbackTCPRegistry{}
+	if !tcpReg.IsVoid() {
+		t.Fatal("empty TCP registry IsVoid() = false")
+	}
+	tcpReg.listeners = map[string]*loopbackTCPListener{
+		"127.0.0.1:1": {},
+	}
+	if tcpReg.IsVoid() {
+		t.Fatal("TCP registry with listener IsVoid() = true")
+	}
+
+	var udpReg *loopbackUDPRegistry
+	if !udpReg.IsVoid() {
+		t.Fatal("nil UDP registry IsVoid() = false")
+	}
+	udpReg = &loopbackUDPRegistry{}
+	if !udpReg.IsVoid() {
+		t.Fatal("empty UDP registry IsVoid() = false")
+	}
+	udpReg.conns = map[string]*loopbackUDPConn{"127.0.0.1:1": {}}
+	if udpReg.IsVoid() {
+		t.Fatal("UDP registry with conn IsVoid() = true")
+	}
+
+	local := &NetAddr{Net: "tcp", Addr: "127.0.0.1:1"}
+	remote := &NetAddr{Net: "tcp", Addr: "127.0.0.1:2"}
+	client, server := newLoopbackTCPPipePair(local, remote)
+	defer client.Close()
+	defer server.Close()
+	if client.LocalAddr() != local || client.RemoteAddr() != remote {
+		t.Fatalf(
+			"client addrs = %v/%v",
+			client.LocalAddr(),
+			client.RemoteAddr(),
+		)
+	}
+	if server.LocalAddr() != remote || server.RemoteAddr() != local {
+		t.Fatalf(
+			"server addrs = %v/%v",
+			server.LocalAddr(),
+			server.RemoteAddr(),
+		)
+	}
+}
+
+type timeoutError struct{}
+
+func (timeoutError) Error() string   { return "timeout" }
+func (timeoutError) Timeout() bool   { return true }
+func (timeoutError) Temporary() bool { return false }
 
 func TestCallbackPacketWrappers(t *testing.T) {
 	pc := &fakePacketConn{}

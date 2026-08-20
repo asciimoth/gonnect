@@ -197,8 +197,10 @@ func NewDNSDomainScope(domain string, includeSubdomains bool) (Scope, error) {
 
 // NewIPPrefixScope returns a scope containing prefix.
 //
-// IPv4-mapped IPv6 prefixes and prefixes with a zone identifier are rejected;
-// callers should normalize them to ordinary IPv4 or unzoned IPv6 values.
+// IPv4-mapped IPv6 prefixes are rejected; callers should normalize them to
+// ordinary IPv4 values. netip.Prefix values cannot retain IPv6 zones after
+// construction, so callers that parse text should use netip.ParsePrefix, which
+// rejects zone-bearing prefixes.
 func NewIPPrefixScope(prefix netip.Prefix) (Scope, error) {
 	compiled, err := compileScope(
 		Scope{IPPrefixes: []netip.Prefix{prefix}},

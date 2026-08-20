@@ -420,6 +420,149 @@ func TestRemapperDoesNotResolveOperationAddresses(t *testing.T) {
 	}
 }
 
+func TestRemapperDelegatesResolverMethods(t *testing.T) {
+	ctx := context.Background()
+	wrapped := &remapperResolverNetwork{}
+	remapper := gonnect.NewRemapper(wrapped, nil)
+
+	tests := []struct {
+		name string
+		call func() error
+	}{
+		{"LookupIP", func() error {
+			got, err := remapper.LookupIP(ctx, "ip", "host.test")
+			if err == nil && !got[0].Equal(net.ParseIP("192.0.2.10")) {
+				t.Fatalf("LookupIP() = %v", got)
+			}
+			return err
+		}},
+		{"LookupIPAddr", func() error {
+			got, err := remapper.LookupIPAddr(ctx, "host.test")
+			if err == nil && !got[0].IP.Equal(net.ParseIP("192.0.2.10")) {
+				t.Fatalf("LookupIPAddr() = %v", got)
+			}
+			return err
+		}},
+		{"LookupNetIP", func() error {
+			got, err := remapper.LookupNetIP(ctx, "ip", "host.test")
+			if err == nil && got[0] != netip.MustParseAddr("192.0.2.10") {
+				t.Fatalf("LookupNetIP() = %v", got)
+			}
+			return err
+		}},
+		{"LookupHost", func() error {
+			got, err := remapper.LookupHost(ctx, "host.test")
+			if err == nil && got[0] != "192.0.2.10" {
+				t.Fatalf("LookupHost() = %v", got)
+			}
+			return err
+		}},
+		{"LookupAddr", func() error {
+			got, err := remapper.LookupAddr(ctx, "192.0.2.10")
+			if err == nil && got[0] != "host.test." {
+				t.Fatalf("LookupAddr() = %v", got)
+			}
+			return err
+		}},
+		{"LookupCNAME", func() error {
+			got, err := remapper.LookupCNAME(ctx, "host.test")
+			if err == nil && got != "cname.test." {
+				t.Fatalf("LookupCNAME() = %q", got)
+			}
+			return err
+		}},
+		{"LookupPort", func() error {
+			got, err := remapper.LookupPort(ctx, "tcp", "https")
+			if err == nil && got != 443 {
+				t.Fatalf("LookupPort() = %d", got)
+			}
+			return err
+		}},
+		{"LookupNS", func() error {
+			got, err := remapper.LookupNS(ctx, "host.test")
+			if err == nil && got[0].Host != "ns.test." {
+				t.Fatalf("LookupNS() = %v", got)
+			}
+			return err
+		}},
+		{"LookupMX", func() error {
+			got, err := remapper.LookupMX(ctx, "host.test")
+			if err == nil && got[0].Host != "mx.test." {
+				t.Fatalf("LookupMX() = %v", got)
+			}
+			return err
+		}},
+		{"LookupSRV", func() error {
+			cname, got, err := remapper.LookupSRV(
+				ctx,
+				"service",
+				"tcp",
+				"host.test",
+			)
+			if err == nil && (cname != "srv.test." ||
+				got[0].Target != "target.test.") {
+				t.Fatalf("LookupSRV() = %q %v", cname, got)
+			}
+			return err
+		}},
+		{"LookupTXT", func() error {
+			got, err := remapper.LookupTXT(ctx, "host.test")
+			if err == nil && got[0] != "txt" {
+				t.Fatalf("LookupTXT() = %v", got)
+			}
+			return err
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := tt.call(); err != nil {
+				t.Fatalf("%s() error = %v", tt.name, err)
+			}
+			if !wrapped.called(tt.name) {
+				t.Fatalf("%s() did not delegate", tt.name)
+			}
+		})
+	}
+}
+
+func TestRemapperDelegatesInterfaceMethods(t *testing.T) {
+	wrapped := &remapperInterfaceNetwork{}
+	remapper := gonnect.NewRemapper(wrapped, nil)
+
+	if got, err := remapper.Interfaces(); err != nil ||
+		len(got) != 1 || got[0].Name() != "test0" {
+		t.Fatalf("Interfaces() = %v, %v", got, err)
+	}
+	if got, err := remapper.InterfaceAddrs(); err != nil ||
+		len(got) != 1 || got[0].String() != "192.0.2.1/32" {
+		t.Fatalf("InterfaceAddrs() = %v, %v", got, err)
+	}
+	if got, err := remapper.InterfaceMulticastAddrs(); err != nil ||
+		len(got) != 1 || got[0].String() != "224.0.0.1/32" {
+		t.Fatalf("InterfaceMulticastAddrs() = %v, %v", got, err)
+	}
+	if got, err := remapper.InterfacesByIndex(7); err != nil ||
+		len(got) != 1 || got[0].Index() != 7 {
+		t.Fatalf("InterfacesByIndex() = %v, %v", got, err)
+	}
+	if got, err := remapper.InterfacesByName("test0"); err != nil ||
+		len(got) != 1 || got[0].Name() != "test0" {
+		t.Fatalf("InterfacesByName() = %v, %v", got, err)
+	}
+	for _, name := range []string{
+		"Interfaces",
+		"InterfaceAddrs",
+		"InterfaceMulticastAddrs",
+		"InterfacesByIndex",
+		"InterfacesByName",
+	} {
+		if !wrapped.called(name) {
+			t.Fatalf("%s() did not delegate", name)
+		}
+	}
+}
+
 func TestRemapperLifecycleNoOpsWhenWrappedNetworkDoesNotSupportThem(
 	t *testing.T,
 ) {
@@ -638,3 +781,169 @@ func (n *remapperNoResolveNetwork) LookupPort(
 	n.lookupCalls.Add(1)
 	return 0, gonnect.NoSuchHost(service, "remapper-test")
 }
+
+type remapperResolverNetwork struct {
+	gonnect.Network
+	calls []string
+}
+
+func (n *remapperResolverNetwork) record(call string) {
+	n.calls = append(n.calls, call)
+}
+
+func (n *remapperResolverNetwork) called(call string) bool {
+	for _, got := range n.calls {
+		if got == call {
+			return true
+		}
+	}
+	return false
+}
+
+func (n *remapperResolverNetwork) LookupIP(
+	ctx context.Context,
+	network, address string,
+) ([]net.IP, error) {
+	n.record("LookupIP")
+	return []net.IP{net.ParseIP("192.0.2.10")}, nil
+}
+
+func (n *remapperResolverNetwork) LookupIPAddr(
+	ctx context.Context,
+	host string,
+) ([]net.IPAddr, error) {
+	n.record("LookupIPAddr")
+	return []net.IPAddr{{IP: net.ParseIP("192.0.2.10")}}, nil
+}
+
+func (n *remapperResolverNetwork) LookupNetIP(
+	ctx context.Context,
+	network, host string,
+) ([]netip.Addr, error) {
+	n.record("LookupNetIP")
+	return []netip.Addr{netip.MustParseAddr("192.0.2.10")}, nil
+}
+
+func (n *remapperResolverNetwork) LookupHost(
+	ctx context.Context,
+	host string,
+) ([]string, error) {
+	n.record("LookupHost")
+	return []string{"192.0.2.10"}, nil
+}
+
+func (n *remapperResolverNetwork) LookupAddr(
+	ctx context.Context,
+	addr string,
+) ([]string, error) {
+	n.record("LookupAddr")
+	return []string{"host.test."}, nil
+}
+
+func (n *remapperResolverNetwork) LookupCNAME(
+	ctx context.Context,
+	host string,
+) (string, error) {
+	n.record("LookupCNAME")
+	return "cname.test.", nil
+}
+
+func (n *remapperResolverNetwork) LookupPort(
+	ctx context.Context,
+	network, service string,
+) (int, error) {
+	n.record("LookupPort")
+	return 443, nil
+}
+
+func (n *remapperResolverNetwork) LookupNS(
+	ctx context.Context,
+	name string,
+) ([]*net.NS, error) {
+	n.record("LookupNS")
+	return []*net.NS{{Host: "ns.test."}}, nil
+}
+
+func (n *remapperResolverNetwork) LookupMX(
+	ctx context.Context,
+	name string,
+) ([]*net.MX, error) {
+	n.record("LookupMX")
+	return []*net.MX{{Host: "mx.test.", Pref: 10}}, nil
+}
+
+func (n *remapperResolverNetwork) LookupSRV(
+	ctx context.Context,
+	service, proto, name string,
+) (string, []*net.SRV, error) {
+	n.record("LookupSRV")
+	return "srv.test.", []*net.SRV{{Target: "target.test.", Port: 443}}, nil
+}
+
+func (n *remapperResolverNetwork) LookupTXT(
+	ctx context.Context,
+	name string,
+) ([]string, error) {
+	n.record("LookupTXT")
+	return []string{"txt"}, nil
+}
+
+type remapperInterfaceNetwork struct {
+	gonnect.Network
+	calls []string
+}
+
+func (n *remapperInterfaceNetwork) record(call string) {
+	n.calls = append(n.calls, call)
+}
+
+func (n *remapperInterfaceNetwork) called(call string) bool {
+	for _, got := range n.calls {
+		if got == call {
+			return true
+		}
+	}
+	return false
+}
+
+func (n *remapperInterfaceNetwork) Interfaces() ([]gonnect.NetworkInterface, error) {
+	n.record("Interfaces")
+	return []gonnect.NetworkInterface{testLiteralInterface()}, nil
+}
+
+func (n *remapperInterfaceNetwork) InterfaceAddrs() ([]net.Addr, error) {
+	n.record("InterfaceAddrs")
+	return []net.Addr{testAddr("192.0.2.1/32")}, nil
+}
+
+func (n *remapperInterfaceNetwork) InterfaceMulticastAddrs() ([]net.Addr, error) {
+	n.record("InterfaceMulticastAddrs")
+	return []net.Addr{testAddr("224.0.0.1/32")}, nil
+}
+
+func (n *remapperInterfaceNetwork) InterfacesByIndex(
+	index int,
+) ([]gonnect.NetworkInterface, error) {
+	n.record("InterfacesByIndex")
+	return []gonnect.NetworkInterface{testLiteralInterface()}, nil
+}
+
+func (n *remapperInterfaceNetwork) InterfacesByName(
+	name string,
+) ([]gonnect.NetworkInterface, error) {
+	n.record("InterfacesByName")
+	return []gonnect.NetworkInterface{testLiteralInterface()}, nil
+}
+
+func testLiteralInterface() gonnect.NetworkInterface {
+	return &gonnect.LiteralInterface{
+		IDVal:    "literal:test0:7",
+		IndexVal: 7,
+		NameVal:  "test0",
+	}
+}
+
+type testAddr string
+
+func (a testAddr) Network() string { return "test" }
+func (a testAddr) String() string  { return string(a) }

@@ -26,6 +26,23 @@ func (negativeSizeFactory) MinSniffBufferSize() int {
 	return -1
 }
 
+type metadataClassifier struct {
+	state    sniffer.State
+	metadata any
+}
+
+func (c metadataClassifier) Feed([]byte) sniffer.State {
+	return c.state
+}
+
+func (c metadataClassifier) MinSniffBufferSize() int {
+	return 0
+}
+
+func (c metadataClassifier) Metadata() any {
+	return c.metadata
+}
+
 func TestPrefixFragmentation(t *testing.T) {
 	want := []byte("SSH-")
 	for split := 0; split <= len(want); split++ {
@@ -111,6 +128,34 @@ func TestAnd(t *testing.T) {
 	)
 	if got := classifier.Feed([]byte("AB")); got != sniffer.Mismatch {
 		t.Fatalf("mismatching And = %v, want Mismatch", got)
+	}
+}
+
+func TestAndMetadata(t *testing.T) {
+	classifier := sniffer.And(
+		metadataClassifier{state: sniffer.Match, metadata: "one"},
+		metadataClassifier{state: sniffer.Match},
+	)
+	if got := sniffer.Metadata(classifier); got != nil {
+		t.Fatalf("Metadata() before match = %#v, want nil", got)
+	}
+	if got := classifier.Feed(nil); got != sniffer.Match {
+		t.Fatalf("Feed() = %v, want Match", got)
+	}
+	if got := sniffer.Metadata(classifier); got != "one" {
+		t.Fatalf("Metadata() = %#v, want first metadata", got)
+	}
+
+	classifier = sniffer.And(
+		metadataClassifier{state: sniffer.Match, metadata: "one"},
+		metadataClassifier{state: sniffer.Match, metadata: "two"},
+	)
+	if got := classifier.Feed(nil); got != sniffer.Match {
+		t.Fatalf("Feed() = %v, want Match", got)
+	}
+	got, ok := sniffer.Metadata(classifier).(sniffer.CompositeMetadata)
+	if !ok || len(got.Children) != 2 {
+		t.Fatalf("Metadata() = %#v, want composite metadata", got)
 	}
 }
 
@@ -461,6 +506,85 @@ func TestClassifierFunc(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("calls = %d, want 1", calls)
+	}
+}
+
+func TestClassifierMetadata(t *testing.T) {
+	if got := sniffer.Metadata(sniffer.SSH()); got != nil {
+		t.Fatalf("Metadata(non-provider) = %v, want nil", got)
+	}
+
+	child := metadataClassifier{state: sniffer.Match, metadata: "child"}
+	if got := sniffer.Metadata(child); got != "child" {
+		t.Fatalf("Metadata(provider) = %v, want child", got)
+	}
+
+	sized := sniffer.WithMinSniffBufferSize(1, child)
+	if got := sniffer.Metadata(sized); got != "child" {
+		t.Fatalf("Metadata(sized) = %v, want child", got)
+	}
+
+	limited := sniffer.Limit(1, child)
+	if got := limited.Feed([]byte("x")); got != sniffer.Match {
+		t.Fatalf("Limit Feed() = %v, want Match", got)
+	}
+	if got := sniffer.Metadata(limited); got != "child" {
+		t.Fatalf("Metadata(limit) = %v, want child", got)
+	}
+
+	and := sniffer.And(
+		metadataClassifier{state: sniffer.Match, metadata: "first"},
+		metadataClassifier{state: sniffer.Match},
+		metadataClassifier{state: sniffer.Match, metadata: "third"},
+	)
+	if got := and.Feed(nil); got != sniffer.Match {
+		t.Fatalf("And Feed() = %v, want Match", got)
+	}
+	composite, ok := sniffer.Metadata(and).(sniffer.CompositeMetadata)
+	if !ok {
+		t.Fatalf(
+			"Metadata(and) = %T, want CompositeMetadata",
+			sniffer.Metadata(and),
+		)
+	}
+	if len(composite.Children) != 3 ||
+		composite.Children[0] != "first" ||
+		composite.Children[1] != nil ||
+		composite.Children[2] != "third" {
+		t.Fatalf("composite metadata = %#v", composite.Children)
+	}
+
+	and = sniffer.And(
+		metadataClassifier{state: sniffer.Match},
+		metadataClassifier{state: sniffer.Match, metadata: "only"},
+	)
+	if got := and.Feed(nil); got != sniffer.Match {
+		t.Fatalf("single metadata And Feed() = %v, want Match", got)
+	}
+	if got := sniffer.Metadata(and); got != "only" {
+		t.Fatalf("Metadata(and one child) = %v, want only", got)
+	}
+
+	or := sniffer.Or(
+		metadataClassifier{state: sniffer.Mismatch, metadata: "no"},
+		metadataClassifier{state: sniffer.Match, metadata: "yes"},
+	)
+	if got := or.Feed(nil); got != sniffer.Match {
+		t.Fatalf("Or Feed() = %v, want Match", got)
+	}
+	if got := sniffer.Metadata(or); got != "yes" {
+		t.Fatalf("Metadata(or) = %v, want yes", got)
+	}
+
+	needMore := sniffer.And(
+		metadataClassifier{state: sniffer.Match, metadata: "hidden"},
+		metadataClassifier{state: sniffer.NeedMore, metadata: "hidden"},
+	)
+	if got := needMore.Feed(nil); got != sniffer.NeedMore {
+		t.Fatalf("NeedMore And Feed() = %v, want NeedMore", got)
+	}
+	if got := sniffer.Metadata(needMore); got != nil {
+		t.Fatalf("Metadata(non-match And) = %v, want nil", got)
 	}
 }
 

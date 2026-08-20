@@ -64,6 +64,34 @@ func TestNetworkLeafCertificateCacheRefreshesExpiredEntry(t *testing.T) {
 	}
 }
 
+func TestNetworkEvictLeafCacheLockedRemovesOldestEntries(t *testing.T) {
+	network := &Network{leafCache: make(map[string]stdtls.Certificate)}
+	now := time.Now()
+	for i := range maxLeafCacheEntries + 2 {
+		network.leafCache[string(rune(i+1))] = stdtls.Certificate{
+			Leaf: &x509.Certificate{
+				NotAfter: now.Add(time.Duration(i) * time.Second),
+			},
+		}
+	}
+
+	network.evictLeafCacheLocked()
+
+	if len(network.leafCache) != maxLeafCacheEntries {
+		t.Fatalf(
+			"leaf cache size = %d, want %d",
+			len(network.leafCache),
+			maxLeafCacheEntries,
+		)
+	}
+	if _, ok := network.leafCache[string(rune(1))]; ok {
+		t.Fatal("oldest leaf cache entry was not evicted")
+	}
+	if _, ok := network.leafCache[string(rune(2))]; ok {
+		t.Fatal("second oldest leaf cache entry was not evicted")
+	}
+}
+
 func internalTestCA(
 	t *testing.T,
 	ttl time.Duration,

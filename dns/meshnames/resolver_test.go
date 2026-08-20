@@ -79,6 +79,42 @@ func TestResolverLookupIPMeship(t *testing.T) {
 	}
 }
 
+func TestNewResolverDefaultsAndDirectLookupAdapters(t *testing.T) {
+	t.Parallel()
+
+	network := &mapNetwork{}
+	r := meshnames.NewResolver(network)
+	if r.Network != network {
+		t.Fatal("NewResolver() did not keep network")
+	}
+	if r.Port != 53 {
+		t.Fatalf("NewResolver() Port = %d, want 53", r.Port)
+	}
+	if r.Timeout <= 0 {
+		t.Fatalf("NewResolver() Timeout = %v, want positive", r.Timeout)
+	}
+
+	const host = "aiag7sesed2aaxgcgbnevruwpy.meship"
+	ipAddrs, err := r.LookupIPAddr(context.Background(), host)
+	if err != nil || len(ipAddrs) != 1 ||
+		ipAddrs[0].IP.String() != "200:6fc8:9220:f400:5cc2:305a:4ac6:967e" {
+		t.Fatalf("LookupIPAddr() = %v, %v", ipAddrs, err)
+	}
+
+	netIPs, err := r.LookupNetIP(context.Background(), "ip6", host)
+	if err != nil || len(netIPs) != 1 ||
+		netIPs[0] != netip.MustParseAddr(
+			"200:6fc8:9220:f400:5cc2:305a:4ac6:967e",
+		) {
+		t.Fatalf("LookupNetIP() = %v, %v", netIPs, err)
+	}
+
+	port, err := r.LookupPort(context.Background(), "tcp", "https")
+	if err != nil || port != 443 {
+		t.Fatalf("LookupPort() = %d, %v", port, err)
+	}
+}
+
 func TestResolverLookupIPMeshipNoIPv4Address(t *testing.T) {
 	t.Parallel()
 
@@ -100,6 +136,28 @@ func TestResolverLookupIPMeshipNoIPv4Address(t *testing.T) {
 			dnsErr,
 			host,
 		)
+	}
+}
+
+func TestResolverDirectLookupMalformedLabelsReturnErrors(t *testing.T) {
+	t.Parallel()
+
+	r := &meshnames.Resolver{Network: &mapNetwork{}}
+	for _, host := range []string{
+		"bad!.meship",
+		"svc.not-hex.pk.ygg",
+	} {
+		t.Run(host, func(t *testing.T) {
+			_, err := r.LookupIP(context.Background(), "ip6", host)
+			var dnsErr *net.DNSError
+			if !errors.As(err, &dnsErr) || !dnsErr.IsNotFound {
+				t.Fatalf(
+					"LookupIP(%q) error = %v, want not-found DNS error",
+					host,
+					err,
+				)
+			}
+		})
 	}
 }
 
@@ -262,6 +320,27 @@ func TestResolverLookupStructuredRecords(t *testing.T) {
 					Priority: 5,
 					Weight:   10,
 				})
+			case q.Name == "_alias._tcp."+dns.Fqdn(name) && q.Qtype == dns.TypeSRV:
+				msg.Answer = append(msg.Answer, &dns.CNAME{
+					Hdr: dns.RR_Header{
+						Name:   q.Name,
+						Rrtype: dns.TypeCNAME,
+						Class:  dns.ClassINET,
+						Ttl:    60,
+					},
+					Target: dns.Fqdn(name),
+				}, &dns.SRV{
+					Hdr: dns.RR_Header{
+						Name:   q.Name,
+						Rrtype: dns.TypeSRV,
+						Class:  dns.ClassINET,
+						Ttl:    60,
+					},
+					Target:   "svc." + dns.Fqdn(name),
+					Port:     5222,
+					Priority: 5,
+					Weight:   10,
+				})
 			case q.Name == "alias."+dns.Fqdn(name) && q.Qtype == dns.TypeCNAME:
 				msg.Answer = append(msg.Answer, &dns.CNAME{
 					Hdr: dns.RR_Header{
@@ -318,6 +397,12 @@ func TestResolverLookupStructuredRecords(t *testing.T) {
 		t.Fatalf("LookupSRV() = %q %v %v", cname, srv, err)
 	}
 
+	cname, srv, err = r.LookupSRV(context.Background(), "alias", "tcp", name)
+	if err != nil || cname != dns.Fqdn(name) || len(srv) != 1 ||
+		srv[0].Target != "svc."+dns.Fqdn(name) {
+		t.Fatalf("LookupSRV(alias) = %q %v %v", cname, srv, err)
+	}
+
 	gotCNAME, err := r.LookupCNAME(context.Background(), "alias."+name)
 	if err != nil || gotCNAME != dns.Fqdn(name) {
 		t.Fatalf("LookupCNAME() = %q, %v", gotCNAME, err)
@@ -347,6 +432,186 @@ func TestResolverUsesFallbackForNonSpecialNames(t *testing.T) {
 	}
 	if fb.lookupHostCalls != 1 {
 		t.Fatalf("fallback LookupHost calls = %d", fb.lookupHostCalls)
+	}
+
+	ips, err := r.LookupIP(context.Background(), "ip", "example.com")
+	if err != nil || len(ips) != 1 || ips[0].String() != "198.51.100.7" {
+		t.Fatalf("fallback LookupIP() = %v, %v", ips, err)
+	}
+	ptr, err := r.LookupAddr(context.Background(), "not-an-ip")
+	if err != nil || len(ptr) != 1 || ptr[0] != "example.com." {
+		t.Fatalf("fallback LookupAddr() = %v, %v", ptr, err)
+	}
+	cname, err := r.LookupCNAME(context.Background(), "example.com")
+	if err != nil || cname != "example.com." {
+		t.Fatalf("fallback LookupCNAME() = %q, %v", cname, err)
+	}
+	ns, err := r.LookupNS(context.Background(), "example.com")
+	if err != nil || len(ns) != 1 || ns[0].Host != "ns.example.com." {
+		t.Fatalf("fallback LookupNS() = %v, %v", ns, err)
+	}
+	mx, err := r.LookupMX(context.Background(), "example.com")
+	if err != nil || len(mx) != 1 || mx[0].Host != "mx.example.com." {
+		t.Fatalf("fallback LookupMX() = %v, %v", mx, err)
+	}
+	cname, srv, err := r.LookupSRV(
+		context.Background(),
+		"http",
+		"tcp",
+		"example.com",
+	)
+	if err != nil || cname != "" || len(srv) != 1 ||
+		srv[0].Target != "srv.example.com." {
+		t.Fatalf("fallback LookupSRV() = %q %v %v", cname, srv, err)
+	}
+	txt, err := r.LookupTXT(context.Background(), "example.com")
+	if err != nil || len(txt) != 1 || txt[0] != "example" {
+		t.Fatalf("fallback LookupTXT() = %v, %v", txt, err)
+	}
+}
+
+func TestResolverStructuredLookupsReturnNoSuchHostForEmptyAnswers(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	const (
+		authorityIP = "0202:12a9:00e5:4474:d473:82be:16ac:9381"
+		name        = "empty.2aijksahfir2ni44cxylkze4b.ygg"
+	)
+
+	server := startDNSServer(t, func(w dns.ResponseWriter, req *dns.Msg) {
+		msg := new(dns.Msg)
+		msg.SetReply(req)
+		_ = w.WriteMsg(msg)
+	})
+	r := &meshnames.Resolver{
+		Network: &mapNetwork{
+			routes: map[string]string{
+				net.ParseIP(authorityIP).String(): server.addr,
+			},
+		},
+	}
+
+	for label, run := range map[string]func() error{
+		"CNAME": func() error {
+			_, err := r.LookupCNAME(context.Background(), name)
+			return err
+		},
+		"NS": func() error {
+			_, err := r.LookupNS(context.Background(), name)
+			return err
+		},
+		"MX": func() error {
+			_, err := r.LookupMX(context.Background(), name)
+			return err
+		},
+		"SRV": func() error {
+			_, _, err := r.LookupSRV(context.Background(), "", "", name)
+			return err
+		},
+		"TXT": func() error {
+			_, err := r.LookupTXT(context.Background(), name)
+			return err
+		},
+		"PTR": func() error {
+			_, err := r.LookupAddr(context.Background(), authorityIP)
+			return err
+		},
+	} {
+		t.Run(label, func(t *testing.T) {
+			err := run()
+			var dnsErr *net.DNSError
+			if !errors.As(err, &dnsErr) || !dnsErr.IsNotFound {
+				t.Fatalf("%s error = %v, want not-found DNS error", label, err)
+			}
+		})
+	}
+}
+
+func TestResolverLookupIPReturnsNoSuchHostForEmptyAddressAnswers(t *testing.T) {
+	t.Parallel()
+
+	const (
+		authorityIP = "0202:12a9:00e5:4474:d473:82be:16ac:9381"
+		name        = "empty-address.2aijksahfir2ni44cxylkze4b.ygg"
+	)
+
+	server := startDNSServer(t, func(w dns.ResponseWriter, req *dns.Msg) {
+		msg := new(dns.Msg)
+		msg.SetReply(req)
+		_ = w.WriteMsg(msg)
+	})
+	r := &meshnames.Resolver{
+		Network: &mapNetwork{
+			routes: map[string]string{
+				net.ParseIP(authorityIP).String(): server.addr,
+			},
+		},
+	}
+
+	_, err := r.LookupIP(context.Background(), "ip6", name)
+	var dnsErr *net.DNSError
+	if !errors.As(err, &dnsErr) || !dnsErr.IsNotFound {
+		t.Fatalf(
+			"LookupIP(empty answers) error = %v, want not-found DNS error",
+			err,
+		)
+	}
+}
+
+func TestResolverDNSResponseCodesReturnDNSErrors(t *testing.T) {
+	t.Parallel()
+
+	const (
+		authorityIP = "0202:12a9:00e5:4474:d473:82be:16ac:9381"
+		name        = "rcode.2aijksahfir2ni44cxylkze4b.ygg"
+	)
+
+	for label, rcode := range map[string]int{
+		"name-error": dns.RcodeNameError,
+		"refused":    dns.RcodeRefused,
+	} {
+		t.Run(label, func(t *testing.T) {
+			t.Parallel()
+
+			server := startDNSServer(
+				t,
+				func(w dns.ResponseWriter, req *dns.Msg) {
+					msg := new(dns.Msg)
+					msg.SetReply(req)
+					msg.Rcode = rcode
+					_ = w.WriteMsg(msg)
+				},
+			)
+			r := &meshnames.Resolver{
+				Network: &mapNetwork{
+					routes: map[string]string{
+						net.ParseIP(authorityIP).String(): server.addr,
+					},
+				},
+			}
+
+			_, err := r.LookupTXT(context.Background(), name)
+			var dnsErr *net.DNSError
+			if !errors.As(err, &dnsErr) {
+				t.Fatalf(
+					"LookupTXT() error = %T %v, want *net.DNSError",
+					err,
+					err,
+				)
+			}
+			if label == "name-error" && !dnsErr.IsNotFound {
+				t.Fatalf("LookupTXT() error = %#v, want not found", dnsErr)
+			}
+			if label == "refused" && dnsErr.Err != dns.RcodeToString[rcode] {
+				t.Fatalf(
+					"LookupTXT() error = %#v, want rcode %q",
+					dnsErr,
+					dns.RcodeToString[rcode],
+				)
+			}
+		})
 	}
 }
 

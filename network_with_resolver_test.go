@@ -227,6 +227,43 @@ func TestNetworkWithResolverResolverLeavesIPLiteralHosts(t *testing.T) {
 	}
 }
 
+func TestNetworkWithResolverDelegatesInterfaceMethods(t *testing.T) {
+	wrapped := &remapperInterfaceNetwork{}
+	wrapper := gonnect.NewNetworkWithResolver(wrapped, &detachedResolver{})
+
+	if got, err := wrapper.Interfaces(); err != nil ||
+		len(got) != 1 || got[0].Name() != "test0" {
+		t.Fatalf("Interfaces() = %v, %v", got, err)
+	}
+	if got, err := wrapper.InterfaceAddrs(); err != nil ||
+		len(got) != 1 || got[0].String() != "192.0.2.1/32" {
+		t.Fatalf("InterfaceAddrs() = %v, %v", got, err)
+	}
+	if got, err := wrapper.InterfaceMulticastAddrs(); err != nil ||
+		len(got) != 1 || got[0].String() != "224.0.0.1/32" {
+		t.Fatalf("InterfaceMulticastAddrs() = %v, %v", got, err)
+	}
+	if got, err := wrapper.InterfacesByIndex(7); err != nil ||
+		len(got) != 1 || got[0].Index() != 7 {
+		t.Fatalf("InterfacesByIndex() = %v, %v", got, err)
+	}
+	if got, err := wrapper.InterfacesByName("test0"); err != nil ||
+		len(got) != 1 || got[0].Name() != "test0" {
+		t.Fatalf("InterfacesByName() = %v, %v", got, err)
+	}
+	for _, name := range []string{
+		"Interfaces",
+		"InterfaceAddrs",
+		"InterfaceMulticastAddrs",
+		"InterfacesByIndex",
+		"InterfacesByName",
+	} {
+		if !wrapped.called(name) {
+			t.Fatalf("%s() did not delegate", name)
+		}
+	}
+}
+
 func TestNetworkWithResolverNilResolverUsesWrappedNetwork(t *testing.T) {
 	ctx := context.Background()
 	wrapped := newDetachedCaptureNetwork()

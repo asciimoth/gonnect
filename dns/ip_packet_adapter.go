@@ -260,11 +260,14 @@ func parseDNSIPv6Packet(pkt []byte) (ipPacketRequest, bool) {
 				return ipPacketRequest{}, false
 			}
 			udp := udpSegment(pkt, off, totalLen)
+			// #nosec G602 -- IPv6 header length was checked before these slices.
 			if udp == nil || !validUDPChecksumIPv6(pkt[8:24], pkt[24:40], udp) {
 				return ipPacketRequest{}, false
 			}
 			req.version = 6
+			// #nosec G602 -- IPv6 header length was checked before these slices.
 			copy(req.src6[:], pkt[8:24])
+			// #nosec G602 -- IPv6 header length was checked before these slices.
 			copy(req.dst6[:], pkt[24:40])
 			return req, true
 		case ipv6NextHeaderFragment:
@@ -282,6 +285,7 @@ func parseDNSIPv6Packet(pkt []byte) (ipPacketRequest, bool) {
 			if headerLen == 0 || off+headerLen > totalLen {
 				return ipPacketRequest{}, false
 			}
+			// #nosec G602 -- off+2 and total packet length were checked above.
 			next = pkt[off]
 			off += headerLen
 		case ipv6NextHeaderAH:
@@ -292,6 +296,7 @@ func parseDNSIPv6Packet(pkt []byte) (ipPacketRequest, bool) {
 			if headerLen == 0 || off+headerLen > totalLen {
 				return ipPacketRequest{}, false
 			}
+			// #nosec G602 -- off+2 and total packet length were checked above.
 			next = pkt[off]
 			off += headerLen
 		default:
@@ -320,6 +325,7 @@ func parseDNSUDP(
 	return ipPacketRequest{
 		srcPort: binary.BigEndian.Uint16(udp[0:2]),
 		dstPort: dstPort,
+		// #nosec G602 -- udpLen was checked against len(udp) above.
 		payload: append([]byte(nil), udp[8:udpLen]...),
 	}, true
 }

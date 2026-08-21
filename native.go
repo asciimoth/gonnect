@@ -169,11 +169,6 @@ func nativePortNetwork(network string) string {
 	return network
 }
 
-func nativeDialNeedsResolution(network string) bool {
-	return strings.HasPrefix(network, "tcp") ||
-		strings.HasPrefix(network, "udp")
-}
-
 func nativeHostsPaths() []string {
 	if runtime.GOOS != "windows" {
 		return []string{"/etc/hosts"}
@@ -578,19 +573,16 @@ func (n *NativeNetwork) InterfacesByName(
 }
 
 // Dial establishes a connection to the address on the specified network.
-// It applies filtering before dialing.
+// It applies filtering to the original address, then gives that same address to
+// Go's native dialer. It intentionally does not pre-resolve host names with the
+// configured gonnect resolver. This keeps native dial behavior compatible with
+// the local operating system resolver path, including hosts files and other
+// platform name lookup rules. Use NetworkWithResolver when a wrapped network
+// must receive numeric addresses resolved by a gonnect Resolver.
 func (n *NativeNetwork) Dial(
 	ctx context.Context,
 	network, address string,
 ) (net.Conn, error) {
-	if nativeDialNeedsResolution(network) {
-		ip, port, err := n.resolveAddr(ctx, network, address, actionDial)
-		if err != nil {
-			return nil, err
-		}
-		return n.dialer.DialContext(ctx, network, nativeJoinIPPort(ip, port))
-	}
-
 	err := n.doFilter(network, address, actionDial)
 	if err != nil {
 		return nil, err

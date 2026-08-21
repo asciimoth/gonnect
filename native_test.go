@@ -99,40 +99,68 @@ func TestNativeNetworkDialNoResolver(t *testing.T) {
 	}
 }
 
-func TestNativeNetworkDialFiltersResolvedIP(t *testing.T) {
+func TestNativeNetworkDialUsesNativeResolverPath(t *testing.T) {
 	t.Parallel()
 
-	const wantResolved = "127.0.0.1:443"
+	dns := newNativeNameErrorDNS()
+	t.Cleanup(func() { _ = dns.Close() })
+
 	var sawOriginal atomic.Bool
-	var sawResolved atomic.Bool
 	n := gonnect.NativeConfig{
 		Filter: func(network, address string) bool {
-			switch address {
-			case "blocked.test:443":
+			if address == "" || network == "" {
+				return false
+			}
+			if host, _, err := net.SplitHostPort(address); err == nil &&
+				host == "localhost" {
 				sawOriginal.Store(true)
-			case wantResolved:
-				sawResolved.Store(true)
-				return true
 			}
 			return false
 		},
 	}.Build()
-	dns := newNativeStaticDNS(net.IPv4(127, 0, 0, 1))
-	t.Cleanup(func() { _ = dns.Close() })
 	n.SetResolver(gdns.NewResolver(dns))
 
-	if _, err := n.Dial(
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen error = %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err == nil {
+			accepted <- conn
+		}
+	}()
+
+	_, port, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		t.Fatalf("SplitHostPort(%q) error = %v", ln.Addr(), err)
+	}
+
+	conn, err := n.Dial(
 		context.Background(),
 		"tcp4",
-		"blocked.test:443",
-	); err == nil {
-		t.Fatal("Dial() error = nil, want resolved endpoint filter error")
+		net.JoinHostPort("localhost", port),
+	)
+	if err != nil {
+		t.Fatalf("Dial() error = %v", err)
 	}
+	_ = conn.Close()
+
+	select {
+	case conn := <-accepted:
+		_ = conn.Close()
+	case <-time.After(time.Second):
+		t.Fatal("Accept timed out")
+	}
+
 	if !sawOriginal.Load() {
 		t.Fatal("filter did not see original hostname endpoint")
 	}
-	if !sawResolved.Load() {
-		t.Fatalf("filter did not see resolved endpoint %s", wantResolved)
+	if got := dns.calls.Load(); got != 0 {
+		t.Fatalf("configured resolver calls = %d, want 0", got)
 	}
 }
 

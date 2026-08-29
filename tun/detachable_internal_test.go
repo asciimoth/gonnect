@@ -16,7 +16,8 @@ func (detachableTestPool) Put([]byte) {}
 
 type namedNativeTun struct {
 	fakeTun
-	file *os.File
+	file   *os.File
+	events chan Event
 }
 
 func (t *namedNativeTun) File() *os.File { return t.file }
@@ -29,11 +30,17 @@ func (t *namedNativeTun) MRO() int { return 6 }
 
 func (t *namedNativeTun) BatchSize() int { return 3 }
 
+func (t *namedNativeTun) Events() <-chan Event { return t.events }
+
 func TestDetachedTunStateAccessors(t *testing.T) {
-	base := &namedNativeTun{file: os.Stdin}
+	base := &namedNativeTun{
+		file:   os.Stdin,
+		events: make(chan Event),
+	}
 	wrapper := Detach(base, nil, nil)
 	t.Cleanup(func() {
 		_ = wrapper.Close()
+		close(base.events)
 		wrapper.Wait()
 	})
 

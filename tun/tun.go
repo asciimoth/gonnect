@@ -54,6 +54,8 @@ const (
 // more buffers" when the caller supplied too few read buffers. IsTunTermError
 // classifies errors for callers that need to decide whether to stop using a
 // Tun after a Read error.
+//
+//nolint:iface // firewallTun intentionally duplicates this interface to hide its field.
 type Tun interface {
 	// File returns the file descriptor of the tun device.
 	// It may be nil for virtual/mock/etc implementations.

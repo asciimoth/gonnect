@@ -262,6 +262,8 @@ type Resolver interface {
 }
 
 // Network defines an abstraction over network providers.
+//
+//nolint:iface // firewallNetwork intentionally duplicates this interface to hide its field.
 type Network interface {
 	Resolver
 

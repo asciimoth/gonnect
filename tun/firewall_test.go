@@ -87,12 +87,76 @@ func TestFirewallReadFiltersOutgoingBatchAndTracksResponse(t *testing.T) {
 	}
 }
 
+func TestFirewallMatchesCachedReverseDNSNames(t *testing.T) {
+	blockedAddr := netip.MustParseAddr("192.0.2.10")
+	peerAddr := netip.MustParseAddr("198.51.100.20")
+	localAddr := netip.MustParseAddr("10.0.0.1")
+	cache := &firewallTestDNSCache{names: map[netip.Addr][]string{
+		blockedAddr: {"blocked.example.test."},
+		peerAddr:    {"trusted.example.test."},
+		localAddr:   {"service.example.test."},
+	}}
+	backend := newFirewallTestTun(1)
+	blocked := firewallIPv4Packet(
+		6,
+		localAddr.String(),
+		blockedAddr.String(),
+		40000,
+		443,
+	)
+	backend.queueRead(blocked)
+	backend.queueReadError(io.EOF)
+
+	firewall := NewFirewall(backend, &gonnect.FirewallConfig{
+		DNSCache: cache,
+		Exclude: []gonnect.FirewallRule{{
+			Network: "tcp",
+			Hosts:   []string{"*.example.test"},
+			Ports:   []uint16{443},
+		}},
+	})
+	bufs := [][]byte{make([]byte, 256)}
+	sizes := make([]int, 1)
+	if n, err := firewall.Read(bufs, sizes, 0); n != 0 ||
+		!errors.Is(err, io.EOF) {
+		t.Fatalf("blocked Read() = %d, %v, want 0, EOF", n, err)
+	}
+
+	firewall.SetConfig(&gonnect.FirewallConfig{
+		DNSCache: cache,
+		Include: []gonnect.FirewallRule{{
+			Network:    "udp",
+			Hosts:      []string{"trusted.example.test"},
+			LocalHosts: []string{"service.example.test"},
+			Ports:      []uint16{53},
+		}},
+	})
+	incoming := firewallIPv4Packet(
+		17,
+		peerAddr.String(),
+		localAddr.String(),
+		40001,
+		53,
+	)
+	if n, err := firewall.Write(
+		[][]byte{incoming},
+		0,
+	); err != nil || n != 1 {
+		t.Fatalf("included Write() = %d, %v, want 1, nil", n, err)
+	}
+	if got := backend.writtenPackets(); len(got) != 1 ||
+		string(got[0]) != string(incoming) {
+		t.Fatalf("backend writes = %d, want cached-name packet", len(got))
+	}
+}
+
 func TestFirewallIncomingRulesIPv6ExtensionsAndConfigSwap(t *testing.T) {
 	backend := newFirewallTestTun(2)
 	cfg := &gonnect.FirewallConfig{Include: []gonnect.FirewallRule{{
-		Network: "tcp",
-		Hosts:   []string{"203.0.113.0/24"},
-		Ports:   []uint16{443},
+		Network:    "tcp",
+		Hosts:      []string{"203.0.113.0/24"},
+		LocalHosts: []string{"10.0.0.1"},
+		Ports:      []uint16{443},
 	}}}
 	firewall := NewFirewall(backend, cfg)
 	cfg.Include[0].Ports[0] = 80
@@ -111,12 +175,19 @@ func TestFirewallIncomingRulesIPv6ExtensionsAndConfigSwap(t *testing.T) {
 		50000,
 		443,
 	)
+	wrongLocal := firewallIPv4Packet(
+		6,
+		"203.0.113.9",
+		"10.0.0.2",
+		50000,
+		443,
+	)
 	if n, err := firewall.Write(
-		[][]byte{denied, allowed},
+		[][]byte{denied, wrongLocal, allowed},
 		0,
 	); err != nil ||
-		n != 2 {
-		t.Fatalf("Write() = %d, %v, want 2, nil", n, err)
+		n != 3 {
+		t.Fatalf("Write() = %d, %v, want 3, nil", n, err)
 	}
 	if got := backend.writtenPackets(); len(got) != 1 ||
 		string(got[0]) != string(allowed) {
@@ -353,6 +424,17 @@ type firewallTestTun struct {
 	mu     sync.Mutex
 	writes [][]byte
 	closed bool
+}
+
+type firewallTestDNSCache struct {
+	names map[netip.Addr][]string
+}
+
+func (c *firewallTestDNSCache) ReverseDNSNames(
+	addr netip.Addr,
+	_ time.Time,
+) []string {
+	return c.names[addr.Unmap()]
 }
 
 func newFirewallTestTun(batch int) *firewallTestTun {

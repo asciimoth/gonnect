@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/asciimoth/gonnect"
 )
@@ -36,6 +37,59 @@ func BenchmarkFirewallBlocksOutgoing(b *testing.B) {
 	}
 }
 
+func BenchmarkFirewallAllowsIncomingLocalDestination(b *testing.B) {
+	rules := make([]gonnect.FirewallRule, 64)
+	for i := range rules {
+		rules[i] = gonnect.FirewallRule{
+			Network:    "udp",
+			Hosts:      []string{"192.0.2.1"},
+			LocalHosts: []string{"198.51.100." + strconv.Itoa(i)},
+			Ports:      []uint16{53},
+		}
+	}
+	firewall := NewFirewall(newFirewallTestTun(1), &gonnect.FirewallConfig{
+		Include: rules,
+	})
+	flow := firewallFlow{
+		version: 4,
+		proto:   17,
+		src:     netip.MustParseAddr("192.0.2.1"),
+		dst:     netip.MustParseAddr("198.51.100.63"),
+		srcPort: 40000,
+		dstPort: 53,
+	}
+
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = firewall.allowsIncoming(nil, flow)
+	}
+}
+
+func BenchmarkFirewallBlocksOutgoingCachedHostname(b *testing.B) {
+	firewall := NewFirewall(
+		newFirewallTestTun(1),
+		&gonnect.FirewallConfig{
+			DNSCache: firewallBenchmarkDNSCache{"api.example.test."},
+			Exclude: []gonnect.FirewallRule{{
+				Network: "tcp",
+				Hosts:   []string{"*.example.test"},
+				Ports:   []uint16{443},
+			}},
+		},
+	)
+	flow := firewallFlow{
+		version: 4,
+		proto:   6,
+		dst:     netip.MustParseAddr("192.0.2.10"),
+		dstPort: 443,
+	}
+
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = firewall.blocksOutgoing(flow)
+	}
+}
+
 func BenchmarkFirewallRecordResponse(b *testing.B) {
 	firewall := NewFirewall(newFirewallTestTun(1), nil)
 	flow := firewallFlow{
@@ -51,4 +105,13 @@ func BenchmarkFirewallRecordResponse(b *testing.B) {
 	for b.Loop() {
 		firewall.recordResponse(flow)
 	}
+}
+
+type firewallBenchmarkDNSCache []string
+
+func (c firewallBenchmarkDNSCache) ReverseDNSNames(
+	netip.Addr,
+	time.Time,
+) []string {
+	return c
 }

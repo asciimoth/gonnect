@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -174,6 +175,76 @@ func (s *MemoryStorage) Delete(key string) {
 	delete(s.m, key)
 	s.mu.Unlock()
 }
+
+// ReverseDNSNames returns cached PTR names for addr. It does not make a DNS
+// request. This method lets MemoryStorage be used directly as a
+// gonnect.FirewallDNSCache.
+func (s *MemoryStorage) ReverseDNSNames(
+	addr netip.Addr,
+	now time.Time,
+) []string {
+	if s == nil {
+		return nil
+	}
+	return CachedReverseDNSNames(s, addr, now)
+}
+
+// ReverseDNSCache adapts any CacheStorage for cached firewall hostname
+// matching. It does not make live DNS requests.
+type ReverseDNSCache struct {
+	storage CacheStorage
+}
+
+// NewReverseDNSCache returns a cached reverse-DNS adapter for storage. A nil
+// storage produces an adapter that always returns no names.
+func NewReverseDNSCache(storage CacheStorage) *ReverseDNSCache {
+	return &ReverseDNSCache{storage: storage}
+}
+
+// ReverseDNSNames returns cached PTR names for addr.
+func (c *ReverseDNSCache) ReverseDNSNames(
+	addr netip.Addr,
+	now time.Time,
+) []string {
+	if c == nil {
+		return nil
+	}
+	return CachedReverseDNSNames(c.storage, addr, now)
+}
+
+// CachedReverseDNSNames returns the synthetic literal PTR names for addr from
+// storage. It returns no names for a miss, an expired entry, or an invalid DNS
+// response. It does not make a live DNS request.
+func CachedReverseDNSNames(
+	storage CacheStorage,
+	addr netip.Addr,
+	now time.Time,
+) []string {
+	if storage == nil {
+		return nil
+	}
+	addr = addr.Unmap()
+	if !addr.IsValid() {
+		return nil
+	}
+	msg, ok := storage.Get(addr.String()+".|12|1", now)
+	if !ok || msg == nil || !msg.Response || msg.RCode != RCodeSuccess {
+		return nil
+	}
+	var names []string
+	for _, rr := range msg.Answers {
+		if rr.Type != TypePTR || rr.Class != ClassIN || len(rr.Data) == 0 {
+			continue
+		}
+		names = append(names, string(rr.Data))
+	}
+	return names
+}
+
+var (
+	_ gonnect.FirewallDNSCache = (*MemoryStorage)(nil)
+	_ gonnect.FirewallDNSCache = (*ReverseDNSCache)(nil)
+)
 
 func minTTL(msg *Message) uint32 {
 	var ttl uint32

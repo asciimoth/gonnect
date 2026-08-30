@@ -10,7 +10,8 @@ import (
 	"time"
 )
 
-// Optimize returns a canonical, independent config with the same policy.
+// Optimize returns a canonical, independent config with the same policy. It
+// retains the same DNSCache because the cache is shared runtime state.
 //
 // Optimize normalizes rule text, ports, and ranges. It removes duplicate and
 // subsumed rules. It also combines rules when they differ only in their host
@@ -22,8 +23,9 @@ func (cfg *FirewallConfig) Optimize() *FirewallConfig {
 	optimized := &FirewallConfig{}
 	if cfg != nil {
 		optimized.ResponseTTL = cfg.ResponseTTL
-		optimized.Exclude = optimizeFirewallRules(cfg.Exclude)
-		optimized.Include = optimizeFirewallRules(cfg.Include)
+		optimized.DNSCache = cfg.DNSCache
+		optimized.Exclude = optimizeFirewallRules(cfg.Exclude, false)
+		optimized.Include = optimizeFirewallRules(cfg.Include, true)
 	}
 	optimized.exclude = compileFirewallRules(optimized.Exclude)
 	optimized.include = compileFirewallRules(optimized.Include)
@@ -47,6 +49,8 @@ func (cfg *FirewallConfig) Merge(others ...*FirewallConfig) *FirewallConfig {
 // Exclude and Include rules are combined independently. Nil configs are
 // ignored. The merged ResponseTTL is the longest effective TTL in the inputs;
 // a non-positive TTL has its documented two-minute value for this comparison.
+// The first non-nil DNSCache is retained because cache instances are shared
+// runtime state, not policy data.
 // With no non-nil inputs, the result is an empty config with the default TTL.
 func MergeFirewallConfigs(configs ...*FirewallConfig) *FirewallConfig {
 	merged := &FirewallConfig{}
@@ -62,6 +66,9 @@ func MergeFirewallConfigs(configs ...*FirewallConfig) *FirewallConfig {
 		merged.Include = append(
 			merged.Include,
 			cloneFirewallRules(cfg.Include)...)
+		if merged.DNSCache == nil {
+			merged.DNSCache = cfg.DNSCache
+		}
 		effective := cfg.responseTTL()
 		if effective > longestTTL {
 			longestTTL = effective
@@ -72,10 +79,13 @@ func MergeFirewallConfigs(configs ...*FirewallConfig) *FirewallConfig {
 	return merged.Optimize()
 }
 
-func optimizeFirewallRules(rules []FirewallRule) []FirewallRule {
+func optimizeFirewallRules(
+	rules []FirewallRule,
+	matchLocalHosts bool,
+) []FirewallRule {
 	optimized := make([]FirewallRule, 0, len(rules))
 	for _, rule := range rules {
-		canonical, useful := canonicalFirewallRule(rule)
+		canonical, useful := canonicalFirewallRule(rule, matchLocalHosts)
 		if useful {
 			optimized = append(optimized, canonical)
 		}
@@ -115,7 +125,10 @@ func optimizeFirewallRules(rules []FirewallRule) []FirewallRule {
 	return optimized
 }
 
-func canonicalFirewallRule(rule FirewallRule) (FirewallRule, bool) {
+func canonicalFirewallRule(
+	rule FirewallRule,
+	matchLocalHosts bool,
+) (FirewallRule, bool) {
 	canonical := FirewallRule{
 		Network: strings.ToLower(strings.TrimSpace(rule.Network)),
 	}
@@ -129,6 +142,16 @@ func canonicalFirewallRule(rule FirewallRule) (FirewallRule, bool) {
 	}
 	if !anyHost {
 		canonical.Hosts = hosts
+	}
+	if matchLocalHosts {
+		localHosts, anyLocalHost := canonicalFirewallHosts(rule.LocalHosts)
+		if len(rule.LocalHosts) != 0 &&
+			!anyLocalHost && len(localHosts) == 0 {
+			return FirewallRule{}, false
+		}
+		if !anyLocalHost {
+			canonical.LocalHosts = localHosts
+		}
 	}
 	canonical.Ports, canonical.PortRanges = canonicalFirewallPorts(
 		rule.Ports,
@@ -292,6 +315,7 @@ func removeSubsumedFirewallRules(rules []FirewallRule) []FirewallRule {
 func firewallRuleSubsumes(a, b FirewallRule) bool {
 	return firewallNetworkSubsumes(a.Network, b.Network) &&
 		firewallHostsSubsumes(a.Hosts, b.Hosts) &&
+		firewallHostsSubsumes(a.LocalHosts, b.LocalHosts) &&
 		firewallPortsSubsume(a, b)
 }
 
@@ -436,10 +460,11 @@ func mergeFirewallRules(a, b FirewallRule) (FirewallRule, bool) {
 		return FirewallRule{}, false
 	}
 	hostsEqual := slices.Equal(a.Hosts, b.Hosts)
+	localHostsEqual := slices.Equal(a.LocalHosts, b.LocalHosts)
 	portsEqual := slices.Equal(a.Ports, b.Ports) &&
 		slices.Equal(a.PortRanges, b.PortRanges)
 	switch {
-	case hostsEqual:
+	case hostsEqual && localHostsEqual:
 		merged := a
 		if len(a.Ports) == 0 && len(a.PortRanges) == 0 ||
 			len(b.Ports) == 0 && len(b.PortRanges) == 0 {
@@ -455,19 +480,30 @@ func mergeFirewallRules(a, b FirewallRule) (FirewallRule, bool) {
 			)
 		}
 		return merged, true
-	case portsEqual:
+	case localHostsEqual && portsEqual:
 		merged := a
-		if len(a.Hosts) == 0 || len(b.Hosts) == 0 {
-			merged.Hosts = nil
-		} else {
-			merged.Hosts, _ = canonicalFirewallHosts(
-				append(append([]string(nil), a.Hosts...), b.Hosts...),
-			)
-		}
+		merged.Hosts = mergeFirewallHostSelectors(a.Hosts, b.Hosts)
+		return merged, true
+	case hostsEqual && portsEqual:
+		merged := a
+		merged.LocalHosts = mergeFirewallHostSelectors(
+			a.LocalHosts,
+			b.LocalHosts,
+		)
 		return merged, true
 	default:
 		return FirewallRule{}, false
 	}
+}
+
+func mergeFirewallHostSelectors(a, b []string) []string {
+	if len(a) == 0 || len(b) == 0 {
+		return nil
+	}
+	merged, _ := canonicalFirewallHosts(
+		append(append([]string(nil), a...), b...),
+	)
+	return merged
 }
 
 func firewallRuleSortKey(rule FirewallRule) string {
@@ -475,6 +511,11 @@ func firewallRuleSortKey(rule FirewallRule) string {
 	builder.WriteString(rule.Network)
 	builder.WriteByte(0)
 	for _, host := range rule.Hosts {
+		builder.WriteString(host)
+		builder.WriteByte(0)
+	}
+	builder.WriteByte(1)
+	for _, host := range rule.LocalHosts {
 		builder.WriteString(host)
 		builder.WriteByte(0)
 	}

@@ -77,7 +77,8 @@ func (f *Firewall) SetConfig(cfg *gonnect.FirewallConfig) {
 // SetCfg is an alias for SetConfig.
 func (f *Firewall) SetCfg(cfg *gonnect.FirewallConfig) { f.SetConfig(cfg) }
 
-// GetConfig returns an independent copy of the active configuration.
+// GetConfig returns an independent copy of the active policy. The returned
+// config retains the shared DNSCache.
 func (f *Firewall) GetConfig() *gonnect.FirewallConfig {
 	return f.config.Load().Clone()
 }
@@ -256,7 +257,8 @@ func (f *Firewall) allowsIncoming(packet []byte, flow firewallFlow) bool {
 	}
 	return f.config.Load().AllowsIncomingIP(
 		flow.proto,
-		netip.AddrPortFrom(flow.src, flow.dstPort),
+		netip.AddrPortFrom(flow.src, flow.srcPort),
+		netip.AddrPortFrom(flow.dst, flow.dstPort),
 	)
 }
 

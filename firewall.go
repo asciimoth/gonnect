@@ -70,7 +70,8 @@ func (f *Firewall) SetConfig(cfg *FirewallConfig) {
 // SetCfg is an alias for SetConfig.
 func (f *Firewall) SetCfg(cfg *FirewallConfig) { f.SetConfig(cfg) }
 
-// GetConfig returns an independent copy of the active configuration.
+// GetConfig returns an independent copy of the active policy. The returned
+// config retains the shared DNSCache.
 func (f *Firewall) GetConfig() *FirewallConfig {
 	return cloneFirewallConfig(f.config.Load())
 }
@@ -416,10 +417,15 @@ func (f *Firewall) acceptsIncoming(network string, peer, local net.Addr) bool {
 	if peerOK && localOK {
 		return f.config.Load().AllowsIncomingAddrPort(
 			network,
-			netip.AddrPortFrom(
-				peerEndpoint.Addr(),
-				localEndpoint.Port(),
-			),
+			peerEndpoint,
+			localEndpoint,
+		)
+	}
+	if peer != nil && local != nil {
+		return f.config.Load().AllowsIncoming(
+			network,
+			peer.String(),
+			local.String(),
 		)
 	}
 	return f.config.Load().AllowsIncoming(
@@ -541,7 +547,8 @@ func (s *firewallPacketState) allowsIncomingAddrPort(
 	}
 	return s.firewall.config.Load().AllowsIncomingAddrPort(
 		s.network,
-		netip.AddrPortFrom(addr.Addr(), local.Port()),
+		addr,
+		local,
 	)
 }
 

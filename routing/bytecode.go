@@ -606,26 +606,7 @@ func reverseDNSNames(
 	addr netip.Addr,
 	now time.Time,
 ) []string {
-	if storage == nil {
-		return nil
-	}
-	key := dnsPTRLiteralCacheKey(addr)
-	if key == "" {
-		return nil
-	}
-	msg, ok := storage.Get(key, now)
-	if !ok || msg == nil || !msg.Response || msg.RCode != gdns.RCodeSuccess {
-		return nil
-	}
-	var names []string
-	for _, rr := range msg.Answers {
-		if rr.Type != gdns.TypePTR || rr.Class != gdns.ClassIN ||
-			len(rr.Data) == 0 {
-			continue
-		}
-		names = append(names, string(rr.Data))
-	}
-	return names
+	return gdns.CachedReverseDNSNames(storage, addr, now)
 }
 
 func hostFromString(s string) string {

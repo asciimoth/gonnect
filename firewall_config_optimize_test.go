@@ -132,6 +132,71 @@ func TestFirewallConfigOptimizeDoesNotExpandCrossProduct(t *testing.T) {
 	}
 }
 
+func TestFirewallConfigOptimizeLocalHosts(t *testing.T) {
+	source := &gonnect.FirewallConfig{Include: []gonnect.FirewallRule{
+		{
+			Network:    " TCP ",
+			Hosts:      []string{"peer.example"},
+			LocalHosts: []string{"A.SERVICE.EXAMPLE."},
+			Ports:      []uint16{80},
+		},
+		{
+			Network:    "tcp",
+			Hosts:      []string{"peer.example"},
+			LocalHosts: []string{"a.service.example"},
+			Ports:      []uint16{81},
+		},
+	}}
+	optimized := source.Optimize()
+	if len(optimized.Include) != 1 {
+		t.Fatalf("optimized rule count = %d, want 1", len(optimized.Include))
+	}
+	wantLocalHosts := []string{"a.service.example"}
+	if !reflect.DeepEqual(
+		optimized.Include[0].LocalHosts,
+		wantLocalHosts,
+	) || len(optimized.Include[0].PortRanges) != 1 ||
+		optimized.Include[0].PortRanges[0] != (gonnect.FirewallPortRange{
+			First: 80,
+			Last:  81,
+		}) {
+		t.Fatalf("optimized local rule = %#v", optimized.Include[0])
+	}
+	assertFirewallConfigsEquivalent(t, source, optimized)
+
+	crossProduct := (&gonnect.FirewallConfig{Include: []gonnect.FirewallRule{
+		{
+			Network:    "tcp",
+			Hosts:      []string{"peer.example"},
+			LocalHosts: []string{"a.service.example"},
+			Ports:      []uint16{80},
+		},
+		{
+			Network:    "tcp",
+			Hosts:      []string{"peer.example"},
+			LocalHosts: []string{"b.service.example"},
+			Ports:      []uint16{81},
+		},
+	}}).Optimize()
+	if len(crossProduct.Include) != 2 {
+		t.Fatalf(
+			"cross-product rule count = %d, want 2",
+			len(crossProduct.Include),
+		)
+	}
+	if crossProduct.AllowsIncoming(
+		"tcp",
+		"peer.example:50000",
+		"a.service.example:81",
+	) || crossProduct.AllowsIncoming(
+		"tcp",
+		"peer.example:50000",
+		"b.service.example:80",
+	) {
+		t.Fatal("optimization introduced a local-host-and-port cross-product")
+	}
+}
+
 func TestFirewallConfigOptimizeRemovesSubsumedRules(t *testing.T) {
 	source := &gonnect.FirewallConfig{Exclude: []gonnect.FirewallRule{
 		{
@@ -272,6 +337,14 @@ func TestFirewallConfigOptimizeRandomizedEquivalence(t *testing.T) {
 		{"192.0.2.0/24"},
 		{"192.0.2.0/24", "192.0.2.1"},
 	}
+	localHostRules := [][]string{
+		nil,
+		{"*"},
+		{"service.example.com"},
+		{"*.example.com"},
+		{"198.51.100.1"},
+		{"198.51.100.0/24"},
+	}
 	portRules := []struct {
 		ports  []uint16
 		ranges []gonnect.FirewallPortRange
@@ -296,6 +369,9 @@ func TestFirewallConfigOptimizeRandomizedEquivalence(t *testing.T) {
 				Hosts: append(
 					[]string(nil),
 					hostRules[random.Intn(len(hostRules))]...),
+				LocalHosts: append(
+					[]string(nil),
+					localHostRules[random.Intn(len(localHostRules))]...),
 				Ports: append([]uint16(nil), ports.ports...),
 				PortRanges: append(
 					[]gonnect.FirewallPortRange(nil),
@@ -325,14 +401,31 @@ func TestFirewallConfigOptimizeRandomizedEquivalence(t *testing.T) {
 							address,
 						)
 					}
-					if cfg.AllowsIncoming(network, address) !=
-						optimized.AllowsIncoming(network, address) {
-						t.Fatalf(
-							"iteration %d changed incoming %s %s",
-							iteration,
+					for _, localHost := range []string{
+						"service.example.com",
+						"other.example.com",
+						"198.51.100.1",
+						"203.0.113.1",
+					} {
+						localAddress := localHost + ":" +
+							strconv.Itoa(int(port))
+						if cfg.AllowsIncoming(
 							network,
 							address,
-						)
+							localAddress,
+						) != optimized.AllowsIncoming(
+							network,
+							address,
+							localAddress,
+						) {
+							t.Fatalf(
+								"iteration %d changed incoming %s %s to %s",
+								iteration,
+								network,
+								address,
+								localAddress,
+							)
+						}
 					}
 				}
 			}
@@ -361,6 +454,13 @@ func assertFirewallConfigsEquivalent(
 		"192.0.2.12:150",
 		"192.0.3.12:150",
 	}
+	localAddresses := []string{
+		"service.example:49",
+		"a.service.example:80",
+		"b.service.example:81",
+		"198.51.100.1:53",
+		"203.0.113.1:150",
+	}
 	for _, network := range networks {
 		for _, address := range addresses {
 			if got, want := b.BlocksOutgoing(network, address),
@@ -373,15 +473,25 @@ func assertFirewallConfigsEquivalent(
 					want,
 				)
 			}
-			if got, want := b.AllowsIncoming(network, address),
-				a.AllowsIncoming(network, address); got != want {
-				t.Fatalf(
-					"AllowsIncoming(%q, %q) after optimization = %v, want %v",
+			for _, localAddress := range localAddresses {
+				if got, want := b.AllowsIncoming(
 					network,
 					address,
-					got,
-					want,
-				)
+					localAddress,
+				), a.AllowsIncoming(
+					network,
+					address,
+					localAddress,
+				); got != want {
+					t.Fatalf(
+						"AllowsIncoming(%q, %q, %q) after optimization = %v, want %v",
+						network,
+						address,
+						localAddress,
+						got,
+						want,
+					)
+				}
 			}
 		}
 	}
@@ -400,6 +510,7 @@ func firewallConfigHostMutationForTest(
 
 func firewallConfigPublicEqual(a, b *gonnect.FirewallConfig) bool {
 	return a.ResponseTTL == b.ResponseTTL &&
+		reflect.DeepEqual(a.DNSCache, b.DNSCache) &&
 		reflect.DeepEqual(a.Exclude, b.Exclude) &&
 		reflect.DeepEqual(a.Include, b.Include)
 }

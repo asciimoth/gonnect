@@ -25,17 +25,33 @@ type FirewallPortRange struct {
 	Last  uint16
 }
 
-// FirewallRule matches traffic by protocol, peer, and service port.
+// FirewallDNSCache supplies cached reverse-DNS names for firewall matching.
+//
+// Implementations must be safe for concurrent use and must not do a live DNS
+// lookup. ReverseDNSNames returns only names that are valid at now. The
+// github.com/asciimoth/gonnect/dns package provides cache implementations and
+// an adapter for its CacheStorage interface.
+type FirewallDNSCache interface {
+	ReverseDNSNames(addr netip.Addr, now time.Time) []string
+}
+
+// FirewallRule matches traffic by protocol, endpoints, and service port.
 //
 // Network can be tcp, tcp4, tcp6, udp, udp4, udp6, ip, ip4, ip6, or an
 // implementation-specific IP protocol name. An empty Network matches all
 // protocols. The generic tcp and udp names match both address families. The ip
 // name matches all IP protocols.
 //
-// Hosts contains peer host names, IP addresses, and CIDR prefixes. Host names
-// use path.Match syntax and are matched without case or a final dot. A literal
-// "*" matches every peer, including numeric IP addresses. An empty Hosts slice
-// also matches every peer.
+// Hosts contains peer host names, IP addresses, and CIDR prefixes. For
+// outgoing traffic, the peer is the remote destination. For incoming traffic,
+// the peer is the remote source. Host names use path.Match syntax and are
+// matched without case or a final dot. A literal "*" matches every peer,
+// including numeric IP addresses. An empty Hosts slice also matches every peer.
+//
+// LocalHosts optionally contains local destination host names, IP addresses,
+// and CIDR prefixes for incoming traffic. It uses the same syntax as Hosts. An
+// empty LocalHosts slice matches every local destination. Exclude rules ignore
+// LocalHosts because they apply only to outgoing traffic.
 //
 // Ports and PortRanges select service ports. For outgoing traffic this is the
 // remote destination port. For incoming traffic this is the local destination
@@ -43,6 +59,7 @@ type FirewallPortRange struct {
 type FirewallRule struct {
 	Network    string
 	Hosts      []string
+	LocalHosts []string
 	Ports      []uint16
 	PortRanges []FirewallPortRange
 }
@@ -55,10 +72,18 @@ type FirewallRule struct {
 //
 // ResponseTTL controls how long packet response state is retained. Values less
 // than or equal to zero select a two-minute default.
+//
+// DNSCache enables hostname selectors for numeric IP endpoints. The firewall
+// checks cached reverse-DNS names only after direct IP and CIDR checks fail. It
+// does not make live DNS requests. Use the same storage as a
+// github.com/asciimoth/gonnect/dns.Cache that has reverse lookups enabled so
+// successful A and AAAA queries populate the names. Include rules use these
+// names as access-control data, so use a trusted cache.
 type FirewallConfig struct {
 	Exclude     []FirewallRule
 	Include     []FirewallRule
 	ResponseTTL time.Duration
+	DNSCache    FirewallDNSCache
 
 	exclude []compiledFirewallRule
 	include []compiledFirewallRule
@@ -72,12 +97,17 @@ type compiledFirewallRule struct {
 	ipVersion  uint8
 	ipProtocol uint16
 	matchesIP  bool
-	anyHost    bool
-	hosts      []string
-	addrs      []netip.Addr
-	prefix     []netip.Prefix
+	peer       compiledFirewallHostSelector
+	local      compiledFirewallHostSelector
 	ports      []uint16
 	ranges     []FirewallPortRange
+}
+
+type compiledFirewallHostSelector struct {
+	any      bool
+	hosts    []string
+	addrs    []netip.Addr
+	prefixes []netip.Prefix
 }
 
 const (
@@ -93,6 +123,7 @@ func cloneFirewallConfig(cfg *FirewallConfig) *FirewallConfig {
 		Exclude:     cloneFirewallRules(cfg.Exclude),
 		Include:     cloneFirewallRules(cfg.Include),
 		ResponseTTL: cfg.ResponseTTL,
+		DNSCache:    cfg.DNSCache,
 	}
 	clone.exclude = compileFirewallRules(clone.Exclude)
 	clone.include = compileFirewallRules(clone.Include)
@@ -107,6 +138,7 @@ func cloneFirewallRules(rules []FirewallRule) []FirewallRule {
 	for i, rule := range rules {
 		out[i] = rule
 		out[i].Hosts = append([]string(nil), rule.Hosts...)
+		out[i].LocalHosts = append([]string(nil), rule.LocalHosts...)
 		out[i].Ports = append([]uint16(nil), rule.Ports...)
 		out[i].PortRanges = append(
 			[]FirewallPortRange(nil),
@@ -121,46 +153,55 @@ func compileFirewallRules(rules []FirewallRule) []compiledFirewallRule {
 	for _, rule := range rules {
 		compiled := compiledFirewallRule{
 			network: strings.ToLower(strings.TrimSpace(rule.Network)),
-			anyHost: len(rule.Hosts) == 0,
+			peer:    compileFirewallHostSelector(rule.Hosts),
+			local:   compileFirewallHostSelector(rule.LocalHosts),
 			ports:   append([]uint16(nil), rule.Ports...),
 			ranges:  append([]FirewallPortRange(nil), rule.PortRanges...),
 		}
 		compiled.ipVersion, compiled.ipProtocol, compiled.matchesIP =
 			compileFirewallIPSelector(compiled.network)
-		for _, raw := range rule.Hosts {
-			host := trimDot(strings.ToLower(raw))
-			if host == "*" {
-				compiled.anyHost = true
-				continue
-			}
-			ipHost := strings.Trim(host, "[]")
-			if withoutZone, _, ok := strings.Cut(ipHost, "%"); ok {
-				ipHost = withoutZone
-			}
-			if addr, err := netip.ParseAddr(ipHost); err == nil {
-				compiled.addrs = append(
-					compiled.addrs,
-					normalizeFirewallAddr(addr),
-				)
-				continue
-			}
-			if prefix, err := netip.ParsePrefix(host); err == nil {
-				compiled.prefix = append(
-					compiled.prefix,
-					canonicalFirewallPrefix(prefix),
-				)
-				continue
-			}
-			if host != "" {
-				compiled.hosts = append(compiled.hosts, host)
-			}
-		}
 		out = append(out, compiled)
 	}
 	return out
 }
 
-// Clone returns an independent copy of cfg.
+func compileFirewallHostSelector(
+	hosts []string,
+) compiledFirewallHostSelector {
+	compiled := compiledFirewallHostSelector{any: len(hosts) == 0}
+	for _, raw := range hosts {
+		host := trimDot(strings.ToLower(raw))
+		if host == "*" {
+			compiled.any = true
+			continue
+		}
+		ipHost := strings.Trim(host, "[]")
+		if withoutZone, _, ok := strings.Cut(ipHost, "%"); ok {
+			ipHost = withoutZone
+		}
+		if addr, err := netip.ParseAddr(ipHost); err == nil {
+			compiled.addrs = append(
+				compiled.addrs,
+				normalizeFirewallAddr(addr),
+			)
+			continue
+		}
+		if prefix, err := netip.ParsePrefix(host); err == nil {
+			compiled.prefixes = append(
+				compiled.prefixes,
+				canonicalFirewallPrefix(prefix),
+			)
+			continue
+		}
+		if host != "" {
+			compiled.hosts = append(compiled.hosts, host)
+		}
+	}
+	return compiled
+}
+
+// Clone returns an independent copy of the policy in cfg. It retains the same
+// DNSCache because the cache is shared runtime state.
 func (cfg *FirewallConfig) Clone() *FirewallConfig {
 	return cloneFirewallConfig(cfg)
 }
@@ -173,7 +214,13 @@ func (cfg *FirewallConfig) BlocksOutgoing(network, address string) bool {
 		compiled = cloneFirewallConfig(cfg)
 	}
 	host, port := splitFirewallEndpoint(network, address)
-	return matchFirewallRules(compiled.exclude, network, host, port)
+	return matchFirewallRules(
+		compiled.exclude,
+		network,
+		host,
+		port,
+		compiled.DNSCache,
+	)
 }
 
 // BlocksOutgoingAddrPort reports whether Exclude denies a numeric outgoing
@@ -192,6 +239,7 @@ func (cfg *FirewallConfig) BlocksOutgoingAddrPort(
 		network,
 		address.Addr(),
 		address.Port(),
+		compiled.DNSCache,
 	)
 }
 
@@ -207,54 +255,126 @@ func (cfg *FirewallConfig) BlocksOutgoingIP(
 		compiled.exclude == nil && len(compiled.Exclude) != 0 {
 		compiled = cloneFirewallConfig(cfg)
 	}
-	return matchFirewallIPRules(compiled.exclude, protocol, address)
+	return matchFirewallIPRules(
+		compiled.exclude,
+		protocol,
+		address,
+		compiled.DNSCache,
+	)
 }
 
-// AllowsIncoming reports whether Include permits an incoming peer and local
-// service port. address must contain the peer host and local port.
-func (cfg *FirewallConfig) AllowsIncoming(network, address string) bool {
+// AllowsIncoming reports whether Include permits incoming traffic.
+//
+// address contains the peer host and local service port. If localAddress is
+// present, address and localAddress are the peer and local endpoints, and the
+// local endpoint supplies the service port. Rules that use LocalHosts do not
+// match when localAddress is absent.
+func (cfg *FirewallConfig) AllowsIncoming(
+	network, address string,
+	localAddress ...string,
+) bool {
 	compiled := cfg
 	if compiled == nil ||
 		compiled.include == nil && len(compiled.Include) != 0 {
 		compiled = cloneFirewallConfig(cfg)
 	}
 	host, port := splitFirewallEndpoint(network, address)
-	return matchFirewallRules(compiled.include, network, host, port)
+	if len(localAddress) == 0 {
+		return matchIncomingFirewallRules(
+			compiled.include,
+			network,
+			host,
+			"",
+			port,
+			false,
+			compiled.DNSCache,
+		)
+	}
+	localHost, localPort := splitFirewallEndpoint(network, localAddress[0])
+	return matchIncomingFirewallRules(
+		compiled.include,
+		network,
+		host,
+		localHost,
+		localPort,
+		true,
+		compiled.DNSCache,
+	)
 }
 
-// AllowsIncomingAddrPort reports whether Include permits a numeric incoming
-// peer and local service port. address contains the peer address and the local
-// service port.
+// AllowsIncomingAddrPort reports whether Include permits numeric incoming
+// traffic.
+//
+// address contains the peer address and local service port. If localAddress is
+// present, address and localAddress are the peer and local endpoints, and the
+// local endpoint supplies the service port. Rules that use LocalHosts do not
+// match when localAddress is absent.
 func (cfg *FirewallConfig) AllowsIncomingAddrPort(
 	network string,
 	address netip.AddrPort,
+	localAddress ...netip.AddrPort,
 ) bool {
 	compiled := cfg
 	if compiled == nil ||
 		compiled.include == nil && len(compiled.Include) != 0 {
 		compiled = cloneFirewallConfig(cfg)
 	}
-	return matchFirewallAddrRules(
+	if len(localAddress) == 0 {
+		return matchIncomingFirewallAddrRules(
+			compiled.include,
+			network,
+			address.Addr(),
+			netip.Addr{},
+			address.Port(),
+			false,
+			compiled.DNSCache,
+		)
+	}
+	return matchIncomingFirewallAddrRules(
 		compiled.include,
 		network,
 		address.Addr(),
-		address.Port(),
+		localAddress[0].Addr(),
+		localAddress[0].Port(),
+		true,
+		compiled.DNSCache,
 	)
 }
 
 // AllowsIncomingIP reports whether Include permits an incoming IP packet.
-// address contains the peer address and the local transport port. protocol is
-// the IP protocol number.
+// address contains the peer address and the local transport port. If
+// localAddress is present, address and localAddress are the peer and local
+// endpoints, and the local endpoint supplies the transport port. protocol is
+// the IP protocol number. Rules that use LocalHosts do not match when
+// localAddress is absent.
 func (cfg *FirewallConfig) AllowsIncomingIP(
 	protocol uint8,
 	address netip.AddrPort,
+	localAddress ...netip.AddrPort,
 ) bool {
 	compiled := cfg
 	if compiled == nil ||
 		compiled.include == nil && len(compiled.Include) != 0 {
 		compiled = cloneFirewallConfig(cfg)
 	}
-	return matchFirewallIPRules(compiled.include, protocol, address)
+	if len(localAddress) == 0 {
+		return matchIncomingFirewallIPRules(
+			compiled.include,
+			protocol,
+			address,
+			netip.AddrPort{},
+			false,
+			compiled.DNSCache,
+		)
+	}
+	return matchIncomingFirewallIPRules(
+		compiled.include,
+		protocol,
+		address,
+		localAddress[0],
+		true,
+		compiled.DNSCache,
+	)
 }
 
 func (cfg *FirewallConfig) responseTTL() time.Duration {
@@ -273,6 +393,7 @@ func matchFirewallRules(
 	rules []compiledFirewallRule,
 	network, host string,
 	port uint16,
+	dnsCache FirewallDNSCache,
 ) bool {
 	network = normalizeFirewallNetwork(network)
 	var endpoint firewallHost
@@ -283,14 +404,14 @@ func matchFirewallRules(
 			!rule.portMatches(port) {
 			continue
 		}
-		if rule.anyHost {
+		if rule.peer.any {
 			return true
 		}
 		if !endpointReady {
 			endpoint = parseFirewallHost(host)
 			endpointReady = true
 		}
-		if rule.hostMatches(endpoint) {
+		if rule.peer.matches(&endpoint, dnsCache) {
 			return true
 		}
 	}
@@ -302,14 +423,16 @@ func matchFirewallAddrRules(
 	network string,
 	addr netip.Addr,
 	port uint16,
+	dnsCache FirewallDNSCache,
 ) bool {
 	network = normalizeFirewallNetwork(network)
 	addr = normalizeFirewallAddr(addr)
+	endpoint := firewallHost{addr: addr}
 	for i := range rules {
 		rule := &rules[i]
 		if firewallNetworkMatches(rule.network, network) &&
 			rule.portMatches(port) &&
-			(rule.anyHost || rule.addrMatches(addr)) {
+			(rule.peer.any || rule.peer.matches(&endpoint, dnsCache)) {
 			return true
 		}
 	}
@@ -320,6 +443,7 @@ func matchFirewallIPRules(
 	rules []compiledFirewallRule,
 	protocol uint8,
 	address netip.AddrPort,
+	dnsCache FirewallDNSCache,
 ) bool {
 	addr := normalizeFirewallAddr(address.Addr())
 	if !addr.IsValid() {
@@ -329,13 +453,136 @@ func matchFirewallIPRules(
 	if addr.Is4() {
 		version = 4
 	}
+	endpoint := firewallHost{addr: addr}
 	for i := range rules {
 		rule := &rules[i]
 		if rule.matchesIP &&
 			(rule.ipVersion == 0 || rule.ipVersion == version) &&
 			rule.ipProtocolMatches(version, protocol) &&
 			rule.portMatches(address.Port()) &&
-			(rule.anyHost || rule.addrMatches(addr)) {
+			(rule.peer.any || rule.peer.matches(&endpoint, dnsCache)) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchIncomingFirewallRules(
+	rules []compiledFirewallRule,
+	network, peerHost, localHost string,
+	port uint16,
+	localKnown bool,
+	dnsCache FirewallDNSCache,
+) bool {
+	network = normalizeFirewallNetwork(network)
+	var peer, local firewallHost
+	peerReady, localReady := false, false
+	for i := range rules {
+		rule := &rules[i]
+		if !firewallNetworkMatches(rule.network, network) ||
+			!rule.portMatches(port) {
+			continue
+		}
+		if !rule.local.any {
+			if !localKnown {
+				continue
+			}
+			if !localReady {
+				local = parseFirewallHost(localHost)
+				localReady = true
+			}
+			if !rule.local.matches(&local, dnsCache) {
+				continue
+			}
+		}
+		if rule.peer.any {
+			return true
+		}
+		if !peerReady {
+			peer = parseFirewallHost(peerHost)
+			peerReady = true
+		}
+		if rule.peer.matches(&peer, dnsCache) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchIncomingFirewallAddrRules(
+	rules []compiledFirewallRule,
+	network string,
+	peer, local netip.Addr,
+	port uint16,
+	localKnown bool,
+	dnsCache FirewallDNSCache,
+) bool {
+	network = normalizeFirewallNetwork(network)
+	peer = normalizeFirewallAddr(peer)
+	peerEndpoint := firewallHost{addr: peer}
+	localEndpoint := firewallHost{}
+	if localKnown {
+		local = normalizeFirewallAddr(local)
+		localEndpoint.addr = local
+	}
+	for i := range rules {
+		rule := &rules[i]
+		if !firewallNetworkMatches(rule.network, network) ||
+			!rule.portMatches(port) {
+			continue
+		}
+		if !rule.local.any && (!localKnown ||
+			!rule.local.matches(&localEndpoint, dnsCache)) {
+			continue
+		}
+		if rule.peer.any || rule.peer.matches(&peerEndpoint, dnsCache) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchIncomingFirewallIPRules(
+	rules []compiledFirewallRule,
+	protocol uint8,
+	peer, local netip.AddrPort,
+	localKnown bool,
+	dnsCache FirewallDNSCache,
+) bool {
+	peerAddr := normalizeFirewallAddr(peer.Addr())
+	if !peerAddr.IsValid() {
+		return false
+	}
+	localAddr := netip.Addr{}
+	port := peer.Port()
+	versionAddr := peerAddr
+	if localKnown {
+		localAddr = normalizeFirewallAddr(local.Addr())
+		if !localAddr.IsValid() {
+			return false
+		}
+		port = local.Port()
+		versionAddr = localAddr
+	}
+	version := uint8(6)
+	if versionAddr.Is4() {
+		version = 4
+	}
+	peerEndpoint := firewallHost{addr: peerAddr}
+	localEndpoint := firewallHost{addr: localAddr}
+	for i := range rules {
+		rule := &rules[i]
+		if !rule.matchesIP ||
+			(rule.ipVersion != 0 && rule.ipVersion != version) ||
+			!rule.ipProtocolMatches(version, protocol) ||
+			!rule.portMatches(port) {
+			continue
+		}
+		if !rule.local.any && (!localKnown ||
+			!rule.local.matches(&localEndpoint, dnsCache)) {
+			continue
+		}
+		if rule.peer.any || rule.peer.matches(&peerEndpoint, dnsCache) {
 			return true
 		}
 	}
@@ -357,8 +604,10 @@ func (rule *compiledFirewallRule) ipProtocolMatches(
 }
 
 type firewallHost struct {
-	name string
-	addr netip.Addr
+	name         string
+	addr         netip.Addr
+	reverseDone  bool
+	reverseNames []string
 }
 
 func parseFirewallHost(host string) firewallHost {
@@ -399,25 +648,65 @@ func normalizeFirewallAddr(addr netip.Addr) netip.Addr {
 	return addr
 }
 
-func (rule *compiledFirewallRule) hostMatches(host firewallHost) bool {
-	if host.addr.IsValid() {
-		return rule.addrMatches(host.addr)
+func (selector *compiledFirewallHostSelector) matches(
+	host *firewallHost,
+	dnsCache FirewallDNSCache,
+) bool {
+	if host == nil {
+		return false
 	}
-	for _, pattern := range rule.hosts {
-		if ok, _ := path.Match(pattern, host.name); ok {
+	if host.addr.IsValid() {
+		if selector.addrMatches(host.addr) {
+			return true
+		}
+		if len(selector.hosts) == 0 {
+			return false
+		}
+		for _, name := range host.cachedNames(dnsCache) {
+			if selector.nameMatches(name) {
+				return true
+			}
+		}
+		return false
+	}
+	return selector.nameMatches(host.name)
+}
+
+func (selector *compiledFirewallHostSelector) nameMatches(name string) bool {
+	name = trimDot(strings.ToLower(name))
+	if name == "" {
+		return false
+	}
+	for _, pattern := range selector.hosts {
+		if ok, _ := path.Match(pattern, name); ok {
 			return true
 		}
 	}
 	return false
 }
 
-func (rule *compiledFirewallRule) addrMatches(addr netip.Addr) bool {
-	for _, candidate := range rule.addrs {
+func (host *firewallHost) cachedNames(
+	dnsCache FirewallDNSCache,
+) []string {
+	if host == nil || dnsCache == nil || !host.addr.IsValid() {
+		return nil
+	}
+	if !host.reverseDone {
+		host.reverseDone = true
+		host.reverseNames = dnsCache.ReverseDNSNames(host.addr, time.Now())
+	}
+	return host.reverseNames
+}
+
+func (selector *compiledFirewallHostSelector) addrMatches(
+	addr netip.Addr,
+) bool {
+	for _, candidate := range selector.addrs {
 		if candidate == addr {
 			return true
 		}
 	}
-	for _, prefix := range rule.prefix {
+	for _, prefix := range selector.prefixes {
 		if prefix.Contains(addr) {
 			return true
 		}

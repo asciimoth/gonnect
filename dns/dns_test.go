@@ -16,6 +16,7 @@ import (
 	"math/big"
 	"net"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -498,13 +499,35 @@ func TestCacheAttachDetachReattach(t *testing.T) {
 }
 
 func TestCacheServesReverseLookupsFromForwardAnswers(t *testing.T) {
-	cache := NewCache(newStaticDNS(), NewMemoryStorage(), true, false, nil)
+	storage := NewMemoryStorage()
+	cache := NewCache(newStaticDNS(), storage, true, false, nil)
 	defer cache.Close()
 	res := NewResolver(cache)
 
 	addrs, err := res.LookupIPAddr(context.Background(), "example.test")
 	if err != nil || len(addrs) != 2 {
 		t.Fatalf("forward lookup addrs=%v err=%v", addrs, err)
+	}
+
+	wantNames := []string{"example.test."}
+	if names := storage.ReverseDNSNames(
+		netip.MustParseAddr("127.0.0.1"),
+		time.Now(),
+	); !slices.Equal(names, wantNames) {
+		t.Fatalf("firewall cache names = %v, want %v", names, wantNames)
+	}
+	adapter := NewReverseDNSCache(storage)
+	if names := adapter.ReverseDNSNames(
+		netip.MustParseAddr("::1"),
+		time.Now(),
+	); !slices.Equal(names, wantNames) {
+		t.Fatalf("firewall cache adapter names = %v, want %v", names, wantNames)
+	}
+	if names := NewReverseDNSCache(nil).ReverseDNSNames(
+		netip.MustParseAddr("127.0.0.1"),
+		time.Now(),
+	); len(names) != 0 {
+		t.Fatalf("nil firewall cache names = %v, want none", names)
 	}
 
 	cache.Detach()

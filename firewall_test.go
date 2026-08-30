@@ -148,6 +148,179 @@ func TestFirewallConfigTypedIPMatching(t *testing.T) {
 	}
 }
 
+func TestFirewallConfigIncomingLocalHosts(t *testing.T) {
+	cfg := &gonnect.FirewallConfig{Include: []gonnect.FirewallRule{
+		{
+			Network:    "tcp",
+			Hosts:      []string{"trusted.example"},
+			LocalHosts: []string{"SERVICE.EXAMPLE.", "192.0.2.0/24"},
+			Ports:      []uint16{443},
+		},
+		{
+			Network:    "udp6",
+			Hosts:      []string{"2001:db8:2::/48"},
+			LocalHosts: []string{"2001:db8:1::/48"},
+			Ports:      []uint16{53},
+		},
+	}}
+
+	if !cfg.AllowsIncoming(
+		"tcp4",
+		"trusted.example:50000",
+		"service.example:443",
+	) {
+		t.Fatal("hostname local destination did not match")
+	}
+	if !cfg.AllowsIncoming(
+		"tcp4",
+		"trusted.example:50000",
+		"192.0.2.8:443",
+	) {
+		t.Fatal("CIDR local destination did not match")
+	}
+	if cfg.AllowsIncoming(
+		"tcp4",
+		"trusted.example:50000",
+		"198.51.100.8:443",
+	) {
+		t.Fatal("wrong local destination matched")
+	}
+	if cfg.AllowsIncoming("tcp4", "trusted.example:443") {
+		t.Fatal("local selector matched without a local endpoint")
+	}
+
+	peer := netip.MustParseAddrPort("[2001:db8:2::8]:50000")
+	local := netip.MustParseAddrPort("[2001:db8:1::8]:53")
+	if !cfg.AllowsIncomingAddrPort("udp6", peer, local) ||
+		!cfg.AllowsIncomingIP(17, peer, local) {
+		t.Fatal("typed local destination did not match")
+	}
+	wrongLocal := netip.MustParseAddrPort("[2001:db8:3::8]:53")
+	if cfg.AllowsIncomingAddrPort("udp6", peer, wrongLocal) ||
+		cfg.AllowsIncomingIP(17, peer, wrongLocal) {
+		t.Fatal("wrong typed local destination matched")
+	}
+
+	clone := cfg.Clone()
+	cfg.Include[0].LocalHosts[0] = "changed.example"
+	if !clone.AllowsIncoming(
+		"tcp4",
+		"trusted.example:50000",
+		"service.example:443",
+	) {
+		t.Fatal("Clone local host changed after source mutation")
+	}
+
+	exclude := (&gonnect.FirewallConfig{Exclude: []gonnect.FirewallRule{{
+		Network:    "tcp",
+		Hosts:      []string{"blocked.example"},
+		LocalHosts: []string{"ignored.example"},
+	}}}).Optimize()
+	if !exclude.BlocksOutgoing("tcp", "blocked.example:443") ||
+		len(exclude.Exclude[0].LocalHosts) != 0 {
+		t.Fatal("outgoing rule did not ignore its local selector")
+	}
+}
+
+func TestFirewallCachedReverseDNSHostnameSelectors(t *testing.T) {
+	blockedAddr := netip.MustParseAddr("192.0.2.10")
+	blockedIPv6 := netip.MustParseAddr("2001:db8::10")
+	peerAddr := netip.MustParseAddr("198.51.100.20")
+	localAddr := netip.MustParseAddr("203.0.113.53")
+	cache := newFirewallTestDNSCache(map[netip.Addr][]string{
+		blockedAddr: {"other.test.", "API.Example.Test."},
+		blockedIPv6: {"ipv6.example.test."},
+		peerAddr:    {"TRUSTED.Example.Test."},
+		localAddr:   {"Service.Example.Test."},
+	})
+	cfg := (&gonnect.FirewallConfig{
+		DNSCache: cache,
+		Exclude: []gonnect.FirewallRule{{
+			Network: "tcp",
+			Hosts:   []string{"*.example.test"},
+			Ports:   []uint16{443},
+		}},
+		Include: []gonnect.FirewallRule{{
+			Network:    "udp",
+			Hosts:      []string{"trusted.example.test"},
+			LocalHosts: []string{"service.example.test"},
+			Ports:      []uint16{53},
+		}},
+	}).Optimize()
+
+	blocked := netip.AddrPortFrom(blockedAddr, 443)
+	if !cfg.BlocksOutgoing("tcp4", blocked.String()) ||
+		!cfg.BlocksOutgoingAddrPort("tcp4", blocked) ||
+		!cfg.BlocksOutgoingIP(6, blocked) {
+		t.Fatal("cached hostname did not match numeric outgoing endpoints")
+	}
+	if got := cache.callsFor(blockedAddr); got != 3 {
+		t.Fatalf("blocked address cache calls = %d, want 3", got)
+	}
+	blocked6 := netip.AddrPortFrom(blockedIPv6, 443)
+	if !cfg.BlocksOutgoingAddrPort("tcp6", blocked6) ||
+		!cfg.BlocksOutgoingIP(6, blocked6) {
+		t.Fatal("cached hostname did not match a numeric IPv6 endpoint")
+	}
+
+	peer := netip.AddrPortFrom(peerAddr, 40000)
+	local := netip.AddrPortFrom(localAddr, 53)
+	if !cfg.AllowsIncoming(
+		"udp4",
+		peer.String(),
+		local.String(),
+	) || !cfg.AllowsIncomingAddrPort("udp4", peer, local) ||
+		!cfg.AllowsIncomingIP(17, peer, local) {
+		t.Fatal(
+			"cached peer and local hostnames did not allow incoming traffic",
+		)
+	}
+	if got := cache.callsFor(peerAddr); got != 3 {
+		t.Fatalf("peer address cache calls = %d, want 3", got)
+	}
+	if got := cache.callsFor(localAddr); got != 3 {
+		t.Fatalf("local address cache calls = %d, want 3", got)
+	}
+
+	withoutCache := cfg.Clone()
+	withoutCache.DNSCache = nil
+	if withoutCache.BlocksOutgoingAddrPort("tcp4", blocked) {
+		t.Fatal("hostname selector matched a numeric endpoint without a cache")
+	}
+
+	directCfg := (&gonnect.FirewallConfig{
+		DNSCache: cache,
+		Exclude: []gonnect.FirewallRule{{
+			Network: "tcp",
+			Hosts:   []string{"192.0.2.10", "*.example.test"},
+			Ports:   []uint16{443},
+		}},
+	}).Optimize()
+	before := cache.callsFor(blockedAddr)
+	if !directCfg.BlocksOutgoingAddrPort("tcp4", blocked) {
+		t.Fatal("direct IP selector did not match")
+	}
+	if directCfg.BlocksOutgoingAddrPort(
+		"tcp4",
+		netip.AddrPortFrom(blockedAddr, 80),
+	) {
+		t.Fatal("wrong port matched")
+	}
+	if got := cache.callsFor(blockedAddr); got != before {
+		t.Fatalf("unnecessary cache calls = %d, want %d", got, before)
+	}
+
+	firewall := gonnect.NewFirewall(&gonnect.RejectNetwork{}, cfg)
+	if _, err := firewall.DialTCP(
+		context.Background(),
+		"tcp4",
+		"",
+		blocked.String(),
+	); !errors.Is(err, gonnect.ErrFirewallDenied) {
+		t.Fatalf("DialTCP() error = %v, want ErrFirewallDenied", err)
+	}
+}
+
 func TestFirewallOptimizesInstalledConfig(t *testing.T) {
 	source := &gonnect.FirewallConfig{Exclude: []gonnect.FirewallRule{
 		{
@@ -237,9 +410,10 @@ func TestFirewallTCPPolicySwapAndLifecycle(t *testing.T) {
 	}
 
 	cfg := &gonnect.FirewallConfig{Include: []gonnect.FirewallRule{{
-		Network: "tcp",
-		Hosts:   []string{"127.0.0.1"},
-		Ports:   []uint16{port},
+		Network:    "tcp",
+		Hosts:      []string{"127.0.0.1"},
+		LocalHosts: []string{"127.0.0.1"},
+		Ports:      []uint16{port},
 	}}}
 	firewall.SetConfig(cfg)
 	cfg.Include[0].Ports[0] = port + 1
@@ -679,6 +853,38 @@ func TestFirewallMulticastMethods(t *testing.T) {
 type firewallTestUpDown struct {
 	mu         sync.Mutex
 	ups, downs int
+}
+
+type firewallTestDNSCache struct {
+	mu    sync.Mutex
+	names map[netip.Addr][]string
+	calls map[netip.Addr]int
+}
+
+func newFirewallTestDNSCache(
+	names map[netip.Addr][]string,
+) *firewallTestDNSCache {
+	return &firewallTestDNSCache{
+		names: names,
+		calls: make(map[netip.Addr]int),
+	}
+}
+
+func (c *firewallTestDNSCache) ReverseDNSNames(
+	addr netip.Addr,
+	_ time.Time,
+) []string {
+	addr = addr.Unmap()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls[addr]++
+	return append([]string(nil), c.names[addr]...)
+}
+
+func (c *firewallTestDNSCache) callsFor(addr netip.Addr) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.calls[addr.Unmap()]
 }
 
 func (u *firewallTestUpDown) Up() error {

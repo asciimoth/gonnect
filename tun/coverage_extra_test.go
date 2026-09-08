@@ -137,7 +137,10 @@ func TestJoinerAttachDetachErrorsAndDefaults(t *testing.T) {
 		t.Fatalf("AttachSecondary(nil) error = %v, want ErrJoinerNilTun", err)
 	}
 
-	def := &fakeTun{}
+	// Keep the event channel open while duplicate attachment behavior is under
+	// test. A closed event channel tells Joiner that the Tun has stopped and can
+	// race with these assertions by auto-detaching it.
+	def := &fakeTun{events: make(chan Event)}
 	if err := j.AttachDefault(def); err != nil {
 		t.Fatalf("AttachDefault(def) error = %v", err)
 	}
@@ -154,7 +157,7 @@ func TestJoinerAttachDetachErrorsAndDefaults(t *testing.T) {
 		t.Fatalf("empty DetachDefault() error = %v", err)
 	}
 
-	sec := &fakeTun{}
+	sec := &fakeTun{events: make(chan Event)}
 	if err := j.AttachSecondary(sec); err != nil {
 		t.Fatalf("AttachSecondary(sec) error = %v", err)
 	}
@@ -336,32 +339,30 @@ func TestJoinerPacketKeyHelpersAndOffsetAlignment(t *testing.T) {
 		[4]byte{10, 1, 2, 3},
 		[4]byte{10, 4, 5, 6},
 	)...)
-	if got := packetSrcKey(ip4, 1); got != string([]byte{4, 10, 1, 2, 3}) {
-		t.Fatalf("packetSrcKey IPv4 = %v", []byte(got))
+	if got := packetSrcKey(ip4, 1); got != (joinerAddressKey{
+		address: [16]byte{10, 1, 2, 3},
+		version: 4,
+	}) {
+		t.Fatalf("packetSrcKey IPv4 = %v", got)
 	}
-	if got := packetDstKey(ip4, 1); got != string([]byte{4, 10, 4, 5, 6}) {
-		t.Fatalf("packetDstKey IPv4 = %v", []byte(got))
+	if got := packetDstKey(ip4, 1); got != (joinerAddressKey{
+		address: [16]byte{10, 4, 5, 6},
+		version: 4,
+	}) {
+		t.Fatalf("packetDstKey IPv4 = %v", got)
 	}
 
 	ip6 := make([]byte, 41)
 	ip6[1] = 0x60
 	copy(ip6[9:25], []byte("abcdefghijklmnop"))
 	copy(ip6[25:41], []byte("qrstuvwxyzABCDEF"))
-	if got := packetSrcKey(
-		ip6,
-		1,
-	); got != string(
-		append([]byte{6}, []byte("abcdefghijklmnop")...),
-	) {
-		t.Fatalf("packetSrcKey IPv6 = %v", []byte(got))
+	if got := packetSrcKey(ip6, 1); got.version != 6 ||
+		string(got.address[:]) != "abcdefghijklmnop" {
+		t.Fatalf("packetSrcKey IPv6 = %v", got)
 	}
-	if got := packetDstKey(
-		ip6,
-		1,
-	); got != string(
-		append([]byte{6}, []byte("qrstuvwxyzABCDEF")...),
-	) {
-		t.Fatalf("packetDstKey IPv6 = %v", []byte(got))
+	if got := packetDstKey(ip6, 1); got.version != 6 ||
+		string(got.address[:]) != "qrstuvwxyzABCDEF" {
+		t.Fatalf("packetDstKey IPv6 = %v", got)
 	}
 	for _, packet := range [][]byte{
 		nil,
@@ -369,26 +370,31 @@ func TestJoinerPacketKeyHelpersAndOffsetAlignment(t *testing.T) {
 		{0x60},
 		{0xf0},
 	} {
-		if got := packetSrcKey(packet, 0); got != "" {
-			t.Fatalf("packetSrcKey(%v) = %q, want empty", packet, got)
+		if got := packetSrcKey(packet, 0); got.valid() {
+			t.Fatalf("packetSrcKey(%v) = %v, want invalid", packet, got)
 		}
-		if got := packetDstKey(packet, 0); got != "" {
-			t.Fatalf("packetDstKey(%v) = %q, want empty", packet, got)
+		if got := packetDstKey(packet, 0); got.valid() {
+			t.Fatalf("packetDstKey(%v) = %v, want invalid", packet, got)
 		}
 	}
-	if got := packetSrcKey([]byte{0x45}, 1); got != "" {
-		t.Fatalf("packetSrcKey at len offset = %q, want empty", got)
+	if got := packetSrcKey([]byte{0x45}, 1); got.valid() {
+		t.Fatalf("packetSrcKey at len offset = %v, want invalid", got)
 	}
 
 	in := [][]byte{{0, 1, 2, 3}}
-	same, offset, release := alignWriteOffset(nil, in, 1, 1)
-	defer release()
+	same, offset, mustRelease := alignWriteOffset(nil, in, 1, 1)
+	if mustRelease {
+		t.Fatal("same offset alignment requires release")
+	}
 	if len(same) != 1 || &same[0][0] != &in[0][0] || offset != 1 {
 		t.Fatalf("same offset alignment changed buffer or offset")
 	}
 
-	aligned, offset, release := alignWriteOffset(nil, in, 2, 5)
-	defer release()
+	aligned, offset, mustRelease := alignWriteOffset(nil, in, 2, 5)
+	if !mustRelease {
+		t.Fatal("changed offset alignment does not require release")
+	}
+	defer putBuffers(nil, aligned)
 	if offset != 5 {
 		t.Fatalf("aligned offset = %d, want 5", offset)
 	}
@@ -396,8 +402,11 @@ func TestJoinerPacketKeyHelpersAndOffsetAlignment(t *testing.T) {
 		t.Fatalf("aligned payload = %v, want %v", got, want)
 	}
 
-	emptyAligned, _, release := alignWriteOffset(nil, [][]byte{{1}}, 2, 4)
-	defer release()
+	emptyAligned, _, mustRelease := alignWriteOffset(nil, [][]byte{{1}}, 2, 4)
+	if !mustRelease {
+		t.Fatal("empty changed offset alignment does not require release")
+	}
+	defer putBuffers(nil, emptyAligned)
 	if len(emptyAligned[0]) != 4 {
 		t.Fatalf("empty aligned len = %d, want 4", len(emptyAligned[0]))
 	}
@@ -409,6 +418,8 @@ type fakeTun struct {
 	writeN    int
 	writeErr  error
 	batchSize int
+	events    chan Event
+	closeOnce sync.Once
 }
 
 func (t *fakeTun) File() *os.File { return nil }
@@ -428,11 +439,19 @@ func (t *fakeTun) Name() (string, error) {
 	return "fake", nil
 }
 func (t *fakeTun) Events() <-chan Event {
+	if t.events != nil {
+		return t.events
+	}
 	ch := make(chan Event)
 	close(ch)
 	return ch
 }
-func (t *fakeTun) Close() error { return nil }
+func (t *fakeTun) Close() error {
+	if t.events != nil {
+		t.closeOnce.Do(func() { close(t.events) })
+	}
+	return nil
+}
 func (t *fakeTun) BatchSize() int {
 	return t.batchSize
 }

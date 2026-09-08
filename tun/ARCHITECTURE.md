@@ -97,6 +97,26 @@ routing. `Joiner.Write` uses the learned destination route when available and
 falls back to the current default nested `Tun`; malformed or unrouted packets
 are dropped when no default exists.
 
+`NewJoinerWithOptions` can enable shared-address routing. In this mode, the
+joiner learns reverse TCP, UDP, and ICMP echo flows in addition to the address
+route. Incoming ICMP errors use a quoted TCP or UDP packet to find the flow.
+IPv4 options and IPv6 Hop-by-Hop, Routing, Destination Options, Fragment, and
+Authentication headers are parsed. A first incoming fragment selects and
+records an owner; later fragments with the same reassembly key use that owner.
+If a non-first fragment arrives before its first fragment, normal address or
+default fallback applies.
+
+Flow and fragment routes share a bounded least-recently-used table and expire
+after an inactivity timeout. Matching traffic refreshes them. Detach removes
+all routes for that nested `Tun`. An identical flow from a second nested `Tun`
+does not replace the first active owner because source-port translation is out
+of scope. `Joiner.RoutingStats` reports collisions, expiry, eviction, and each
+fallback type.
+
+See [`JOINER_SHARED_ADDRESS_ROUTING.md`](JOINER_SHARED_ADDRESS_ROUTING.md) for
+the stable behavior contract and the boundary between public behavior and
+implementation details.
+
 Because `Joiner` must unblock goroutines blocked inside arbitrary nested
 `Tun.Read` and `Tun.Write` calls, detaching a nested `Tun` closes that nested
 `Tun`. This differs from `DetachedTun`, whose `Down` and `Close` only affect the
@@ -162,7 +182,8 @@ ordering problems as concurrent direct calls to `Tun.Read` or `Tun.Write`.
 - `Pipe`, `ErrReadOnClosedPipe`, `ErrWriteOnClosedPipe`: `pipe.go`
 - `DetachedTun`, `Detach`, `ErrDetachedTunDown`, `ErrDetachedTunClosed`:
   `detachable.go`
-- `Joiner`, `NewJoiner`: `joiner.go`
+- `Joiner`, `JoinerOptions`, `JoinerRoutingStats`, `NewJoiner`,
+  `NewJoinerWithOptions`: `joiner.go`, `joiner_flow.go`
 - `Splitter`, `SplitFrontend`, `SplitRouter`, `NewSplitter`: `splitter.go`
 - `IO`, `NewIO`: `io.go`
 - `Forwarder`, `NewForwarder`: `forwarder.go`

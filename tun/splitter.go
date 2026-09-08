@@ -517,13 +517,15 @@ func (s *Splitter) writeToBackend(bufs [][]byte, offset int) (int, error) {
 	if n == nil {
 		return len(bufs), nil
 	}
-	writeBufs, writeOffset, release := alignWriteOffset(
+	writeBufs, writeOffset, mustRelease := alignWriteOffset(
 		s.pool,
 		bufs,
 		offset,
 		n.t.MWO(),
 	)
-	defer release()
+	if mustRelease {
+		defer putBuffers(s.pool, writeBufs)
+	}
 	written := 0
 	for written < len(writeBufs) {
 		end := min(written+batchSizeOf(n.t), len(writeBufs))
@@ -754,7 +756,7 @@ func (f *SplitFrontend) Read(
 			return 0, r.err
 		}
 		n := min(len(bufs), len(sizes), len(r.bufs))
-		defer putBuffers(r.pool, r.bufs)
+		defer releaseDetachedTunRead(r)
 		for i := range n {
 			size := len(r.bufs[i])
 			if offset > len(bufs[i]) || size > len(bufs[i])-offset {

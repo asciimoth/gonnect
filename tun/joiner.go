@@ -1,10 +1,12 @@
 package tun
 
 import (
+	"encoding/binary"
 	"errors"
 	"io"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/asciimoth/bufpool"
 	"github.com/asciimoth/gonnect"
@@ -56,6 +58,17 @@ type joinerPending struct {
 	pool   bufpool.Pool
 }
 
+type joinerRouteBatch struct {
+	targets []*joinerNested
+	pool    *sync.Pool
+}
+
+func (batch *joinerRouteBatch) release() {
+	clear(batch.targets)
+	batch.targets = batch.targets[:0]
+	batch.pool.Put(batch)
+}
+
 // Joiner combines several nested Tuns into one virtual Tun.
 //
 // Packets read from nested Tuns are emitted by Joiner.Read as a single outgoing
@@ -65,29 +78,48 @@ type joinerPending struct {
 // destinations are routed to the current default Tun; if no default is
 // attached, they are dropped.
 //
+// NewJoinerWithOptions can enable shared-address routing. That mode first uses
+// bounded, expiring TCP, UDP, ICMP echo, and fragment routes. It then uses the
+// address and default routes as fallbacks.
+//
 // Detaching a nested Tun closes it. This is intentional: Tun has no deadline or
 // context parameter, so Close is the only portable way to unblock pending
 // nested Read or Write calls.
 type Joiner struct {
-	mu          sync.Mutex
-	closed      bool
-	done        chan struct{}
-	events      chan Event
-	eventMu     sync.RWMutex
-	eventClosed bool
-	reads       chan detachedTunRead
-	writes      chan *detachedTunWrite
-	pending     []joinerPending
-	defaultTun  *joinerNested
-	secondaries map[Tun]*joinerNested
-	nested      map[Tun]*joinerNested
-	routes      map[string]*joinerNested
-	mtu         int
-	batch       int
-	once        sync.Once
-	pool        bufpool.Pool
-	spawner     gonnect.Spawner
-	wg          sync.WaitGroup
+	mu           sync.Mutex
+	closed       bool
+	done         chan struct{}
+	events       chan Event
+	eventMu      sync.RWMutex
+	eventClosed  bool
+	reads        chan detachedTunRead
+	writes       chan *detachedTunWrite
+	pending      []joinerPending
+	pendingHead  int
+	defaultTun   *joinerNested
+	secondaries  map[Tun]*joinerNested
+	nested       map[Tun]*joinerNested
+	routes4      map[uint32]*joinerNested
+	routes6      map[[16]byte]*joinerNested
+	flowRouting  bool
+	flowTimeout  time.Duration
+	flowLimit    int
+	flows        map[joinerFlowKey]*joinerDynamicRoute
+	fragments    map[joinerFragmentKey]*joinerDynamicRoute
+	dynamicHead  *joinerDynamicRoute
+	dynamicTail  *joinerDynamicRoute
+	dynamicFree  *joinerDynamicRoute
+	dynamicSize  int
+	routeStats   JoinerRoutingStats
+	now          func() time.Time
+	readBatches  sync.Pool
+	writeBatches sync.Pool
+	mtu          int
+	batch        int
+	once         sync.Once
+	pool         bufpool.Pool
+	spawner      gonnect.Spawner
+	wg           sync.WaitGroup
 }
 
 // NewJoiner creates an empty Joiner.
@@ -95,6 +127,17 @@ func NewJoiner(
 	spawner gonnect.Spawner,
 	pool bufpool.Pool,
 ) *Joiner {
+	return NewJoinerWithOptions(spawner, pool, JoinerOptions{})
+}
+
+// NewJoinerWithOptions creates an empty Joiner with the specified routing
+// options. Zero timeout and table limit values select safe defaults.
+func NewJoinerWithOptions(
+	spawner gonnect.Spawner,
+	pool bufpool.Pool,
+	options JoinerOptions,
+) *Joiner {
+	flowTimeout, flowLimit := normalizeJoinerOptions(options)
 	j := &Joiner{
 		done:        make(chan struct{}),
 		events:      make(chan Event, 8),
@@ -102,7 +145,14 @@ func NewJoiner(
 		writes:      make(chan *detachedTunWrite, channelBufferSize()),
 		secondaries: make(map[Tun]*joinerNested),
 		nested:      make(map[Tun]*joinerNested),
-		routes:      make(map[string]*joinerNested),
+		routes4:     make(map[uint32]*joinerNested),
+		routes6:     make(map[[16]byte]*joinerNested),
+		flowRouting: options.SharedAddressRouting,
+		flowTimeout: flowTimeout,
+		flowLimit:   flowLimit,
+		flows:       make(map[joinerFlowKey]*joinerDynamicRoute),
+		fragments:   make(map[joinerFragmentKey]*joinerDynamicRoute),
+		now:         time.Now,
 		mtu:         joinerDefaultMTU,
 		batch:       joinerDefaultBatch,
 		pool:        pool,
@@ -292,8 +342,9 @@ func (j *Joiner) Read(bufs [][]byte, sizes []int, offset int) (int, error) {
 						pool:   r.pool,
 					})
 				}
+				putDetachedTunReadSlice(r)
 			} else {
-				putBuffers(r.pool, r.bufs)
+				releaseDetachedTunRead(r)
 			}
 			j.mu.Unlock()
 		}
@@ -312,24 +363,43 @@ func (j *Joiner) Write(bufs [][]byte, offset int) (int, error) {
 		j.mu.Unlock()
 		return 0, ErrJoinerClosed
 	}
-	j.mu.Unlock()
 	if len(bufs) == 0 {
+		j.mu.Unlock()
 		return 0, nil
 	}
-
-	targets := make([]*joinerNested, len(bufs))
-	same := true
-	for i := range bufs {
-		targets[i] = j.route(bufs[i], offset)
-		if i > 0 && targets[i] != targets[0] {
-			same = false
+	var now time.Time
+	if j.flowRouting {
+		now = j.now()
+		j.expireDynamicRoutesLocked(now)
+	}
+	firstTarget := j.routeLocked(bufs[0], offset, now)
+	var targetBatch *joinerRouteBatch
+	for i, buf := range bufs {
+		if i == 0 {
+			continue
+		}
+		target := j.routeLocked(buf, offset, now)
+		if targetBatch == nil && target != firstTarget {
+			targetBatch = j.getRouteBatch(len(bufs))
+			for previous := range i {
+				targetBatch.targets[previous] = firstTarget
+			}
+		}
+		if targetBatch != nil {
+			targetBatch.targets[i] = target
 		}
 	}
-	if same {
-		return len(bufs), j.writeToNested(targets[0], bufs, offset)
+	j.mu.Unlock()
+	if targetBatch == nil {
+		return len(bufs), j.writeToNested(firstTarget, bufs, offset)
 	}
+	defer targetBatch.release()
 	for i := range bufs {
-		if err := j.writeToNested(targets[i], bufs[i:i+1], offset); err != nil {
+		if err := j.writeToNested(
+			targetBatch.targets[i],
+			bufs[i:i+1],
+			offset,
+		); err != nil {
 			return i, err
 		}
 	}
@@ -346,11 +416,14 @@ func (j *Joiner) Close() error {
 			j.closeNestedLocked(n)
 		}
 		j.defaultTun = nil
-		j.secondaries = make(map[Tun]*joinerNested)
-		j.nested = make(map[Tun]*joinerNested)
-		j.routes = make(map[string]*joinerNested)
-		putJoinerPendingLocked(j.pending)
+		j.secondaries = nil
+		j.nested = nil
+		j.routes4 = nil
+		j.routes6 = nil
+		j.clearDynamicRoutesLocked()
+		putJoinerPendingLocked(j.pending[j.pendingHead:])
 		j.pending = nil
+		j.pendingHead = 0
 		j.recalculateLocked()
 		close(j.done)
 		j.closeEvents()
@@ -388,23 +461,29 @@ func (j *Joiner) readPending(
 	if j.closed {
 		return 0, ErrJoinerClosed
 	}
-	if len(j.pending) == 0 {
+	if j.pendingHead == len(j.pending) {
 		return 0, nil
 	}
-	n := min(len(bufs), len(sizes), len(j.pending))
+	pending := j.pending[j.pendingHead:]
+	n := min(len(bufs), len(sizes), len(pending))
 	for i := range n {
-		size := len(j.pending[i].packet)
+		size := len(pending[i].packet)
 		if offset > len(bufs[i]) || size > len(bufs[i])-offset {
 			return i, io.ErrShortBuffer
 		}
 	}
 	for i := range n {
-		size := len(j.pending[i].packet)
-		copy(bufs[i][offset:offset+size], j.pending[i].packet)
+		size := len(pending[i].packet)
+		copy(bufs[i][offset:offset+size], pending[i].packet)
 		sizes[i] = size
 	}
-	putJoinerPendingLocked(j.pending[:n])
-	j.pending = j.pending[n:]
+	putJoinerPendingLocked(pending[:n])
+	clear(pending[:n])
+	j.pendingHead += n
+	if j.pendingHead == len(j.pending) {
+		j.pending = j.pending[:0]
+		j.pendingHead = 0
+	}
 	return n, nil
 }
 
@@ -465,26 +544,55 @@ func (j *Joiner) readNested(n *joinerNested) {
 		); err != nil {
 			continue
 		}
-		packets := make([][]byte, count)
+		packetBatch := j.getReadBatch(count)
+		packets := packetBatch.bufs
 		for i := range count {
 			size := sizes[i]
 			packets[i] = clonePacketBuffer(
 				j.pool,
 				bufs[i][offset:offset+size],
 			)
-			j.rememberRoute(packets[i], n)
 		}
+		j.rememberRoutes(packets, n)
 		select {
 		case <-j.done:
 			putBuffers(j.pool, packets)
+			packetBatch.release()
 			return
 		case j.reads <- detachedTunRead{
-			bufs:  packets,
-			owner: n,
-			pool:  j.pool,
+			bufs:      packets,
+			owner:     n,
+			pool:      j.pool,
+			readBatch: packetBatch,
 		}:
 		}
 	}
+}
+
+func (j *Joiner) getReadBatch(size int) *detachedTunReadBatch {
+	batch, _ := j.readBatches.Get().(*detachedTunReadBatch)
+	if batch == nil {
+		batch = &detachedTunReadBatch{pool: &j.readBatches}
+	}
+	if cap(batch.bufs) < size {
+		batch.bufs = make([][]byte, size)
+	} else {
+		batch.bufs = batch.bufs[:size]
+	}
+	return batch
+}
+
+func (j *Joiner) getRouteBatch(size int) *joinerRouteBatch {
+	batch, _ := j.writeBatches.Get().(*joinerRouteBatch)
+	if batch == nil {
+		batch = &joinerRouteBatch{pool: &j.writeBatches}
+	}
+	if cap(batch.targets) < size {
+		batch.targets = make([]*joinerNested, size)
+	} else {
+		batch.targets = batch.targets[:size]
+	}
+	return batch
 }
 
 func (j *Joiner) watchNestedEvents(n *joinerNested) {
@@ -543,26 +651,149 @@ func (j *Joiner) writePump() {
 }
 
 func (j *Joiner) route(buf []byte, offset int) *joinerNested {
-	key := packetDstKey(buf, offset)
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	if key != "" {
-		if n := j.routes[key]; n != nil {
-			return n
-		}
+	var now time.Time
+	if j.flowRouting {
+		now = j.now()
+		j.expireDynamicRoutesLocked(now)
+	}
+	return j.routeLocked(buf, offset, now)
+}
+
+func (j *Joiner) routeLocked(
+	buf []byte,
+	offset int,
+	now time.Time,
+) *joinerNested {
+	if j.flowRouting {
+		return j.routeSharedAddressLocked(buf, offset, now)
+	}
+	if n := j.packetDestinationRouteLocked(buf, offset); n != nil {
+		return n
 	}
 	return j.defaultTun
 }
 
 func (j *Joiner) rememberRoute(packet []byte, n *joinerNested) {
-	key := packetSrcKey(packet, 0)
-	if key == "" {
-		return
+	var now time.Time
+	if j.flowRouting {
+		now = j.now()
 	}
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	if j.nested[n.t] == n {
-		j.routes[key] = n
+	if j.nested[n.t] != n {
+		return
+	}
+	if j.flowRouting {
+		j.expireDynamicRoutesLocked(now)
+	}
+	j.rememberRouteLocked(packet, n, now)
+}
+
+func (j *Joiner) rememberRoutes(packets [][]byte, n *joinerNested) {
+	var now time.Time
+	if j.flowRouting {
+		now = j.now()
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.nested[n.t] != n {
+		return
+	}
+	if j.flowRouting {
+		j.expireDynamicRoutesLocked(now)
+	}
+	for _, packet := range packets {
+		j.rememberRouteLocked(packet, n, now)
+	}
+}
+
+func (j *Joiner) rememberRouteLocked(
+	packet []byte,
+	n *joinerNested,
+	now time.Time,
+) {
+	if j.flowRouting {
+		if parsed, ok := parseJoinerPacket(packet, 0); ok {
+			j.rememberParsedSourceRouteLocked(parsed, n)
+			if flowKey, hasFlow := joinerReverseFlowKey(parsed); hasFlow {
+				j.rememberFlowLocked(flowKey, n, now)
+			}
+			return
+		}
+	}
+	j.rememberPacketSourceRouteLocked(packet, 0, n)
+}
+
+func (j *Joiner) parsedDestinationRouteLocked(
+	packet joinerPacket,
+) *joinerNested {
+	switch packet.version {
+	case 4:
+		return j.routes4[binary.BigEndian.Uint32(packet.destination[:4])]
+	case 6:
+		return j.routes6[packet.destination]
+	default:
+		return nil
+	}
+}
+
+func (j *Joiner) packetDestinationRouteLocked(
+	buf []byte,
+	offset int,
+) *joinerNested {
+	if offset < 0 || offset >= len(buf) {
+		return nil
+	}
+	packet := buf[offset:]
+	switch packet[0] >> 4 {
+	case 4:
+		if len(packet) >= 20 {
+			return j.routes4[binary.BigEndian.Uint32(packet[16:20])]
+		}
+	case 6:
+		if len(packet) >= 40 {
+			var address [16]byte
+			copy(address[:], packet[24:40])
+			return j.routes6[address]
+		}
+	}
+	return nil
+}
+
+func (j *Joiner) rememberParsedSourceRouteLocked(
+	packet joinerPacket,
+	owner *joinerNested,
+) {
+	switch packet.version {
+	case 4:
+		j.routes4[binary.BigEndian.Uint32(packet.source[:4])] = owner
+	case 6:
+		j.routes6[packet.source] = owner
+	}
+}
+
+func (j *Joiner) rememberPacketSourceRouteLocked(
+	buf []byte,
+	offset int,
+	owner *joinerNested,
+) {
+	if offset < 0 || offset >= len(buf) {
+		return
+	}
+	packet := buf[offset:]
+	switch packet[0] >> 4 {
+	case 4:
+		if len(packet) >= 20 {
+			j.routes4[binary.BigEndian.Uint32(packet[12:16])] = owner
+		}
+	case 6:
+		if len(packet) >= 40 {
+			var address [16]byte
+			copy(address[:], packet[8:24])
+			j.routes6[address] = owner
+		}
 	}
 }
 
@@ -574,13 +805,15 @@ func (j *Joiner) writeToNested(
 	if n == nil || !n.acceptsWrites() {
 		return nil
 	}
-	writeBufs, writeOffset, release := alignWriteOffset(
+	writeBufs, writeOffset, mustRelease := alignWriteOffset(
 		j.pool,
 		bufs,
 		offset,
 		n.t.MWO(),
 	)
-	defer release()
+	if mustRelease {
+		defer putBuffers(j.pool, writeBufs)
+	}
 	for written := 0; written < len(writeBufs); {
 		end := min(written+batchSizeOf(n.t), len(writeBufs))
 		count, err := n.t.Write(writeBufs[written:end], writeOffset)
@@ -613,9 +846,9 @@ func alignWriteOffset(
 	bufs [][]byte,
 	offset int,
 	nestedOffset int,
-) ([][]byte, int, func()) {
+) ([][]byte, int, bool) {
 	if nestedOffset <= offset {
-		return bufs, offset, func() {}
+		return bufs, offset, false
 	}
 	out := make([][]byte, len(bufs))
 	for i := range bufs {
@@ -628,7 +861,7 @@ func alignWriteOffset(
 			copy(out[i][nestedOffset:], bufs[i][offset:])
 		}
 	}
-	return out, nestedOffset, func() { putBuffers(pool, out) }
+	return out, nestedOffset, true
 }
 
 func (j *Joiner) detachNested(n *joinerNested, closeTun bool) {
@@ -651,13 +884,19 @@ func (j *Joiner) removeNestedLocked(n *joinerNested) {
 	}
 	delete(j.secondaries, n.t)
 	delete(j.nested, n.t)
-	for key, owner := range j.routes {
+	for key, owner := range j.routes4 {
 		if owner == n {
-			delete(j.routes, key)
+			delete(j.routes4, key)
 		}
 	}
+	for key, owner := range j.routes6 {
+		if owner == n {
+			delete(j.routes6, key)
+		}
+	}
+	j.removeDynamicRoutesForOwnerLocked(n)
 	pending := j.pending[:0]
-	for _, packet := range j.pending {
+	for _, packet := range j.pending[j.pendingHead:] {
 		if packet.owner != n {
 			pending = append(pending, packet)
 		} else {
@@ -665,6 +904,7 @@ func (j *Joiner) removeNestedLocked(n *joinerNested) {
 		}
 	}
 	j.pending = pending
+	j.pendingHead = 0
 	j.closeNestedLocked(n)
 }
 
@@ -733,50 +973,67 @@ func (j *Joiner) closeEvents() {
 	close(j.events)
 }
 
-func packetSrcKey(buf []byte, offset int) string {
-	if offset >= len(buf) {
-		return ""
-	}
-	p := buf[offset:]
-	if len(p) < 1 {
-		return ""
-	}
-	switch p[0] >> 4 {
-	case 4:
-		if len(p) < 20 {
-			return ""
-		}
-		return string(append([]byte{4}, p[12:16]...))
-	case 6:
-		if len(p) < 40 {
-			return ""
-		}
-		return string(append([]byte{6}, p[8:24]...))
-	default:
-		return ""
-	}
+type joinerAddressKey struct {
+	address [16]byte
+	version uint8
 }
 
-func packetDstKey(buf []byte, offset int) string {
-	if offset >= len(buf) {
-		return ""
+func (key joinerAddressKey) valid() bool {
+	return key.version != 0
+}
+
+func packetSrcKey(buf []byte, offset int) joinerAddressKey {
+	if offset < 0 || offset >= len(buf) {
+		return joinerAddressKey{}
 	}
 	p := buf[offset:]
 	if len(p) < 1 {
-		return ""
+		return joinerAddressKey{}
 	}
+	var key joinerAddressKey
 	switch p[0] >> 4 {
 	case 4:
 		if len(p) < 20 {
-			return ""
+			return joinerAddressKey{}
 		}
-		return string(append([]byte{4}, p[16:20]...))
+		key.version = 4
+		copy(key.address[:4], p[12:16])
 	case 6:
 		if len(p) < 40 {
-			return ""
+			return joinerAddressKey{}
 		}
-		return string(append([]byte{6}, p[24:40]...))
+		key.version = 6
+		copy(key.address[:], p[8:24])
 	default:
-		return ""
+		return joinerAddressKey{}
 	}
+	return key
+}
+
+func packetDstKey(buf []byte, offset int) joinerAddressKey {
+	if offset < 0 || offset >= len(buf) {
+		return joinerAddressKey{}
+	}
+	p := buf[offset:]
+	if len(p) < 1 {
+		return joinerAddressKey{}
+	}
+	var key joinerAddressKey
+	switch p[0] >> 4 {
+	case 4:
+		if len(p) < 20 {
+			return joinerAddressKey{}
+		}
+		key.version = 4
+		copy(key.address[:4], p[16:20])
+	case 6:
+		if len(p) < 40 {
+			return joinerAddressKey{}
+		}
+		key.version = 6
+		copy(key.address[:], p[24:40])
+	default:
+		return joinerAddressKey{}
+	}
+	return key
 }

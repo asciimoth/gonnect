@@ -31,11 +31,23 @@ var (
 )
 
 type detachedTunRead struct {
-	bufs  [][]byte
-	sizes []int
-	owner *joinerNested
-	pool  bufpool.Pool
-	err   error
+	bufs      [][]byte
+	sizes     []int
+	owner     *joinerNested
+	pool      bufpool.Pool
+	readBatch *detachedTunReadBatch
+	err       error
+}
+
+type detachedTunReadBatch struct {
+	bufs [][]byte
+	pool *sync.Pool
+}
+
+func (batch *detachedTunReadBatch) release() {
+	clear(batch.bufs)
+	batch.bufs = batch.bufs[:0]
+	batch.pool.Put(batch)
 }
 
 type detachedTunWrite struct {
@@ -384,7 +396,7 @@ func (d *DetachedTun) Read(
 			return 0, r.err
 		}
 		n := min(len(bufs), len(sizes), len(r.bufs))
-		defer putBuffers(r.pool, r.bufs)
+		defer releaseDetachedTunRead(r)
 		for i := range n {
 			size := len(r.bufs[i])
 			if offset > len(bufs[i]) || size > len(bufs[i])-offset {
@@ -833,6 +845,17 @@ func putBuffers(pool bufpool.Pool, bufs [][]byte) {
 	}
 }
 
+func putDetachedTunReadSlice(r detachedTunRead) {
+	if r.readBatch != nil {
+		r.readBatch.release()
+	}
+}
+
+func releaseDetachedTunRead(r detachedTunRead) {
+	putBuffers(r.pool, r.bufs)
+	putDetachedTunReadSlice(r)
+}
+
 func cloneWriteBufs(pool bufpool.Pool, bufs [][]byte, offset int) [][]byte {
 	out := make([][]byte, len(bufs))
 	for i := range bufs {
@@ -900,7 +923,7 @@ func drainDetachedTunReads(reads <-chan detachedTunRead) {
 			if !ok {
 				return
 			}
-			putBuffers(req.pool, req.bufs)
+			releaseDetachedTunRead(req)
 		default:
 			return
 		}

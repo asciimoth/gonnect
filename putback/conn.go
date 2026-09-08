@@ -15,12 +15,9 @@ import (
 
 // Conn wraps a net.Conn and allows bytes to be prepended to its unread input.
 //
-// Conn is not safe for concurrent read-side operations. Do not call Read,
-// PutBack, Buffered, or PostClose concurrently with each other. Like a normal
-// net.Conn, Conn can still be used concurrently by one goroutine that reads and
-// one goroutine that writes, subject to the underlying connection's guarantees.
-// PreClose can be called while reads or writes are active. For TCPConn, WriteTo
-// is also a read-side operation.
+// Conn serializes Read, PutBack, Buffered, PostClose, and TCPConn.WriteTo calls.
+// Like a normal net.Conn, Conn can be used concurrently by goroutines that read,
+// write, or close it, subject to the underlying connection's guarantees.
 type Conn interface {
 	net.Conn
 	gonnect.TwoStepCloser
@@ -34,15 +31,14 @@ type Conn interface {
 	//
 	// PutBack with an empty slice has no effect.
 	//
-	// PutBack is not safe for concurrent use with Read, Buffered, or another
-	// PutBack call.
+	// Concurrent read-side calls are serialized.
 	PutBack(p []byte)
 
 	// Buffered reports the number of bytes currently waiting in the put-back
 	// buffer. It does not include bytes waiting in the operating system or a
 	// deferred read error.
 	//
-	// Buffered is not safe for concurrent use with Read or PutBack.
+	// Concurrent read-side calls are serialized.
 	Buffered() int
 
 	GetWrapped() any
@@ -61,6 +57,8 @@ type TCPConn interface {
 type conn struct {
 	conn net.Conn
 	pool bufpool.Pool
+
+	readMu sync.Mutex
 
 	extraBuf []byte
 	extra    []byte
@@ -117,6 +115,8 @@ func (c *conn) PutBack(p []byte) {
 	if len(p) == 0 {
 		return
 	}
+	c.readMu.Lock()
+	defer c.readMu.Unlock()
 
 	if len(c.extra) == 0 {
 		c.setExtra(c.copyExtra(p))
@@ -132,6 +132,9 @@ func (c *conn) PutBack(p []byte) {
 }
 
 func (c *conn) Buffered() int {
+	c.readMu.Lock()
+	defer c.readMu.Unlock()
+
 	return len(c.extra)
 }
 
@@ -166,11 +169,13 @@ func (c *conn) releaseExtra() {
 // returns the bytes with a nil error and defers the error until the next Read
 // after all put-back bytes have been consumed.
 //
-// Read is not safe for concurrent use with another Read, PutBack, or Buffered.
+// Concurrent read-side calls are serialized.
 func (c *conn) Read(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
 	}
+	c.readMu.Lock()
+	defer c.readMu.Unlock()
 
 	if len(c.extra) != 0 {
 		n := copy(p, c.extra)
@@ -213,6 +218,8 @@ func (c *conn) PreClose() error {
 func (c *conn) PostClose() error {
 	c.postCloseOnce.Do(func() {
 		err := c.PreClose()
+		c.readMu.Lock()
+		defer c.readMu.Unlock()
 		c.releaseExtra()
 		if _, ok := c.conn.(gonnect.PostCloser); ok {
 			err = errors.Join(err, gonnect.PostClose(c.conn))
@@ -303,6 +310,9 @@ func (c *tcpConn) ReadFrom(r io.Reader) (int64, error) {
 // WriteTo writes buffered bytes first, then reads from the underlying
 // connection through the underlying TCP WriteTo method.
 func (c *tcpConn) WriteTo(w io.Writer) (int64, error) {
+	c.readMu.Lock()
+	defer c.readMu.Unlock()
+
 	n, done, err := c.writeBufferedTo(w)
 	if err != nil || done {
 		return n, err

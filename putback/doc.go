@@ -41,14 +41,14 @@
 // replay reliable and follows the io.Reader requirement to process bytes before
 // an accompanying error.
 //
-// Conn is not safe for concurrent read-side operations. Do not call Read,
-// PutBack, Buffered, or PostClose concurrently with each other. For TCPConn,
-// WriteTo is also a read-side operation. PreClose can be called while reads or
-// writes are active. Like a normal net.Conn, Conn can still be used concurrently
-// by one goroutine that reads and one goroutine that writes, subject to the
-// underlying connection's guarantees. Writes, address queries, and deadline
-// methods are delegated directly to the underlying connection. Close is
-// equivalent to PostClose, which first runs PreClose if needed.
+// Conn serializes Read, PutBack, Buffered, PostClose, and TCPConn.WriteTo calls.
+// Like a normal net.Conn, Conn can be used concurrently by goroutines that read,
+// write, or close it, subject to the underlying connection's guarantees.
+// PreClose can be called while reads or writes are active. Writes, address
+// queries, and deadline methods are delegated directly to the underlying
+// connection. Close is equivalent to PostClose, which first runs PreClose if
+// needed. Closing the wrapped connection before waiting for the read-side lock
+// lets Close stop a blocked underlying read.
 //
 // Buffered reads do not call the underlying connection, so an underlying read
 // deadline is not consulted until the put-back buffer has been drained.

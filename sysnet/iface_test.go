@@ -4,6 +4,7 @@ package sysnet
 import (
 	"errors"
 	"net"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -32,21 +33,27 @@ func TestDefaultTunOptsCopyIsIndependent(t *testing.T) {
 	src := &DefaultTunOpts{
 		TunAddrs:  []string{"10.0.0.2/32"},
 		TunRoutes: []string{"0.0.0.0/0"},
-		MTU:       1400,
-		DnsIP:     "10.0.0.2",
-		Strict:    true,
-		Exclude:   []Rule{{Type: "uid", Rule: "1000"}},
-		Include:   []Rule{{Type: "gid", Rule: "100"}},
+		SourceRoutes: []TunSourceRoute{{
+			Destination: netip.MustParsePrefix("192.0.2.0/24"),
+			Source:      netip.MustParseAddr("10.0.0.2"),
+		}},
+		MTU:     1400,
+		DnsIP:   "10.0.0.2",
+		Strict:  true,
+		Exclude: []Rule{{Type: "uid", Rule: "1000"}},
+		Include: []Rule{{Type: "gid", Rule: "100"}},
 	}
 
 	got := src.Copy()
 	got.TunAddrs[0] = "10.0.0.3/32"
 	got.TunRoutes[0] = "192.0.2.0/24"
+	got.SourceRoutes[0].Source = netip.MustParseAddr("10.0.0.3")
 	got.Exclude[0].Rule = "1001"
 	got.Include[0].Rule = "101"
 
 	if src.TunAddrs[0] != "10.0.0.2/32" ||
 		src.TunRoutes[0] != "0.0.0.0/0" ||
+		src.SourceRoutes[0].Source != netip.MustParseAddr("10.0.0.2") ||
 		src.Exclude[0].Rule != "1000" ||
 		src.Include[0].Rule != "100" {
 		t.Fatalf("Copy aliases source: %+v", src)

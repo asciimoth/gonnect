@@ -4,7 +4,9 @@ package sysnetdebug
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"sync"
 	"time"
@@ -51,6 +53,9 @@ type TunConfig struct {
 
 	// TunRoutes are the routes assigned to the tun.
 	TunRoutes []string
+
+	// SourceRoutes select preferred local source addresses by destination.
+	SourceRoutes []sysnet.TunSourceRoute
 
 	// DnsIP is the DNS endpoint address requested for a default tun.
 	DnsIP string
@@ -135,6 +140,11 @@ type System struct {
 	// DisableStrictMode makes Features report default tun strict mode as
 	// unsupported.
 	DisableStrictMode bool
+
+	// DisableDefaultTunSourceRoutes makes Features report default tun source
+	// routes as unsupported. VerifyDefaultTunOpts and BuildDefaultTun reject a
+	// non-empty source-route list while this field is set.
+	DisableDefaultTunSourceRoutes bool
 
 	// Rules is the optional rule catalog returned by ListRules for both tun
 	// rules and matcher rules. Leave it nil when the test does not care about
@@ -249,13 +259,14 @@ func (s *System) Close() error {
 // Features reports the sysnet feature set described by the Disable* fields.
 func (s *System) Features() sysnet.Features {
 	return sysnet.Features{
-		Tun:             !s.DisableTun,
-		DefaultTun:      !s.DisableDefaultTun,
-		DynTun:          !s.DisableDynTun,
-		DynDefaultTun:   !s.DisableDynDefaultTun,
-		TunNames:        !s.DisableTunNames,
-		DefaultTunNames: !s.DisableDefaultTunNames,
-		StrictMode:      !s.DisableStrictMode,
+		Tun:                    !s.DisableTun,
+		DefaultTun:             !s.DisableDefaultTun,
+		DynTun:                 !s.DisableDynTun,
+		DynDefaultTun:          !s.DisableDynDefaultTun,
+		TunNames:               !s.DisableTunNames,
+		DefaultTunNames:        !s.DisableDefaultTunNames,
+		StrictMode:             !s.DisableStrictMode,
+		DefaultTunSourceRoutes: !s.DisableDefaultTunSourceRoutes,
 	}
 }
 
@@ -386,22 +397,17 @@ func (s *System) BuildMatcher(rule sysnet.Rule) (sysnet.Matcher, error) {
 	}, nil
 }
 
-// VerifyDefaultTunOpts validates opts for BuildDefaultTun. It returns
-// sysnet.ErrNotSupported when DisableDefaultTun is set, delegates to
-// DefaultTunOptsVerifyer when provided, and otherwise accepts opts.
+// VerifyDefaultTunOpts validates opts for BuildDefaultTun. It validates source
+// routes, returns sysnet.ErrNotSupported for disabled features, and then
+// delegates to DefaultTunOptsVerifyer when provided.
 func (s *System) VerifyDefaultTunOpts(opts sysnet.DefaultTunOpts) error {
+	opts = opts.Copy()
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.DisableDefaultTun {
-		return sysnet.ErrNotSupported
-	}
-
-	if s.DefaultTunOptsVerifyer != nil {
-		return s.DefaultTunOptsVerifyer(opts)
-	}
-
-	return nil
+	_, err := s.normalizeDefaultTunOptsLocked(opts)
+	return err
 }
 
 // VerifyTunOpts validates opts for BuildTun. It returns sysnet.ErrNotSupported
@@ -464,13 +470,17 @@ func (s *System) TunWarnings(t tun.Tun) []sysnet.Warning {
 func (s *System) BuildDefaultTun(
 	opts sysnet.DefaultTunOpts,
 ) (sysnet.DefaultTun, error) {
+	opts = opts.Copy()
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.closed {
 		return nil, net.ErrClosed
 	}
-	if err := s.verifyDefaultTunOptsLocked(opts); err != nil {
+	var err error
+	opts, err = s.normalizeDefaultTunOptsLocked(opts)
+	if err != nil {
 		return nil, err
 	}
 
@@ -762,14 +772,30 @@ func (s *System) routeDNS(requests <-chan dns.Request, done <-chan struct{}) {
 	}
 }
 
-func (s *System) verifyDefaultTunOptsLocked(opts sysnet.DefaultTunOpts) error {
+func (s *System) normalizeDefaultTunOptsLocked(
+	opts sysnet.DefaultTunOpts,
+) (sysnet.DefaultTunOpts, error) {
 	if s.DisableDefaultTun {
-		return sysnet.ErrNotSupported
+		return sysnet.DefaultTunOpts{}, sysnet.ErrNotSupported
+	}
+	if len(opts.SourceRoutes) != 0 && s.DisableDefaultTunSourceRoutes {
+		return sysnet.DefaultTunOpts{}, sysnet.ErrNotSupported
+	}
+
+	var err error
+	opts.SourceRoutes, err = normalizeSourceRoutes(
+		opts.TunAddrs,
+		opts.SourceRoutes,
+	)
+	if err != nil {
+		return sysnet.DefaultTunOpts{}, err
 	}
 	if s.DefaultTunOptsVerifyer != nil {
-		return s.DefaultTunOptsVerifyer(opts)
+		if err := s.DefaultTunOptsVerifyer(opts.Copy()); err != nil {
+			return sysnet.DefaultTunOpts{}, err
+		}
 	}
-	return nil
+	return opts, nil
 }
 
 func (s *System) verifyTunOptsLocked(opts sysnet.TunOpts) error {
@@ -786,7 +812,7 @@ func (s *System) buildDefaultTunLocked(
 	opts sysnet.DefaultTunOpts,
 ) (tun.Tun, tun.Tun, error) {
 	if s.DefaultTunBuilder != nil {
-		t, err := s.DefaultTunBuilder(opts)
+		t, err := s.DefaultTunBuilder(opts.Copy())
 		if err == nil && t == nil {
 			err = errors.New("default tun builder returned nil tun")
 		}
@@ -895,13 +921,14 @@ func closeBaseTun(t tun.Tun) error {
 
 func defaultTunConfig(opts sysnet.DefaultTunOpts) TunConfig {
 	return TunConfig{
-		MTU:       normalizeMTU(opts.MTU),
-		TunAddrs:  copySlice(opts.TunAddrs),
-		TunRoutes: copySlice(opts.TunRoutes),
-		DnsIP:     opts.DnsIP,
-		Strict:    opts.Strict,
-		Exclude:   copySlice(opts.Exclude),
-		Include:   copySlice(opts.Include),
+		MTU:          normalizeMTU(opts.MTU),
+		TunAddrs:     copySlice(opts.TunAddrs),
+		TunRoutes:    copySlice(opts.TunRoutes),
+		SourceRoutes: copySlice(opts.SourceRoutes),
+		DnsIP:        opts.DnsIP,
+		Strict:       opts.Strict,
+		Exclude:      copySlice(opts.Exclude),
+		Include:      copySlice(opts.Include),
 	}
 }
 
@@ -932,14 +959,84 @@ func (entry *tunEntry) snapshot() TunEntry {
 
 func (config TunConfig) copy() TunConfig {
 	return TunConfig{
-		MTU:       config.MTU,
-		TunAddrs:  copySlice(config.TunAddrs),
-		TunRoutes: copySlice(config.TunRoutes),
-		DnsIP:     config.DnsIP,
-		Strict:    config.Strict,
-		Exclude:   copySlice(config.Exclude),
-		Include:   copySlice(config.Include),
+		MTU:          config.MTU,
+		TunAddrs:     copySlice(config.TunAddrs),
+		TunRoutes:    copySlice(config.TunRoutes),
+		SourceRoutes: copySlice(config.SourceRoutes),
+		DnsIP:        config.DnsIP,
+		Strict:       config.Strict,
+		Exclude:      copySlice(config.Exclude),
+		Include:      copySlice(config.Include),
 	}
+}
+
+func normalizeSourceRoutes(
+	tunAddrs []string,
+	routes []sysnet.TunSourceRoute,
+) ([]sysnet.TunSourceRoute, error) {
+	if routes == nil {
+		return nil, nil
+	}
+
+	assigned := make(map[netip.Addr]struct{}, len(tunAddrs))
+	for _, tunAddr := range tunAddrs {
+		prefix, err := netip.ParsePrefix(tunAddr)
+		if err == nil {
+			assigned[prefix.Addr()] = struct{}{}
+		}
+	}
+
+	normalized := make([]sysnet.TunSourceRoute, 0, len(routes))
+	seen := make(map[netip.Prefix]netip.Addr, len(routes))
+	for i, route := range routes {
+		if !route.Destination.IsValid() {
+			return nil, fmt.Errorf(
+				"source route %d has an invalid destination prefix",
+				i,
+			)
+		}
+		if !validSourceRouteAddr(route.Source) {
+			return nil, fmt.Errorf(
+				"source route %d has an invalid source address",
+				i,
+			)
+		}
+		if route.Destination.Addr().Is4() != route.Source.Is4() {
+			return nil, fmt.Errorf(
+				"source route %d uses different address families",
+				i,
+			)
+		}
+		if _, ok := assigned[route.Source]; !ok {
+			return nil, fmt.Errorf(
+				"source route %d source %s is not assigned to the TUN",
+				i,
+				route.Source,
+			)
+		}
+
+		route.Destination = route.Destination.Masked()
+		if source, ok := seen[route.Destination]; ok {
+			if source != route.Source {
+				return nil, fmt.Errorf(
+					"source route destination %s has conflicting sources",
+					route.Destination,
+				)
+			}
+			continue
+		}
+		seen[route.Destination] = route.Source
+		normalized = append(normalized, route)
+	}
+
+	return normalized, nil
+}
+
+func validSourceRouteAddr(addr netip.Addr) bool {
+	return addr.IsValid() &&
+		!addr.IsUnspecified() &&
+		!addr.IsMulticast() &&
+		!addr.IsLoopback()
 }
 
 func stringID(id int) string {

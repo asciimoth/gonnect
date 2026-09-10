@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"net/netip"
 
 	"github.com/asciimoth/gonnect"
 	"github.com/asciimoth/gonnect/dns"
@@ -15,6 +16,17 @@ import (
 	"github.com/asciimoth/gonnect/subnet"
 	"github.com/asciimoth/gonnect/tun"
 )
+
+// TunSourceRoute selects a preferred local source address for a remote
+// destination routed through a default TUN.
+type TunSourceRoute struct {
+	// Destination selects this source route. When more than one route matches,
+	// the route with the longest prefix has priority.
+	Destination netip.Prefix
+
+	// Source is a local address assigned to the TUN.
+	Source netip.Addr
+}
 
 var (
 	// ErrNotSupported should be used by System implementation when unsupported
@@ -105,6 +117,11 @@ type DefaultTunOpts struct {
 	// Loopback subnets passed here should be ignored.
 	TunRoutes []string
 
+	// SourceRoutes selects preferred local source addresses for remote
+	// destinations. IPv4 and IPv6 routes are independent. An empty list keeps
+	// the system's default source-selection behavior.
+	SourceRoutes []TunSourceRoute
+
 	// MTU specifies the initial MTU for the TUN device. If MTU is 0 or too low,
 	// implementation should use a sensible default.
 	MTU int
@@ -152,6 +169,11 @@ func (b *DefaultTunOpts) Copy() DefaultTunOpts {
 	if b.TunRoutes != nil {
 		c.TunRoutes = make([]string, len(b.TunRoutes))
 		copy(c.TunRoutes, b.TunRoutes)
+	}
+
+	if b.SourceRoutes != nil {
+		c.SourceRoutes = make([]TunSourceRoute, len(b.SourceRoutes))
+		copy(c.SourceRoutes, b.SourceRoutes)
 	}
 
 	if b.Exclude != nil {
@@ -239,6 +261,8 @@ type Features struct {
 	DefaultTunNames bool
 	// Is Strict mode supported for DefaultTun.
 	StrictMode bool
+	// Can DefaultTun select a preferred local source address by destination.
+	DefaultTunSourceRoutes bool
 }
 
 // System constructs System instances for a specific platform.

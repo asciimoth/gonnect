@@ -392,13 +392,14 @@ func TestWarningsHooksRequireCurrentMatchingTun(t *testing.T) {
 func TestSystemFeatureHooksAndCopies(t *testing.T) {
 	rule := sysnet.Rule{Type: "uid", Rule: "1000"}
 	system := &System{
-		DisableTun:             true,
-		DisableDefaultTun:      true,
-		DisableDynTun:          true,
-		DisableDynDefaultTun:   true,
-		DisableTunNames:        true,
-		DisableDefaultTunNames: true,
-		DisableStrictMode:      true,
+		DisableTun:                    true,
+		DisableDefaultTun:             true,
+		DisableDynTun:                 true,
+		DisableDynDefaultTun:          true,
+		DisableTunNames:               true,
+		DisableDefaultTunNames:        true,
+		DisableStrictMode:             true,
+		DisableDefaultTunSourceRoutes: true,
 		Rules: []sysnet.RuleTypeInfo{{
 			Type:        "uid",
 			Description: "user id",
@@ -420,7 +421,8 @@ func TestSystemFeatureHooksAndCopies(t *testing.T) {
 	features := system.Features()
 	if features.Tun || features.DefaultTun || features.DynTun ||
 		features.DynDefaultTun || features.TunNames ||
-		features.DefaultTunNames || features.StrictMode {
+		features.DefaultTunNames || features.StrictMode ||
+		features.DefaultTunSourceRoutes {
 		t.Fatalf("Features() = %+v, want all disabled", features)
 	}
 	if !system.RuleVerify(rule) || system.RuleVerify(sysnet.Rule{Type: "uid"}) {

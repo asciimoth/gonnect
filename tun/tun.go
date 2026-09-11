@@ -50,10 +50,11 @@ const (
 //
 // Read can also return non-terminal errors after which the same Tun can still
 // be used. Known examples from native and third-party implementations include
-// temporary errors and capacity errors such as "too many segments" or "need
-// more buffers" when the caller supplied too few read buffers. IsTunTermError
-// classifies errors for callers that need to decide whether to stop using a
-// Tun after a Read error.
+// temporary errors and capacity errors such as io.ErrShortBuffer. Capacity
+// errors should support errors.Is. IsTunTermError also recognizes some legacy
+// errors such as "too many segments" and "need more buffers" by text.
+// IsTunTermError classifies errors for callers that need to decide whether to
+// stop using a Tun after a Read error.
 //
 //nolint:iface // firewallTun intentionally duplicates this interface to hide its field.
 type Tun interface {

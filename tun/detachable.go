@@ -2,6 +2,7 @@ package tun
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"sync"
@@ -28,7 +29,20 @@ var (
 		os.ErrClosed,
 		errors.New("tun: detached wrapper is closed"),
 	)
+	// ErrDetachedTunFailed identifies a terminal failure in a detached Tun's
+	// read or write pump. The returned error also contains the source cause.
+	ErrDetachedTunFailed = errors.New("tun: detached pump failed")
 )
+
+const detachedTunFallbackReadPacketSize = 64 << 10
+
+// DetachOptions controls the initial read capacity of an owning DetachedTun.
+type DetachOptions struct {
+	// MinReadPacketSize is the minimum packet size, before MRO is added, for
+	// buffers supplied to the source Tun. A value less than one disables the
+	// hint. Dynamic growth keeps correctness independent of this value.
+	MinReadPacketSize int
+}
 
 type detachedTunRead struct {
 	bufs      [][]byte
@@ -93,6 +107,11 @@ type tunChannelSource interface {
 // When wrapping another DetachedTun, Detach flattens the data path onto the
 // first wrapper's pumps. Nested wrappers still have independent Down and Close
 // state, but they do not add another pump or another packet-copy stage.
+//
+// A terminal read or write pump error puts the owning wrapper in a failed
+// state. The wrapper sends one EventDown for this transition, and future I/O
+// returns an error that matches ErrDetachedTunFailed and the source cause. In
+// contrast to a source EventDown, a pump failure cannot be reversed by Up.
 type DetachedTun struct {
 	wrapped Tun
 	parent  *DetachedTun
@@ -101,6 +120,7 @@ type DetachedTun struct {
 	mu            sync.RWMutex
 	up            bool
 	closed        bool
+	failed        error
 	gen           uint64
 	done          chan struct{}
 	effectiveDone chan struct{}
@@ -137,16 +157,33 @@ func Detach(
 	spawner gonnect.Spawner,
 	pool bufpool.Pool,
 ) *DetachedTun {
+	return DetachWithOptions(t, spawner, pool, DetachOptions{})
+}
+
+// DetachWithOptions creates an independently stoppable wrapper around t.
+//
+// If the initial MTU is unavailable or is not positive, the owning wrapper
+// uses 64 KiB as its initial read packet size. This fallback changes only
+// internal buffer sizing; MTU continues to report the source value.
+func DetachWithOptions(
+	t Tun,
+	spawner gonnect.Spawner,
+	pool bufpool.Pool,
+	opts DetachOptions,
+) *DetachedTun {
 	if parent, ok := t.(*DetachedTun); ok {
-		return detachNested(parent, pool, spawner)
+		return detachNested(parent, pool, spawner, opts)
 	}
 	if source, ok := t.(tunChannelSource); ok {
-		return detachSource(t, source, pool, spawner)
+		return detachSource(t, source, pool, spawner, opts)
 	}
 	mtu, err := t.MTU()
-	if err != nil || mtu < 0 {
-		mtu = 64 << 10
+	if err != nil || mtu <= 0 {
+		mtu = detachedTunFallbackReadPacketSize
 	}
+	mro := t.MRO()
+	packetSize := max(mtu, opts.MinReadPacketSize)
+	readLen, capacityErr := detachedTunReadLen(mro, packetSize)
 	d := &DetachedTun{
 		wrapped:   t,
 		up:        true,
@@ -155,30 +192,31 @@ func Detach(
 		events:    make(chan Event, 8),
 		eventSubs: make(map[chan Event]struct{}),
 		mtu:       mtu,
-		mro:       t.MRO(),
+		mro:       mro,
 		mwo:       t.MWO(),
 		batch:     t.BatchSize(),
 		native:    t.IsNative(),
 		pool:      pool,
 		spawner:   spawner,
+		readLen:   readLen,
 	}
 	d.waitCond = sync.NewCond(&d.waitMu)
 	if d.batch <= 0 {
 		d.batch = 1
 	}
-	d.readLen = d.mro + d.mtu
-	if d.readLen < d.mro {
-		d.readLen = d.mro
+	if capacityErr != nil {
+		d.failConstruction(capacityErr)
+		return d
 	}
 	if err := d.startLocked(); err != nil {
-		d.closed = true
+		d.failConstruction(err)
 		return d
 	}
 	if err := d.startEventPump(t.Events()); err != nil {
-		_ = d.Close()
+		d.failConstruction(err)
 		return d
 	}
-	d.sendEvent(EventUp)
+	d.sendUpIfHealthy()
 	return d
 }
 
@@ -187,11 +225,15 @@ func detachSource(
 	source tunChannelSource,
 	pool bufpool.Pool,
 	spawner gonnect.Spawner,
+	opts DetachOptions,
 ) *DetachedTun {
 	mtu, err := t.MTU()
-	if err != nil || mtu < 0 {
-		mtu = 64 << 10
+	if err != nil || mtu <= 0 {
+		mtu = detachedTunFallbackReadPacketSize
 	}
+	mro := t.MRO()
+	packetSize := max(mtu, opts.MinReadPacketSize)
+	readLen, capacityErr := detachedTunReadLen(mro, packetSize)
 	d := &DetachedTun{
 		wrapped:   t,
 		source:    source,
@@ -200,30 +242,31 @@ func detachSource(
 		events:    make(chan Event, 8),
 		eventSubs: make(map[chan Event]struct{}),
 		mtu:       mtu,
-		mro:       t.MRO(),
+		mro:       mro,
 		mwo:       t.MWO(),
 		batch:     t.BatchSize(),
 		native:    t.IsNative(),
 		pool:      pool,
 		spawner:   spawner,
+		readLen:   readLen,
 	}
 	d.waitCond = sync.NewCond(&d.waitMu)
 	if d.batch <= 0 {
 		d.batch = 1
 	}
-	d.readLen = d.mro + d.mtu
-	if d.readLen < d.mro {
-		d.readLen = d.mro
+	if capacityErr != nil {
+		d.failConstruction(capacityErr)
+		return d
 	}
 	if err := d.startLocked(); err != nil {
-		d.closed = true
+		d.failConstruction(err)
 		return d
 	}
 	if err := d.startEventPump(t.Events()); err != nil {
-		_ = d.Close()
+		d.failConstruction(err)
 		return d
 	}
-	d.sendEvent(EventUp)
+	d.sendUpIfHealthy()
 	return d
 }
 
@@ -231,33 +274,47 @@ func detachNested(
 	parent *DetachedTun,
 	pool bufpool.Pool,
 	spawner gonnect.Spawner,
+	opts DetachOptions,
 ) *DetachedTun {
+	parent.mu.RLock()
+	mtu := parent.mtu
+	mro := parent.mro
+	mwo := parent.mwo
+	batch := parent.batch
+	readLen := parent.readLen
+	native := parent.native
+	wrapped := parent.wrapped
+	parent.mu.RUnlock()
 	d := &DetachedTun{
-		wrapped:   parent.wrapped,
+		wrapped:   wrapped,
 		parent:    parent,
 		up:        true,
 		gen:       1,
 		events:    make(chan Event, 8),
 		eventSubs: make(map[chan Event]struct{}),
-		mtu:       parent.mtu,
-		mro:       parent.mro,
-		mwo:       parent.mwo,
-		batch:     parent.batch,
-		readLen:   parent.readLen,
-		native:    parent.native,
+		mtu:       mtu,
+		mro:       mro,
+		mwo:       mwo,
+		batch:     batch,
+		readLen:   readLen,
+		native:    native,
 		pool:      pool,
 		spawner:   spawner,
 	}
 	d.waitCond = sync.NewCond(&d.waitMu)
+	if err := parent.growReadPacketSize(opts.MinReadPacketSize); err != nil {
+		d.failConstruction(err)
+		return d
+	}
 	if err := d.startLocked(); err != nil {
-		d.closed = true
+		d.failConstruction(err)
 		return d
 	}
 	if err := d.startEventPump(parent.subscribeEvents()); err != nil {
-		_ = d.Close()
+		d.failConstruction(err)
 		return d
 	}
-	d.sendEvent(EventUp)
+	d.sendUpIfHealthy()
 	return d
 }
 
@@ -265,20 +322,42 @@ func detachNested(
 // wrapped Tun.
 func (d *DetachedTun) Up() error {
 	d.mu.Lock()
-	defer d.mu.Unlock()
 	if d.closed {
+		d.mu.Unlock()
 		return ErrDetachedTunClosed
 	}
+	if d.failed != nil {
+		err := d.failed
+		d.mu.Unlock()
+		return err
+	}
 	if d.up {
+		if !d.ownsPumps {
+			if err := d.refreshNestedLocked(); err != nil {
+				d.mu.Unlock()
+				return err
+			}
+		}
+		d.mu.Unlock()
 		return nil
 	}
 	d.gen++
 	d.up = true
 	if err := d.startLocked(); err != nil {
 		d.up = false
+		if d.ownsPumps {
+			failure, emit := d.setFailureLocked(err)
+			if emit {
+				d.sendEvent(EventDown)
+			}
+			d.mu.Unlock()
+			return failure
+		}
+		d.mu.Unlock()
 		return err
 	}
 	d.sendEvent(EventUp)
+	d.mu.Unlock()
 	return nil
 }
 
@@ -302,9 +381,7 @@ func (d *DetachedTun) Down() error {
 
 // IsUp reports whether this wrapper is currently up.
 func (d *DetachedTun) IsUp() (bool, error) {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-	return d.up, nil
+	return d.stateErr() == nil, nil
 }
 
 // Close permanently closes this wrapper. It does not close the wrapped Tun.
@@ -390,8 +467,12 @@ func (d *DetachedTun) Read(
 	}
 	select {
 	case <-done:
-		return 0, ErrDetachedTunDown
+		return 0, d.operationErr(ErrDetachedTunDown)
 	case r := <-reads:
+		if err := d.stateErr(); err != nil {
+			releaseDetachedTunRead(r)
+			return 0, err
+		}
 		if r.err != nil {
 			return 0, r.err
 		}
@@ -430,9 +511,13 @@ func (d *DetachedTun) Write(bufs [][]byte, offset int) (int, error) {
 	}
 	select {
 	case <-done:
-		req.cancel(ErrDetachedTunDown)
-		return 0, ErrDetachedTunDown
+		err := d.operationErr(ErrDetachedTunDown)
+		req.cancel(err)
+		return 0, err
 	case res := <-req.resp:
+		if err := d.stateErr(); err != nil {
+			return 0, err
+		}
 		return res.n, res.err
 	}
 }
@@ -448,6 +533,9 @@ func (d *DetachedTun) writeRequest(
 ) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.failed != nil {
+		return nil, nil, nil, d.failed
+	}
 	if d.closed {
 		return nil, nil, nil, ErrDetachedTunClosed
 	}
@@ -486,7 +574,6 @@ func (d *DetachedTun) startLocked() error {
 			d.writePump(gen, done, writes)
 		}, &d.wg, "tun.DetachedTun.writePump"); err != nil {
 			close(d.done)
-			d.wg.Wait()
 			return err
 		}
 		return nil
@@ -533,6 +620,9 @@ func (d *DetachedTun) channels() (
 ) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.failed != nil {
+		return nil, nil, d.failed
+	}
 	if d.closed {
 		return nil, nil, ErrDetachedTunClosed
 	}
@@ -564,20 +654,37 @@ func (d *DetachedTun) finishPendingWrite() {
 
 func (d *DetachedTun) stateErr() error {
 	d.mu.RLock()
-	defer d.mu.RUnlock()
-	if d.closed {
+	failed := d.failed
+	closed := d.closed
+	up := d.up
+	parent := d.parent
+	source := d.source
+	ownsPumps := d.ownsPumps
+	d.mu.RUnlock()
+	if failed != nil {
+		return failed
+	}
+	if closed {
 		return ErrDetachedTunClosed
 	}
-	if !d.up {
+	if !up {
 		return ErrDetachedTunDown
 	}
-	if !d.ownsPumps {
-		if d.parent == nil {
-			return nil
-		}
-		return d.parent.stateErr()
+	if parent != nil {
+		return parent.stateErr()
+	}
+	if !ownsPumps && source != nil {
+		_, _, _, err := source.sourceSnapshot()
+		return err
 	}
 	return nil
+}
+
+func (d *DetachedTun) operationErr(fallback error) error {
+	if err := d.stateErr(); err != nil {
+		return err
+	}
+	return fallback
 }
 
 func (d *DetachedTun) sourceSnapshot() (
@@ -588,6 +695,9 @@ func (d *DetachedTun) sourceSnapshot() (
 ) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.failed != nil {
+		return nil, nil, nil, d.failed
+	}
 	if d.closed {
 		return nil, nil, nil, ErrDetachedTunClosed
 	}
@@ -607,32 +717,36 @@ func (d *DetachedTun) readPump(
 	done <-chan struct{},
 	reads chan detachedTunRead,
 ) {
+	readLen := d.readLength()
 	bufs := make([][]byte, d.batch)
 	sizes := make([]int, d.batch)
 	for i := range bufs {
-		bufs[i] = bufpool.GetBuffer(d.pool, d.readLen)
+		bufs[i] = bufpool.GetBuffer(d.pool, readLen)
 	}
-	defer putBuffers(d.pool, bufs)
+	defer func() { putBuffers(d.pool, bufs) }()
 	for {
+		if target := d.readLength(); target > readBufferLength(bufs) {
+			bufs = replaceReadBuffers(d.pool, bufs, target)
+		}
+		clear(sizes)
 		n, err := d.wrapped.Read(bufs, sizes, d.mro)
 		if err != nil {
 			if !d.generationActive(gen) {
 				return
 			}
-			select {
-			case <-done:
-				if d.isClosed() {
-					drainDetachedTunReads(reads)
-				}
-			case reads <- detachedTunRead{err: err}:
+			if d.handleSourceReadError(gen, done, reads, bufs, sizes, err) {
+				continue
 			}
 			return
 		}
-		if err := validateReadPacketSizes(bufs, sizes, d.mro, n); err != nil {
-			select {
-			case <-done:
-				return
-			case reads <- detachedTunRead{err: err}:
+		if validationErr := validateReadPacketSizes(
+			bufs,
+			sizes,
+			d.mro,
+			n,
+		); validationErr != nil {
+			if d.handleInvalidRead(gen, bufs, sizes, validationErr) {
+				continue
 			}
 			return
 		}
@@ -656,15 +770,85 @@ func (d *DetachedTun) readPump(
 			}
 			return
 		case reads <- detachedTunRead{
-			bufs:  packets,
-			sizes: sizes[:n],
-			pool:  d.pool,
+			bufs: packets,
+			pool: d.pool,
 		}:
 			if d.isClosed() {
 				drainDetachedTunReads(reads)
 				return
 			}
 		}
+	}
+}
+
+func (d *DetachedTun) handleSourceReadError(
+	gen uint64,
+	done <-chan struct{},
+	reads chan detachedTunRead,
+	bufs [][]byte,
+	sizes []int,
+	err error,
+) bool {
+	if errors.Is(err, io.ErrShortBuffer) {
+		return d.recoverReadCapacity(gen, bufs, sizes, err)
+	}
+	if IsTunTermError(err) {
+		_ = d.failPump(gen, err)
+		return false
+	}
+	if d.sendReadError(done, reads, err) {
+		return true
+	}
+	if d.isClosed() {
+		drainDetachedTunReads(reads)
+	}
+	return false
+}
+
+func (d *DetachedTun) handleInvalidRead(
+	gen uint64,
+	bufs [][]byte,
+	sizes []int,
+	err error,
+) bool {
+	if errors.Is(err, io.ErrShortBuffer) {
+		return d.recoverReadCapacity(gen, bufs, sizes, err)
+	}
+	_ = d.failPump(gen, err)
+	return false
+}
+
+func (d *DetachedTun) recoverReadCapacity(
+	gen uint64,
+	bufs [][]byte,
+	sizes []int,
+	cause error,
+) bool {
+	grew, err := d.growAfterCapacityError(bufs, sizes)
+	if err != nil {
+		_ = d.failPump(gen, errors.Join(cause, err))
+		return false
+	}
+	if grew {
+		return true
+	}
+	_ = d.failPump(
+		gen,
+		fmt.Errorf("tun: read capacity did not increase: %w", cause),
+	)
+	return false
+}
+
+func (d *DetachedTun) sendReadError(
+	done <-chan struct{},
+	reads chan<- detachedTunRead,
+	err error,
+) bool {
+	select {
+	case <-done:
+		return false
+	case reads <- detachedTunRead{err: err}:
+		return true
 	}
 }
 
@@ -694,7 +878,10 @@ func (d *DetachedTun) writePump(
 	for {
 		select {
 		case <-done:
-			drainDetachedTunWrites(writes, ErrDetachedTunDown)
+			drainDetachedTunWrites(
+				writes,
+				d.operationErr(ErrDetachedTunDown),
+			)
 			return
 		case req := <-writes:
 			bufs, ok := req.take()
@@ -704,15 +891,18 @@ func (d *DetachedTun) writePump(
 			n, err := d.wrapped.Write(bufs, req.offset)
 			req.release()
 			if !d.generationActive(gen) {
-				req.respond(0, ErrDetachedTunDown)
-				drainDetachedTunWrites(writes, ErrDetachedTunDown)
+				stateErr := d.operationErr(ErrDetachedTunDown)
+				req.respond(0, stateErr)
+				drainDetachedTunWrites(writes, stateErr)
 				return
 			}
-			req.respond(n, err)
 			if err != nil {
-				drainDetachedTunWrites(writes, err)
+				failure := d.failPump(gen, err)
+				req.respond(n, failure)
+				drainDetachedTunWrites(writes, failure)
 				return
 			}
+			req.respond(n, nil)
 		}
 	}
 }
@@ -720,7 +910,7 @@ func (d *DetachedTun) writePump(
 func (d *DetachedTun) generationActive(gen uint64) bool {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	return d.up && !d.closed && d.gen == gen
+	return d.up && !d.closed && d.failed == nil && d.gen == gen
 }
 
 func (d *DetachedTun) isClosed() bool {
@@ -738,6 +928,175 @@ func closedChan(ch <-chan struct{}) bool {
 	}
 }
 
+func detachedTunReadLen(mro int, packetSize int) (int, error) {
+	if mro < 0 {
+		return 0, fmt.Errorf("tun: negative MRO %d", mro)
+	}
+	if packetSize <= 0 {
+		return 0, fmt.Errorf("tun: invalid read packet size %d", packetSize)
+	}
+	maxInt := int(^uint(0) >> 1)
+	if packetSize > maxInt-mro {
+		return 0, fmt.Errorf(
+			"tun: MRO %d and read packet size %d overflow int",
+			mro,
+			packetSize,
+		)
+	}
+	return mro + packetSize, nil
+}
+
+func (d *DetachedTun) readLength() int {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.readLen
+}
+
+func (d *DetachedTun) growReadPacketSize(packetSize int) error {
+	if packetSize <= 0 {
+		return nil
+	}
+	if !d.ownsPumps {
+		if d.parent != nil {
+			return d.parent.growReadPacketSize(packetSize)
+		}
+		return nil
+	}
+	readLen, err := detachedTunReadLen(d.mro, packetSize)
+	if err != nil {
+		return err
+	}
+	d.mu.Lock()
+	if readLen > d.readLen {
+		d.readLen = readLen
+	}
+	d.mu.Unlock()
+	return nil
+}
+
+func (d *DetachedTun) recordMTU(mtu int) error {
+	if mtu <= 0 {
+		return nil
+	}
+	if err := d.growReadPacketSize(mtu); err != nil {
+		return err
+	}
+	d.mu.Lock()
+	d.mtu = mtu
+	d.mu.Unlock()
+	return nil
+}
+
+func (d *DetachedTun) growAfterCapacityError(
+	bufs [][]byte,
+	sizes []int,
+) (bool, error) {
+	oldLen := readBufferLength(bufs)
+	if mtu, err := d.wrapped.MTU(); err == nil && mtu > 0 {
+		if err := d.recordMTU(mtu); err != nil {
+			return false, err
+		}
+	}
+	for _, size := range sizes {
+		if size <= 0 {
+			continue
+		}
+		if err := d.growReadPacketSize(size); err != nil {
+			return false, err
+		}
+	}
+	return d.readLength() > oldLen, nil
+}
+
+func readBufferLength(bufs [][]byte) int {
+	if len(bufs) == 0 {
+		return 0
+	}
+	length := len(bufs[0])
+	for _, buf := range bufs[1:] {
+		length = min(length, len(buf))
+	}
+	return length
+}
+
+func replaceReadBuffers(
+	pool bufpool.Pool,
+	old [][]byte,
+	readLen int,
+) [][]byte {
+	bufs := make([][]byte, len(old))
+	for i := range bufs {
+		bufs[i] = bufpool.GetBuffer(pool, readLen)
+	}
+	putBuffers(pool, old)
+	return bufs
+}
+
+func (d *DetachedTun) setFailureLocked(cause error) (error, bool) {
+	if d.failed != nil {
+		return d.failed, false
+	}
+	if cause == nil {
+		cause = errors.New("tun: detached pump stopped")
+	}
+	d.failed = errors.Join(ErrDetachedTunFailed, cause)
+	emit := d.up
+	if d.up {
+		d.up = false
+		d.gen++
+	}
+	if d.done != nil && !closedChan(d.done) {
+		close(d.done)
+	}
+	return d.failed, emit
+}
+
+func (d *DetachedTun) failPump(gen uint64, cause error) error {
+	d.mu.Lock()
+	if d.closed || d.failed != nil || !d.up || d.gen != gen {
+		err := d.failed
+		if err == nil {
+			err = ErrDetachedTunDown
+		}
+		d.mu.Unlock()
+		return err
+	}
+	failure, emit := d.setFailureLocked(cause)
+	reads := d.reads
+	writes := d.writes
+	if emit {
+		d.sendEvent(EventDown)
+	}
+	d.mu.Unlock()
+
+	drainDetachedTunReads(reads)
+	drainDetachedTunWrites(writes, failure)
+	return failure
+}
+
+func (d *DetachedTun) failConstruction(cause error) {
+	d.mu.Lock()
+	failure, emit := d.setFailureLocked(cause)
+	reads := d.reads
+	writes := d.writes
+	if emit {
+		d.sendEvent(EventDown)
+	}
+	d.mu.Unlock()
+	if d.ownsPumps {
+		drainDetachedTunReads(reads)
+		drainDetachedTunWrites(writes, failure)
+	}
+}
+
+func (d *DetachedTun) sendUpIfHealthy() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.up && !d.closed && d.failed == nil {
+		d.sendEvent(EventUp)
+	}
+}
+
 func (d *DetachedTun) startEventPump(events <-chan Event) error {
 	return spawn(d.spawner, func() {
 		down := false
@@ -750,16 +1109,51 @@ func (d *DetachedTun) startEventPump(events <-chan Event) error {
 					continue
 				}
 				down = false
+			case EventMTUUpdate:
+				if d.ownsPumps {
+					mtu, err := d.wrapped.MTU()
+					if err == nil {
+						if err := d.recordMTU(mtu); err != nil {
+							d.failCurrentPump(err)
+							continue
+						}
+					}
+				}
 			}
-			d.sendEvent(event)
+			d.sendWrappedEvent(event)
 		}
 		d.closeFromWrapped(down)
 	}, "tun.DetachedTun.events")
 }
 
+func (d *DetachedTun) failCurrentPump(cause error) {
+	d.mu.RLock()
+	gen := d.gen
+	d.mu.RUnlock()
+	_ = d.failPump(gen, cause)
+}
+
+func (d *DetachedTun) sendWrappedEvent(event Event) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.closed || d.failed != nil {
+		return
+	}
+	d.sendEvent(event)
+}
+
 func (d *DetachedTun) closeFromWrapped(down bool) {
+	var parentFailure error
+	if d.parent != nil {
+		if err := d.parent.stateErr(); errors.Is(err, ErrDetachedTunFailed) {
+			parentFailure = err
+		}
+	}
 	d.once.Do(func() {
 		d.mu.Lock()
+		if d.failed == nil && parentFailure != nil {
+			d.failed = parentFailure
+		}
 		wasUp := d.up
 		if wasUp {
 			d.up = false

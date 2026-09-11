@@ -2,6 +2,8 @@ package tun_test
 
 import (
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"testing"
 
@@ -35,6 +37,21 @@ func TestIsTunTermError(t *testing.T) {
 			name: "deadline exceeded",
 			err:  os.ErrDeadlineExceeded,
 			want: false,
+		},
+		{
+			name: "short buffer",
+			err:  io.ErrShortBuffer,
+			want: false,
+		},
+		{
+			name: "wrapped short buffer",
+			err:  fmt.Errorf("read: %w", io.ErrShortBuffer),
+			want: false,
+		},
+		{
+			name: "failed detached Tun",
+			err:  tun.ErrDetachedTunFailed,
+			want: true,
 		},
 		{
 			name: "too many segments",

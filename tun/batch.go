@@ -2,6 +2,7 @@ package tun
 
 import (
 	"errors"
+	"io"
 	"os"
 	"runtime"
 	"strings"
@@ -32,6 +33,12 @@ func channelBufferSize() int {
 // other errors, including closed-device errors.
 func IsTunTermError(err error) bool {
 	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrDetachedTunFailed) {
+		return true
+	}
+	if errors.Is(err, io.ErrShortBuffer) {
 		return false
 	}
 

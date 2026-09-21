@@ -77,9 +77,10 @@ func (l packetLimiter) release() {
 //
 // Configured server URLs are tried in order. When a server URL uses a hostname,
 // the hostname is resolved through the bootstrap DNS interface passed to
-// NewClient, and every returned IP address is tried in resolver order before the
-// client moves to the next configured server. If bootstrap is nil, server URLs
-// must use IP literal hosts; hostname servers fail before dialing.
+// NewClient. UDP and TCP servers use the returned IP addresses in resolver
+// order. DoT servers send the request to all returned IP addresses in parallel
+// and use the first valid response. If bootstrap is nil, server URLs must use IP
+// literal hosts; hostname servers fail before dialing.
 type Client struct {
 	// TLSConfig configures TLS for dot:// upstreams. The config is cloned for
 	// each connection. If ServerName is empty, the URL host is used.
@@ -97,10 +98,14 @@ type Client struct {
 // If dial is nil, all requests fail with ErrNoDialer. bootstrap is used only to
 // resolve non-IP server URL hostnames. If bootstrap is nil, server URLs with
 // hostname hosts are rejected, while IP literal server URLs remain usable.
+// Each request has a five-second timeout by default. A shorter deadline in the
+// request context takes precedence. The timeout covers dialing, TLS handshakes,
+// and all connection reads and writes.
 //
 // Supported schemes are udp, tcp, and dot. Server URLs are attempted in order.
-// If a server hostname resolves to multiple IP addresses, those addresses are
-// attempted in bootstrap resolver order before the next server URL is tried.
+// For UDP and TCP, bootstrap addresses are attempted in resolver order. For
+// DoT, all bootstrap addresses are attempted in parallel. The first valid DoT
+// response is used, or the error from the final failed attempt is returned.
 func NewClient(
 	dial gonnect.Dial,
 	bootstrap Interface,
@@ -193,12 +198,12 @@ func (c *Client) exchange(
 	if err != nil {
 		return nil, err
 	}
+	if network == "dot" && len(addrs) > 1 {
+		return c.exchangeDoTParallel(ctx, addrs, pkt, wire.ID)
+	}
 	var last error
 	for _, addr := range addrs {
-		resp, err := c.exchangeOne(ctx, network, addr, pkt, wire.ID)
-		if err == nil && resp.ID != wire.ID {
-			err = errors.New("dns: response ID mismatch")
-		}
+		resp, err := c.exchangeAddr(ctx, network, addr, pkt, wire.ID)
 		if err == nil {
 			return resp, nil
 		}
@@ -208,6 +213,83 @@ func (c *Client) exchange(
 		last = ErrNoUpstream
 	}
 	return nil, last
+}
+
+type exchangeResult struct {
+	resp *Message
+	err  error
+}
+
+// exchangeDoTParallel sends the same query to every resolved address. A child
+// context lets the first successful exchange stop its peers. The function
+// still collects every result and waits for every worker before it returns.
+// This prevents an exchange from outliving its request or Client.Close.
+func (c *Client) exchangeDoTParallel(
+	ctx context.Context,
+	addrs []serverAddr,
+	pkt []byte,
+	expectedID uint16,
+) (*Message, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	results := make(chan exchangeResult, len(addrs))
+	var workers sync.WaitGroup
+	for _, addr := range addrs {
+		err := spawnWg(c.spawner, func() {
+			resp, err := c.exchangeAddr(ctx, "dot", addr, pkt, expectedID)
+			results <- exchangeResult{resp: resp, err: err}
+		}, &workers, "dns.client.dot.exchange")
+		if err != nil {
+			// A spawn failure is one failed address attempt. The buffered
+			// channel keeps this path consistent with worker results.
+			results <- exchangeResult{err: err}
+		}
+	}
+
+	var first *Message
+	var last error
+	for range addrs {
+		result := <-results
+		if result.err == nil {
+			if first == nil {
+				first = result.resp
+				cancel()
+			}
+			continue
+		}
+		last = result.err
+	}
+	workers.Wait()
+	if first != nil {
+		return first, nil
+	}
+	if last == nil {
+		last = ErrNoUpstream
+	}
+	return nil, last
+}
+
+// exchangeAddr performs one address attempt and validates the response before
+// it can win a sequential or parallel exchange.
+func (c *Client) exchangeAddr(
+	ctx context.Context,
+	network string,
+	addr serverAddr,
+	pkt []byte,
+	expectedID uint16,
+) (*Message, error) {
+	resp, err := c.exchangeOne(ctx, network, addr, pkt, expectedID)
+	if err != nil {
+		return nil, err
+	}
+	if resp == nil {
+		return nil, errors.New("dns: empty response")
+	}
+	if resp.ID != expectedID {
+		return nil, errors.New("dns: response ID mismatch")
+	}
+	return resp, nil
 }
 
 type serverAddr struct {
@@ -313,7 +395,9 @@ func (c *Client) exchangeUDP(
 	defer func() { _ = conn.Close() }()
 	done := closeConnOnContext(ctx, conn)
 	defer done()
-	_ = conn.SetDeadline(time.Now().Add(c.timeout))
+	if err = c.setConnectionDeadline(ctx, conn); err != nil {
+		return nil, err
+	}
 	if _, err = conn.Write(pkt); err != nil {
 		return nil, err
 	}
@@ -338,10 +422,14 @@ func (c *Client) exchangeStream(
 	defer func() { _ = conn.Close() }()
 	done := closeConnOnContext(ctx, conn)
 	defer done()
+	// Set the deadline on the underlying connection before TLS wrapping. This
+	// ensures that a TLS handshake cannot run past the request timeout.
+	if err = c.setConnectionDeadline(ctx, conn); err != nil {
+		return nil, err
+	}
 	if tlsServerName != "" {
 		conn = tls.Client(conn, c.tlsConfig(tlsServerName))
 	}
-	_ = conn.SetDeadline(time.Now().Add(c.timeout))
 	var lenBuf [2]byte
 	if len(pkt) > maxDNSMessageSize {
 		return nil, errors.New("dns: message too large")
@@ -360,6 +448,27 @@ func (c *Client) exchangeStream(
 		return nil, err
 	}
 	return Unpack(buf)
+}
+
+// setConnectionDeadline applies the earliest client or context deadline. The
+// context watcher remains active so cancellation also interrupts connections
+// whose SetDeadline implementation does not wake every operation.
+func (c *Client) setConnectionDeadline(
+	ctx context.Context,
+	conn net.Conn,
+) error {
+	deadline, hasDeadline := ctx.Deadline()
+	if c.timeout > 0 {
+		clientDeadline := time.Now().Add(c.timeout)
+		if !hasDeadline || clientDeadline.Before(deadline) {
+			deadline = clientDeadline
+			hasDeadline = true
+		}
+	}
+	if !hasDeadline {
+		return nil
+	}
+	return conn.SetDeadline(deadline)
 }
 
 func (c *Client) tlsConfig(host string) *tls.Config {

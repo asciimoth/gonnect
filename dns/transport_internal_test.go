@@ -1,6 +1,62 @@
 package dns
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
+
+func TestClientRequestTimeoutOptions(t *testing.T) {
+	defaultClient := NewClient(nil, nil, nil)
+	if got := defaultClient.timeout; got != defaultClientRequestTimeout {
+		t.Fatalf(
+			"NewClient() timeout = %v, want %v",
+			got,
+			defaultClientRequestTimeout,
+		)
+	}
+	if err := defaultClient.Close(); err != nil {
+		t.Fatalf("NewClient().Close() error = %v", err)
+	}
+
+	const customTimeout = 250 * time.Millisecond
+	tests := []struct {
+		name    string
+		timeout time.Duration
+		want    time.Duration
+	}{
+		{
+			name: "zero uses default",
+			want: defaultClientRequestTimeout,
+		},
+		{
+			name:    "negative uses default",
+			timeout: -time.Second,
+			want:    defaultClientRequestTimeout,
+		},
+		{
+			name:    "custom timeout",
+			timeout: customTimeout,
+			want:    customTimeout,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client := NewClientWithOptions(
+				nil,
+				nil,
+				nil,
+				ClientOptions{RequestTimeout: test.timeout},
+			)
+			if got := client.timeout; got != test.want {
+				t.Errorf("client timeout = %v, want %v", got, test.want)
+			}
+			if err := client.Close(); err != nil {
+				t.Fatalf("Client.Close() error = %v", err)
+			}
+		})
+	}
+}
 
 func TestSplitServerHostPortMoreCases(t *testing.T) {
 	tests := []struct {

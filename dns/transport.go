@@ -21,6 +21,7 @@ const maxDNSMessageSize = 1<<16 - 1
 const (
 	defaultPacketMaxConcurrentRequests = 256
 	defaultPacketRequestTimeout        = 5 * time.Second
+	defaultClientRequestTimeout        = 5 * time.Second
 )
 
 // PacketOptions configures DNS packet request handling.
@@ -34,6 +35,21 @@ const (
 type PacketOptions struct {
 	MaxConcurrentRequests int
 	RequestTimeout        time.Duration
+}
+
+// ClientOptions configures DNS client requests.
+type ClientOptions struct {
+	// RequestTimeout limits one request, including bootstrap resolution,
+	// dialing, TLS handshakes, and connection reads and writes. A zero or
+	// negative value uses the default timeout of five seconds.
+	RequestTimeout time.Duration
+}
+
+func normalizeClientOptions(opts ClientOptions) ClientOptions {
+	if opts.RequestTimeout <= 0 {
+		opts.RequestTimeout = defaultClientRequestTimeout
+	}
+	return opts
 }
 
 func normalizePacketOptions(opts PacketOptions) PacketOptions {
@@ -76,11 +92,11 @@ func (l packetLimiter) release() {
 // ID before replying.
 //
 // Configured server URLs are tried in order. When a server URL uses a hostname,
-// the hostname is resolved through the bootstrap DNS interface passed to
-// NewClient. UDP and TCP servers use the returned IP addresses in resolver
+// the hostname is resolved through the bootstrap DNS interface passed during
+// construction. UDP and TCP servers use the returned IP addresses in resolver
 // order. DoT servers send the request to all returned IP addresses in parallel
-// and use the first valid response. If bootstrap is nil, server URLs must use IP
-// literal hosts; hostname servers fail before dialing.
+// and use the first valid response. If bootstrap is nil, server URLs must use
+// IP literal hosts; hostname servers fail before dialing.
 type Client struct {
 	// TLSConfig configures TLS for dot:// upstreams. The config is cloned for
 	// each connection. If ServerName is empty, the URL host is used.
@@ -112,11 +128,31 @@ func NewClient(
 	spawner gonnect.Spawner,
 	servers ...string,
 ) *Client {
+	return NewClientWithOptions(
+		dial,
+		bootstrap,
+		spawner,
+		ClientOptions{},
+		servers...,
+	)
+}
+
+// NewClientWithOptions creates a DNS client with the specified request
+// options. A zero RequestTimeout selects the default five-second timeout.
+// A shorter deadline in a request context takes precedence.
+func NewClientWithOptions(
+	dial gonnect.Dial,
+	bootstrap Interface,
+	spawner gonnect.Spawner,
+	opts ClientOptions,
+	servers ...string,
+) *Client {
+	opts = normalizeClientOptions(opts)
 	c := &Client{
 		dial:      dial,
 		bootstrap: bootstrap,
 		servers:   append([]string(nil), servers...),
-		timeout:   5 * time.Second,
+		timeout:   opts.RequestTimeout,
 		spawner:   spawner,
 	}
 	c.p = newProvider(c.handle, spawner)

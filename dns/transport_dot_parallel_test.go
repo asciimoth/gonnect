@@ -130,8 +130,13 @@ func TestClientDoTReturnsLastErrorAfterAllAddressesFail(t *testing.T) {
 
 	bootstrap := newBootstrapDNS("127.0.0.1", "127.0.0.2")
 	defer func() { _ = bootstrap.Close() }()
-	client := NewClient(dial, bootstrap, nil, "dot://dns.test:853")
-	client.timeout = time.Hour
+	client := NewClientWithOptions(
+		dial,
+		bootstrap,
+		nil,
+		ClientOptions{RequestTimeout: time.Hour},
+		"dot://dns.test:853",
+	)
 	defer func() { _ = client.Close() }()
 
 	queryDone := startDoTTestQuery(client)
@@ -309,8 +314,13 @@ func TestClientCloseCancelsManyParallelDoTQueries(t *testing.T) {
 
 	bootstrap := newBootstrapDNS("127.0.0.1", "127.0.0.2")
 	defer func() { _ = bootstrap.Close() }()
-	client := NewClient(dial, bootstrap, nil, "dot://dns.test:853")
-	client.timeout = time.Hour
+	client := NewClientWithOptions(
+		dial,
+		bootstrap,
+		nil,
+		ClientOptions{RequestTimeout: time.Hour},
+		"dot://dns.test:853",
+	)
 	defer func() { _ = client.Close() }()
 
 	queryDone := make(chan error, queryCount)
@@ -361,8 +371,13 @@ func TestClientTCPAndDoTConnectionsUseTimeout(t *testing.T) {
 					deadlines: deadlines,
 				}, nil
 			}
-			client := NewClient(dial, nil, nil, scheme+"://127.0.0.1:853")
-			client.timeout = clientTimeout
+			client := NewClientWithOptions(
+				dial,
+				nil,
+				nil,
+				ClientOptions{RequestTimeout: clientTimeout},
+				scheme+"://127.0.0.1:853",
+			)
 			if scheme == "dot" {
 				client.TLSConfig = &tls.Config{
 					InsecureSkipVerify: true, //nolint:gosec // In-memory peer.
@@ -428,8 +443,13 @@ func TestClientUDPToTCPFallbackUsesTimeout(t *testing.T) {
 		}
 	}
 
-	client := NewClient(dial, nil, nil, "udp://127.0.0.1:853")
-	client.timeout = clientTimeout
+	client := NewClientWithOptions(
+		dial,
+		nil,
+		nil,
+		ClientOptions{RequestTimeout: clientTimeout},
+		"udp://127.0.0.1:853",
+	)
 	defer func() { _ = client.Close() }()
 	started := time.Now()
 	if _, err := Query(
@@ -500,8 +520,13 @@ func newParallelDoTTestClient(
 		go serveDoTTestPeer(serverConn, address, cert, handler, peerDone)
 		return clientConn, nil
 	}
-	client := NewClient(dial, bootstrap, nil, "dot://dns.test:853")
-	client.timeout = time.Hour
+	client := NewClientWithOptions(
+		dial,
+		bootstrap,
+		nil,
+		ClientOptions{RequestTimeout: time.Hour},
+		"dot://dns.test:853",
+	)
 	client.TLSConfig = &tls.Config{
 		InsecureSkipVerify: true, //nolint:gosec // Test-only in-memory TLS peer.
 		MinVersion:         tls.VersionTLS12,

@@ -569,14 +569,14 @@ func TestReverseDNSCacheHelpers(t *testing.T) {
 func TestBytecodeRouterCfgMatchesReverseDNSCacheNames(t *testing.T) {
 	storage := gdns.NewMemoryStorage()
 	setTestPTR(storage, "192.0.2.10", "other.test.", "target.test.")
-	setTestPTR(storage, "198.51.100.1", "local.test.")
+	setTestPTR(storage, "198.51.100.1", "local.test")
 	setTestPTR(storage, "2001:db8::10", "v6.test.")
 
 	cfg, err := NewBytecodeRouterCfg(BytecodeRules{
-		Strings: []string{"target.test.", "local.test.", "v6.test."},
+		Strings: []string{"target.test", "local.test.", "v6.test."},
 		Regexps: []*regexp.Regexp{
-			regexp.MustCompile(`^target\.`),
-			regexp.MustCompile(`^local\.`),
+			regexp.MustCompile(`^target\.test$`),
+			regexp.MustCompile(`^local\.test\.$`),
 		},
 		DNSCacheStorage: storage,
 		DialTCP: append(
@@ -623,6 +623,263 @@ func TestBytecodeRouterCfgMatchesReverseDNSCacheNames(t *testing.T) {
 	}
 	if got := cfg.Lookup("ip", "192.0.2.10"); got != 7 {
 		t.Fatalf("Lookup literal IP PTR route = %d, want 7", got)
+	}
+}
+
+func TestDNSNameEqual(t *testing.T) {
+	tests := []struct {
+		name string
+		got  string
+		want string
+		eq   bool
+	}{
+		{
+			name: "same relative name",
+			got:  "example.test",
+			want: "example.test",
+			eq:   true,
+		},
+		{
+			name: "same absolute name",
+			got:  "example.test.",
+			want: "example.test.",
+			eq:   true,
+		},
+		{
+			name: "stored absolute",
+			got:  "example.test.",
+			want: "example.test",
+			eq:   true,
+		},
+		{
+			name: "rule absolute",
+			got:  "example.test",
+			want: "example.test.",
+			eq:   true,
+		},
+		{
+			name: "different name",
+			got:  "example.test.",
+			want: "other.test",
+			eq:   false,
+		},
+		{
+			name: "extra label",
+			got:  "api.example.test.",
+			want: "example.test",
+			eq:   false,
+		},
+		{
+			name: "prefix",
+			got:  "example.test.more",
+			want: "example.test.",
+			eq:   false,
+		},
+		{
+			name: "case remains significant",
+			got:  "Example.test.",
+			want: "example.test",
+			eq:   false,
+		},
+		{
+			name: "double trailing dot",
+			got:  "example.test..",
+			want: "example.test.",
+			eq:   false,
+		},
+		{name: "root and empty", got: ".", want: "", eq: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := dnsNameEqual(tt.got, tt.want); got != tt.eq {
+				t.Fatalf(
+					"dnsNameEqual(%q, %q) = %v, want %v",
+					tt.got,
+					tt.want,
+					got,
+					tt.eq,
+				)
+			}
+		})
+	}
+}
+
+func TestMatchDNSNameRegexp(t *testing.T) {
+	tests := []struct {
+		name    string
+		stored  string
+		pattern string
+		want    bool
+	}{
+		{
+			name:    "same relative name",
+			stored:  "example.test",
+			pattern: `^example\.test$`,
+			want:    true,
+		},
+		{
+			name:    "same absolute name",
+			stored:  "example.test.",
+			pattern: `^example\.test\.$`,
+			want:    true,
+		},
+		{
+			name:    "stored absolute",
+			stored:  "example.test.",
+			pattern: `^example\.test$`,
+			want:    true,
+		},
+		{
+			name:    "rule requires absolute",
+			stored:  "example.test",
+			pattern: `^example\.test\.$`,
+			want:    true,
+		},
+		{
+			name:    "existing prefix expression",
+			stored:  "api.example.test.",
+			pattern: `^api\.`,
+			want:    true,
+		},
+		{
+			name:    "different name",
+			stored:  "example.test.",
+			pattern: `^other\.test\.?$`,
+		},
+		{
+			name:    "extra label",
+			stored:  "api.example.test.",
+			pattern: `^example\.test\.?$`,
+		},
+		{
+			name:    "case remains significant",
+			stored:  "Example.test.",
+			pattern: `^example\.test$`,
+		},
+		{
+			name:    "double trailing dot",
+			stored:  "example.test..",
+			pattern: `^example\.test\.$`,
+		},
+		{name: "root does not become empty", stored: ".", pattern: `^$`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			re := regexp.MustCompile(tt.pattern)
+			if got := matchDNSNameRegexp(re, tt.stored); got != tt.want {
+				t.Fatalf(
+					"matchDNSNameRegexp(%q, %q) = %v, want %v",
+					tt.pattern,
+					tt.stored,
+					got,
+					tt.want,
+				)
+			}
+		})
+	}
+}
+
+func TestBytecodeRouterCfgReverseDNSNameDotVariants(t *testing.T) {
+	tests := []struct {
+		name    string
+		stored  string
+		rule    string
+		regexp  bool
+		matches bool
+	}{
+		{
+			name:    "exact both relative",
+			stored:  "example.test",
+			rule:    "example.test",
+			matches: true,
+		},
+		{
+			name:    "exact both absolute",
+			stored:  "example.test.",
+			rule:    "example.test.",
+			matches: true,
+		},
+		{
+			name:    "exact stored absolute",
+			stored:  "example.test.",
+			rule:    "example.test",
+			matches: true,
+		},
+		{
+			name:    "exact rule absolute",
+			stored:  "example.test",
+			rule:    "example.test.",
+			matches: true,
+		},
+		{
+			name:    "exact different name",
+			stored:  "example.test.",
+			rule:    "other.test",
+			matches: false,
+		},
+		{
+			name:    "regexp both relative",
+			stored:  "example.test",
+			rule:    `^example\.test$`,
+			regexp:  true,
+			matches: true,
+		},
+		{
+			name:    "regexp both absolute",
+			stored:  "example.test.",
+			rule:    `^example\.test\.$`,
+			regexp:  true,
+			matches: true,
+		},
+		{
+			name:    "regexp stored absolute",
+			stored:  "example.test.",
+			rule:    `^example\.test$`,
+			regexp:  true,
+			matches: true,
+		},
+		{
+			name:    "regexp rule absolute",
+			stored:  "example.test",
+			rule:    `^example\.test\.$`,
+			regexp:  true,
+			matches: true,
+		},
+		{
+			name:    "regexp different name",
+			stored:  "example.test.",
+			rule:    `^other\.test\.?$`,
+			regexp:  true,
+			matches: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			storage := newCountingDNSStorage()
+			setTestPTR(storage, "192.0.2.10", tt.stored)
+			rules := BytecodeRules{DNSCacheStorage: storage}
+			if tt.regexp {
+				rules.Regexps = []*regexp.Regexp{regexp.MustCompile(tt.rule)}
+				rules.DialTCP = append(param16(OP_ADDR_RE, 0), OP_SLOT, 2)
+			} else {
+				rules.Strings = []string{tt.rule}
+				rules.DialTCP = append(param16(OP_ADDR_S, 0), OP_SLOT, 2)
+			}
+			cfg, err := NewBytecodeRouterCfg(rules)
+			if err != nil {
+				t.Fatalf("NewBytecodeRouterCfg() error = %v", err)
+			}
+			want := 0
+			if tt.matches {
+				want = 2
+			}
+			if got := cfg.DialTCP("tcp", "", "192.0.2.10:443"); got != want {
+				t.Fatalf("DialTCP() = %d, want %d", got, want)
+			}
+			if storage.getCalls != 1 {
+				t.Fatalf("DNS Get calls = %d, want 1", storage.getCalls)
+			}
+		})
 	}
 }
 
@@ -732,13 +989,13 @@ func TestBytecodeRouterCfgReverseDNSCacheLookupIsLazy(t *testing.T) {
 func TestBytecodeRouterCfgReverseDNSCacheMemoizesPerAddress(t *testing.T) {
 	storage := newCountingDNSStorage()
 	setTestPTR(storage, "192.0.2.10", "target.test.")
-	setTestPTR(storage, "198.51.100.1", "local.test.")
+	setTestPTR(storage, "198.51.100.1", "local.test")
 
 	cfg, err := NewBytecodeRouterCfg(BytecodeRules{
-		Strings: []string{"target.test.", "local.test."},
+		Strings: []string{"target.test", "local.test."},
 		Regexps: []*regexp.Regexp{
-			regexp.MustCompile(`^target\.`),
-			regexp.MustCompile(`^local\.`),
+			regexp.MustCompile(`^target\.test$`),
+			regexp.MustCompile(`^local\.test\.$`),
 		},
 		DNSCacheStorage: storage,
 		DialTCP: append(
@@ -1404,16 +1661,16 @@ func TestBytecodeSplitRouterRouteCacheKeyIncludesProtocol(t *testing.T) {
 func TestBytecodeSplitRouterMatchesReverseDNSCacheNamesFastPath(t *testing.T) {
 	storage := newCountingDNSStorage()
 	setTestPTR(storage, "192.0.2.10", "dst.test.")
-	setTestPTR(storage, "198.51.100.1", "src.test.")
+	setTestPTR(storage, "198.51.100.1", "src.test")
 	router, err := NewBytecodeSplitRouter(SplitBytecodeRules{
 		System: &sysnetdebug.System{},
 		Strings: []string{
-			"dst.test.",
+			"dst.test",
 			"src.test.",
 		},
 		Regexps: []*regexp.Regexp{
-			regexp.MustCompile(`^dst\.`),
-			regexp.MustCompile(`^src\.`),
+			regexp.MustCompile(`^dst\.test$`),
+			regexp.MustCompile(`^src\.test\.$`),
 		},
 		DNSCacheStorage: storage,
 		RouteCacheTTL:   -1,
@@ -1445,11 +1702,121 @@ func TestBytecodeSplitRouterMatchesReverseDNSCacheNamesFastPath(t *testing.T) {
 	}
 }
 
+func TestBytecodeSplitRouterReverseDNSNameDotVariants(t *testing.T) {
+	tests := []struct {
+		name    string
+		stored  string
+		rule    string
+		regexp  bool
+		matches bool
+	}{
+		{
+			name:    "exact both relative",
+			stored:  "dst.test",
+			rule:    "dst.test",
+			matches: true,
+		},
+		{
+			name:    "exact both absolute",
+			stored:  "dst.test.",
+			rule:    "dst.test.",
+			matches: true,
+		},
+		{
+			name:    "exact stored absolute",
+			stored:  "dst.test.",
+			rule:    "dst.test",
+			matches: true,
+		},
+		{
+			name:    "exact rule absolute",
+			stored:  "dst.test",
+			rule:    "dst.test.",
+			matches: true,
+		},
+		{
+			name:    "exact different name",
+			stored:  "dst.test.",
+			rule:    "other.test",
+			matches: false,
+		},
+		{
+			name:    "regexp both relative",
+			stored:  "dst.test",
+			rule:    `^dst\.test$`,
+			regexp:  true,
+			matches: true,
+		},
+		{
+			name:    "regexp both absolute",
+			stored:  "dst.test.",
+			rule:    `^dst\.test\.$`,
+			regexp:  true,
+			matches: true,
+		},
+		{
+			name:    "regexp stored absolute",
+			stored:  "dst.test.",
+			rule:    `^dst\.test$`,
+			regexp:  true,
+			matches: true,
+		},
+		{
+			name:    "regexp rule absolute",
+			stored:  "dst.test",
+			rule:    `^dst\.test\.$`,
+			regexp:  true,
+			matches: true,
+		},
+		{
+			name:    "regexp different name",
+			stored:  "dst.test.",
+			rule:    `^other\.test\.?$`,
+			regexp:  true,
+			matches: false,
+		},
+	}
+	pkt := ipv4TCPPacket([4]byte{198, 51, 100, 1}, [4]byte{192, 0, 2, 10}, 1, 2)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			storage := newCountingDNSStorage()
+			setTestPTR(storage, "192.0.2.10", tt.stored)
+			rules := SplitBytecodeRules{
+				System:          &sysnetdebug.System{},
+				DNSCacheStorage: storage,
+				RouteCacheTTL:   -1,
+			}
+			if tt.regexp {
+				rules.Regexps = []*regexp.Regexp{regexp.MustCompile(tt.rule)}
+				rules.Route = slotWhen(param16(OP_ADDR_RE, 0), 8)
+			} else {
+				rules.Strings = []string{tt.rule}
+				rules.Route = slotWhen(param16(OP_ADDR_S, 0), 8)
+			}
+			router, err := NewBytecodeSplitRouter(rules)
+			if err != nil {
+				t.Fatalf("NewBytecodeSplitRouter() error = %v", err)
+			}
+			t.Cleanup(func() { _ = router.Close() })
+			want := 0
+			if tt.matches {
+				want = 8
+			}
+			if got := router.Route(pkt, 0, false); got != want {
+				t.Fatalf("Route() = %d, want %d", got, want)
+			}
+			if storage.getCalls != 1 {
+				t.Fatalf("DNS Get calls = %d, want 1", storage.getCalls)
+			}
+		})
+	}
+}
+
 func TestBytecodeSplitRouterMatchesReverseDNSCacheNamesRecursivePath(
 	t *testing.T,
 ) {
 	storage := newCountingDNSStorage()
-	setTestPTR(storage, "192.0.2.10", "dst.test.")
+	setTestPTR(storage, "192.0.2.10", "dst.test")
 	expr := append([]byte{}, param16(OP_ADDR_S, 0)...)
 	expr = append(expr, param16(OP_ADDR_RE, 0)...)
 	expr = append(expr, OP_AND, OP_NOT)
@@ -1458,7 +1825,7 @@ func TestBytecodeSplitRouterMatchesReverseDNSCacheNamesRecursivePath(
 	router, err := NewBytecodeSplitRouter(SplitBytecodeRules{
 		System:          &sysnetdebug.System{},
 		Strings:         []string{"dst.test."},
-		Regexps:         []*regexp.Regexp{regexp.MustCompile(`^dst\.`)},
+		Regexps:         []*regexp.Regexp{regexp.MustCompile(`^dst\.test\.$`)},
 		DNSCacheStorage: storage,
 		RouteCacheTTL:   -1,
 		Route:           route,
@@ -1497,7 +1864,7 @@ func TestBytecodeSplitRouterMatchesReverseDNSCacheNamesFallbackPath(
 	route = append(route, OP_SLOT, 8, OP_SLOT, 2)
 	router, err := NewBytecodeSplitRouter(SplitBytecodeRules{
 		System:          &sysnetdebug.System{},
-		Strings:         []string{"dst.test."},
+		Strings:         []string{"dst.test"},
 		DNSCacheStorage: storage,
 		RouteCacheTTL:   -1,
 		Route:           route,

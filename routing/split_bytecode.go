@@ -1222,7 +1222,7 @@ func (ev *splitEval) matchSrcString(want string) bool {
 		return true
 	}
 	for _, name := range ev.srcReverseDNSNames() {
-		if name == want {
+		if dnsNameEqual(name, want) {
 			return true
 		}
 	}
@@ -1234,7 +1234,7 @@ func (ev *splitEval) matchDstString(want string) bool {
 		return true
 	}
 	for _, name := range ev.dstReverseDNSNames() {
-		if name == want {
+		if dnsNameEqual(name, want) {
 			return true
 		}
 	}
@@ -1246,7 +1246,7 @@ func (ev *splitEval) matchSrcRegexp(re *regexp.Regexp) bool {
 		return true
 	}
 	for _, name := range ev.srcReverseDNSNames() {
-		if re.MatchString(name) {
+		if matchDNSNameRegexp(re, name) {
 			return true
 		}
 	}
@@ -1258,7 +1258,7 @@ func (ev *splitEval) matchDstRegexp(re *regexp.Regexp) bool {
 		return true
 	}
 	for _, name := range ev.dstReverseDNSNames() {
-		if re.MatchString(name) {
+		if matchDNSNameRegexp(re, name) {
 			return true
 		}
 	}

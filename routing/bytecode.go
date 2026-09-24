@@ -536,7 +536,7 @@ func (a *addrCache) matchString(want string) bool {
 		return true
 	}
 	for _, name := range a.reverseDNSNames() {
-		if name == want {
+		if dnsNameEqual(name, want) {
 			return true
 		}
 	}
@@ -548,9 +548,38 @@ func (a *addrCache) matchRegexp(re *regexp.Regexp) bool {
 		return true
 	}
 	for _, name := range a.reverseDNSNames() {
-		if re.MatchString(name) {
+		if matchDNSNameRegexp(re, name) {
 			return true
 		}
+	}
+	return false
+}
+
+func dnsNameEqual(name, want string) bool {
+	if name == want {
+		return true
+	}
+	if len(name) == len(want)+1 {
+		return len(want) > 0 && want[len(want)-1] != '.' &&
+			name[len(want)] == '.' && name[:len(want)] == want
+	}
+	if len(want) == len(name)+1 {
+		return len(name) > 0 && name[len(name)-1] != '.' &&
+			want[len(name)] == '.' && want[:len(name)] == name
+	}
+	return false
+}
+
+func matchDNSNameRegexp(re *regexp.Regexp, name string) bool {
+	if re.MatchString(name) {
+		return true
+	}
+	if len(name) > 1 && name[len(name)-1] == '.' &&
+		name[len(name)-2] != '.' {
+		return re.MatchString(name[:len(name)-1])
+	}
+	if name != "" && !strings.HasSuffix(name, ".") {
+		return re.MatchString(name + ".")
 	}
 	return false
 }

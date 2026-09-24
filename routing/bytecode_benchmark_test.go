@@ -147,6 +147,48 @@ func BenchmarkBytecodeSplitRouterRouteDNSCacheHit(b *testing.B) {
 	benchmarkRouteSlot = slot
 }
 
+func BenchmarkBytecodeSplitRouterRouteDNSCacheTrailingDotVariants(
+	b *testing.B,
+) {
+	tests := []struct {
+		name   string
+		stored string
+		rule   string
+	}{
+		{name: "same relative", stored: "dst.test", rule: "dst.test"},
+		{name: "same absolute", stored: "dst.test.", rule: "dst.test."},
+		{name: "stored absolute", stored: "dst.test.", rule: "dst.test"},
+		{name: "rule absolute", stored: "dst.test", rule: "dst.test."},
+	}
+	for _, tt := range tests {
+		b.Run(tt.name, func(b *testing.B) {
+			storage := gdns.NewMemoryStorage()
+			setTestPTR(storage, "192.0.2.2", tt.stored)
+			router := newBenchmarkSplitRouter(b, SplitBytecodeRules{
+				System:          &sysnetdebug.System{},
+				Strings:         []string{tt.rule},
+				DNSCacheStorage: storage,
+				RouteCacheTTL:   -1,
+				Route:           slotWhen(param16(OP_ADDR_S, 0), 8),
+			})
+			pkt := ipv4TCPPacket(
+				[4]byte{10, 0, 0, 1},
+				[4]byte{192, 0, 2, 2},
+				12345,
+				443,
+			)
+
+			b.ReportAllocs()
+			b.ResetTimer()
+			var slot int
+			for b.Loop() {
+				slot = router.Route(pkt, 0, false)
+			}
+			benchmarkRouteSlot = slot
+		})
+	}
+}
+
 func BenchmarkBytecodeSplitRouterRouteDNSCacheMiss(b *testing.B) {
 	router := newBenchmarkSplitRouter(b, SplitBytecodeRules{
 		System:          &sysnetdebug.System{},

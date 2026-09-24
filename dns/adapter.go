@@ -94,7 +94,11 @@ func (r *ResolverProvider) lookup(
 		ips, err := r.resolver.LookupIP(ctx, "ip6", name)
 		return ipResources(q.Name, TypeAAAA, r.ttl, ips), err
 	case TypePTR:
-		names, err := r.resolver.LookupAddr(ctx, name)
+		addr, err := addrFromReverseName(name)
+		if err != nil {
+			return nil, err
+		}
+		names, err := r.resolver.LookupAddr(ctx, addr)
 		return nameResources(q.Name, TypePTR, r.ttl, names), err
 	case TypeCNAME:
 		cname, err := r.resolver.LookupCNAME(ctx, name)
@@ -124,7 +128,60 @@ type notImplementedError struct{}
 
 func (notImplementedError) Error() string { return "not implemented" }
 
+type formatError struct {
+	name string
+}
+
+func (e formatError) Error() string {
+	return "invalid reverse DNS name: " + e.name
+}
+
+func addrFromReverseName(name string) (string, error) {
+	labels := strings.Split(name, ".")
+	if len(labels) == 6 &&
+		strings.EqualFold(labels[4], "in-addr") &&
+		strings.EqualFold(labels[5], "arpa") {
+		var octets [4]byte
+		for i := range octets {
+			octet, err := strconv.ParseUint(labels[3-i], 10, 8)
+			if err != nil || strconv.FormatUint(octet, 10) != labels[3-i] {
+				return "", formatError{name: name}
+			}
+			octets[i] = byte(octet)
+		}
+		return netip.AddrFrom4(octets).String(), nil
+	}
+
+	if len(labels) == 34 &&
+		strings.EqualFold(labels[32], "ip6") &&
+		strings.EqualFold(labels[33], "arpa") {
+		var bytes [16]byte
+		for i := range 32 {
+			if len(labels[i]) != 1 {
+				return "", formatError{name: name}
+			}
+			nibble, err := strconv.ParseUint(labels[i], 16, 4)
+			if err != nil {
+				return "", formatError{name: name}
+			}
+			nibbleIndex := 31 - i
+			shift := uint(0)
+			if nibbleIndex%2 == 0 {
+				shift = 4
+			}
+			bytes[nibbleIndex/2] |= byte(nibble) << shift
+		}
+		return netip.AddrFrom16(bytes).String(), nil
+	}
+
+	return "", formatError{name: name}
+}
+
 func errRCode(err error) uint8 {
+	var malformed formatError
+	if errors.As(err, &malformed) {
+		return RCodeFormatError
+	}
 	var notImplemented notImplementedError
 	if errors.As(err, &notImplemented) {
 		return RCodeNotImplemented

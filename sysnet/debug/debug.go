@@ -28,15 +28,55 @@ const (
 var (
 	// DefaultRules lists the process-owner rule types commonly exposed by
 	// sysnet implementations.
-	DefaultRules = []sysnet.RuleTypeInfo{
-		{Type: "comm", Description: "Process command regexp matcher."},
-		{Type: "exec", Description: "Process executable path matcher."},
-		{Type: "cmd", Description: "Process command line regexp matcher."},
-		{Type: "pid", Description: "Process PID."},
-		{Type: "user", Description: "Name of user owning process."},
-		{Type: "uid", Description: "UID owning process."},
-		{Type: "group", Description: "Name of group owning process."},
-		{Type: "gid", Description: "GID owning process."},
+	DefaultRules = []sysnet.RuleCapability{
+		{
+			Type:        "comm",
+			Description: "Process command regexp matcher.",
+			ValueKind:   sysnet.RuleValueRegex,
+			SemanticsID: "debug.command-regexp.v1",
+		},
+		{
+			Type:        "exec",
+			Description: "Process executable path matcher.",
+			ValueKind:   sysnet.RuleValuePath,
+			SemanticsID: "debug.executable-path.v1",
+		},
+		{
+			Type:        "cmd",
+			Description: "Process command line regexp matcher.",
+			ValueKind:   sysnet.RuleValueRegex,
+			SemanticsID: "debug.command-line-regexp.v1",
+		},
+		{
+			Type:        "pid",
+			Description: "Process PID.",
+			ValueKind:   sysnet.RuleValuePID,
+			SemanticsID: "debug.pid.v1",
+		},
+		{
+			Type:        "user",
+			Description: "Name of user owning process.",
+			ValueKind:   sysnet.RuleValueName,
+			SemanticsID: "debug.user-name.v1",
+		},
+		{
+			Type:        "uid",
+			Description: "UID owning process.",
+			ValueKind:   sysnet.RuleValueOpaque,
+			SemanticsID: "debug.uid.v1",
+		},
+		{
+			Type:        "group",
+			Description: "Name of group owning process.",
+			ValueKind:   sysnet.RuleValueName,
+			SemanticsID: "debug.group-name.v1",
+		},
+		{
+			Type:        "gid",
+			Description: "GID owning process.",
+			ValueKind:   sysnet.RuleValueOpaque,
+			SemanticsID: "debug.gid.v1",
+		},
 	}
 )
 
@@ -45,6 +85,10 @@ var _ dns.Interface = (*System)(nil)
 
 // TunConfig is a snapshot of the tun options recorded by System.
 type TunConfig struct {
+	// Name is the requested device name. It is empty when the backend selected
+	// the name.
+	Name string
+
 	// MTU is the tun MTU after System defaulting has been applied.
 	MTU int
 
@@ -90,82 +134,78 @@ type TunEntry struct {
 }
 
 type tunEntry struct {
-	name       string
-	tun        tun.Tun
-	peer       tun.Tun
-	defaultTun bool
-	config     TunConfig
+	name          string
+	tun           tun.Tun
+	peer          tun.Tun
+	defaultTun    bool
+	config        TunConfig
+	revision      uint64
+	operations    []sysnet.OperationCapability
+	operationsSet bool
 }
 
 // System is an in-memory sysnet.System implementation intended for tests.
 //
-// The zero value is ready to use. By default it reports every sysnet feature as
-// supported, creates pipe-backed tun devices, exposes loopback networks for
-// OutNet and LocalNet, accepts every rule, and matches no flows. Tests can
-// provide only the public fields that matter for the behavior under test and
-// leave all other fields omitted.
+// The zero value is ready to use. Its default catalog reports the implemented
+// mock operations as available. It creates pipe-backed TUN devices, exposes
+// loopback networks for OutNet and LocalNet, publishes DefaultRules, and
+// matches no flows. Tests can set only the public fields that they need.
 //
 // This makes System useful as a focused test double for code that requires a
 // sysnet.System implementation. For example, pass &sysnetdebug.System{} to the
-// code under test, set Disable* fields to exercise unsupported-feature paths,
-// install verifier or builder functions to assert requested options, or inspect
-// GetTunPeer and GetDefaultTunPeer to observe created virtual tun devices.
+// code under test, set Disable* fields to exercise unsupported paths, install
+// check or builder functions to inspect options, or use GetTunPeer and
+// GetDefaultTunPeer to observe virtual TUN devices.
+//
+// Set public configuration fields before concurrent use. Use
+// SetCapabilityReport for race-free capability updates at run time.
 type System struct {
-	// DisableTun makes Features report regular tun creation as unsupported and
-	// makes VerifyTunOpts and BuildTun return sysnet.ErrNotSupported.
+	// DisableTun makes regular TUN creation unsupported.
 	DisableTun bool
 
-	// DisableDefaultTun makes Features report default tun creation as
-	// unsupported and makes VerifyDefaultTunOpts and BuildDefaultTun return
-	// sysnet.ErrNotSupported.
+	// DisableDefaultTun makes default TUN creation unsupported.
 	DisableDefaultTun bool
 
-	// DisableDynTun makes Features report dynamic regular tun updates as
-	// unsupported. It is informational; setter methods still update the in-memory
-	// state so tests can decide which behavior they need to assert.
+	// DisableDynTun makes dynamic regular TUN operations unsupported. Setter and
+	// getter methods return sysnet.ErrNotSupported through a validation error.
 	DisableDynTun bool
 
-	// DisableDynDefaultTun makes Features report dynamic default tun updates as
-	// unsupported.
+	// DisableDynDefaultTun makes dynamic default-TUN operations unsupported.
 	DisableDynDefaultTun bool
 
-	// DisableTunNames makes Features report regular tun naming as unsupported
-	// and makes SetTunName return sysnet.ErrNotSupported.
+	// DisableTunNames makes creation-time names and rename unsupported for
+	// regular TUN devices.
 	DisableTunNames bool
 
-	// DisableDefaultTunNames makes Features report default tun naming as
-	// unsupported.
+	// DisableDefaultTunNames makes creation-time names and rename unsupported for
+	// default TUN devices.
 	DisableDefaultTunNames bool
 
-	// DisableStrictMode makes Features report default tun strict mode as
-	// unsupported.
+	// DisableStrictMode makes strict routing profiles unsupported.
 	DisableStrictMode bool
 
-	// DisableDefaultTunSourceRoutes makes Features report default tun source
-	// routes as unsupported. VerifyDefaultTunOpts and BuildDefaultTun reject a
-	// non-empty source-route list while this field is set.
+	// DisableDefaultTunSourceRoutes makes default-TUN source routes unsupported.
 	DisableDefaultTunSourceRoutes bool
 
-	// Rules is the optional rule catalog returned by ListRules for both tun
-	// rules and matcher rules. Leave it nil when the test does not care about
-	// advertised rule types.
-	Rules []sysnet.RuleTypeInfo
+	// Rules replaces the default rule catalog. Leave it nil to use DefaultRules.
+	// Configure this field before the System is first used.
+	Rules []sysnet.RuleCapability
 
 	// RuleMatcher is an optional hook used by matchers created with
 	// BuildMatcher. When omitted, matchers return false, nil.
 	RuleMatcher func(rule sysnet.Rule, flow sockowner.FlowTuple) (bool, error)
 
-	// RuleVerifyer is an optional hook used by RuleVerify. When omitted, every
-	// rule is considered valid.
-	RuleVerifyer func(rule sysnet.Rule) bool
+	// CheckRuleHook adds context-aware validation issues after capability
+	// checks. Configure it before concurrent use.
+	CheckRuleHook func(sysnet.Rule, sysnet.RuleContext) sysnet.ValidationReport
 
-	// RuleCompletion is an optional hook used by RuleCompl. When omitted, no
-	// completion suggestions are returned.
-	RuleCompletion func(rule sysnet.Rule) []string
+	// CompleteRuleHook can inspect the exact completion context and return a
+	// native error.
+	CompleteRuleHook func(sysnet.Rule, sysnet.RuleContext) ([]string, error)
 
-	// TunNameVerifyer is an optional hook used by TunNameVerify and SetTunName.
+	// TunNameChecker is an optional hook used by option checks and SetTunName.
 	// When omitted, any non-empty free name is valid.
-	TunNameVerifyer func(name string) (valid bool)
+	TunNameChecker func(name string) (valid bool)
 
 	// OutDNSProvider is an optional DNS provider returned by OutDNS. When
 	// omitted, OutDNS uses StaticDNS through an in-memory resolver.
@@ -183,10 +223,9 @@ type System struct {
 	// System returns a loopback network that allows any host.
 	LocalNetwork gonnect.Network
 
-	// DefaultTunOptsVerifyer is an optional hook used by VerifyDefaultTunOpts and
-	// BuildDefaultTun. Use it in tests to assert or reject requested default tun
-	// options.
-	DefaultTunOptsVerifyer func(opts sysnet.DefaultTunOpts) error
+	// CheckDefaultTunOptsHook adds validation issues after built-in checks.
+	// Configure it before concurrent use.
+	CheckDefaultTunOptsHook func(sysnet.DefaultTunOpts) sysnet.ValidationReport
 
 	// DefaultTunBuilder is an optional hook used by BuildDefaultTun to provide a
 	// custom tun implementation. When omitted, System creates an in-memory pipe
@@ -197,9 +236,9 @@ type System struct {
 	// When omitted, DefaultTunWarnings returns nil.
 	DefaultTunWarningsHook func(sysnet.DefaultTun) []sysnet.Warning
 
-	// TunOptsVerifyer is an optional hook used by VerifyTunOpts and BuildTun. Use
-	// it in tests to assert or reject requested regular tun options.
-	TunOptsVerifyer func(opts sysnet.TunOpts) error
+	// CheckTunOptsHook adds validation issues after built-in checks. Configure it
+	// before concurrent use.
+	CheckTunOptsHook func(sysnet.TunOpts) sysnet.ValidationReport
 
 	// TunBuilder is an optional hook used by BuildTun to provide a custom tun
 	// implementation. When omitted, System creates an in-memory pipe and exposes
@@ -209,6 +248,10 @@ type System struct {
 	// TunWarningsHook is an optional hook used by TunWarnings. When omitted,
 	// TunWarnings returns nil.
 	TunWarningsHook func(tun.Tun) []sysnet.Warning
+
+	// SetDNSHook runs before a default TUN changes its DNS provider. A returned
+	// error leaves the current provider unchanged.
+	SetDNSHook func(dns.Interface) error
 
 	mu sync.Mutex
 
@@ -224,6 +267,10 @@ type System struct {
 
 	dnsCh   chan dns.Request
 	dnsDone chan struct{}
+
+	capabilities         sysnet.CapabilityReport
+	capabilitiesSet      bool
+	explicitCapabilities bool
 }
 
 // Close closes every tun created by System and stops DNS request routing.
@@ -235,7 +282,16 @@ func (s *System) Close() error {
 		return nil
 	}
 
+	currentReport := s.capabilityReportLocked()
+	openReport := currentReport.Clone()
 	s.closed = true
+	markReportClosed(&currentReport)
+	if !sameCapabilityContents(openReport, currentReport) {
+		currentReport.Revision++
+	}
+	s.capabilities = currentReport
+	s.capabilitiesSet = true
+	s.explicitCapabilities = true
 	entries := make([]*tunEntry, 0, len(s.tuns))
 	for _, entry := range s.tuns {
 		entries = append(entries, entry)
@@ -254,20 +310,6 @@ func (s *System) Close() error {
 		err = errors.Join(err, closeTunEntry(entry))
 	}
 	return err
-}
-
-// Features reports the sysnet feature set described by the Disable* fields.
-func (s *System) Features() sysnet.Features {
-	return sysnet.Features{
-		Tun:                    !s.DisableTun,
-		DefaultTun:             !s.DisableDefaultTun,
-		DynTun:                 !s.DisableDynTun,
-		DynDefaultTun:          !s.DisableDynDefaultTun,
-		TunNames:               !s.DisableTunNames,
-		DefaultTunNames:        !s.DisableDefaultTunNames,
-		StrictMode:             !s.DisableStrictMode,
-		DefaultTunSourceRoutes: !s.DisableDefaultTunSourceRoutes,
-	}
 }
 
 // AllocIP returns the shared in-memory IP allocator for this System.
@@ -292,53 +334,6 @@ func (s *System) AllocSubnet() subnet.SubnetAllocator {
 	}
 
 	return s.alloc
-}
-
-// ListRules returns Rules for both tun rule and matcher rule support.
-func (s *System) ListRules() sysnet.RulesInfo {
-	return sysnet.RulesInfo{
-		TunRules:     copySlice(s.Rules),
-		MatcherRules: copySlice(s.Rules),
-	}
-}
-
-// RuleVerify validates rule using RuleVerifyer, or accepts it when no hook is
-// configured.
-func (s *System) RuleVerify(rule sysnet.Rule) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.RuleVerifyer != nil {
-		return s.RuleVerifyer(rule)
-	}
-
-	return true
-}
-
-// RuleCompl returns completion suggestions from RuleCompletion, or nil when no
-// hook is configured.
-func (s *System) RuleCompl(rule sysnet.Rule) []string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.RuleCompletion != nil {
-		return s.RuleCompletion(rule)
-	}
-
-	return nil
-}
-
-// TunNameVerify reports whether name is valid and not already used by this
-// System.
-func (s *System) TunNameVerify(name string) (valid bool, free bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.TunNameVerifyer != nil {
-		return s.TunNameVerifyer(name), s.tunNameFreeLocked(name)
-	}
-
-	return name != "", s.tunNameFreeLocked(name)
 }
 
 // OutDNS returns the DNS provider used for traffic that should bypass a default
@@ -391,41 +386,37 @@ func (s *System) LocalNet() gonnect.Network {
 // BuildMatcher builds a matcher for rule. The matcher delegates to RuleMatcher,
 // or matches nothing when RuleMatcher is omitted.
 func (s *System) BuildMatcher(rule sysnet.Rule) (sysnet.Matcher, error) {
+	s.mu.Lock()
+	report := s.capabilityReportLocked()
+	ruleCapability := report.Rule(rule.Type)
+	usable := ruleCapability.Validation.State == sysnet.CapabilityAvailable ||
+		ruleCapability.Validation.State == sysnet.CapabilityUnknown
+	failure := ruleCapability.Validation
+	if usable && len(ruleCapability.Matchers) != 0 {
+		usable = false
+		failure = sysnet.Capability{State: sysnet.CapabilityUnknown}
+		for _, profile := range ruleCapability.Matchers {
+			if profile.State == sysnet.CapabilityAvailable ||
+				profile.State == sysnet.CapabilityUnknown {
+				usable = true
+				break
+			}
+			if profile.State == sysnet.CapabilityUnavailable ||
+				(failure.State != sysnet.CapabilityUnavailable && profile.State == sysnet.CapabilityUnsupported) {
+				failure = profile.Capability
+			}
+		}
+	}
+	s.mu.Unlock()
+	if !usable {
+		validation := sysnet.ValidationReport{}
+		appendCapabilityIssue(&validation, "Type", failure)
+		return nil, validation.Err()
+	}
 	return &matcher{
 		system: s,
 		rule:   rule,
 	}, nil
-}
-
-// VerifyDefaultTunOpts validates opts for BuildDefaultTun. It validates source
-// routes, returns sysnet.ErrNotSupported for disabled features, and then
-// delegates to DefaultTunOptsVerifyer when provided.
-func (s *System) VerifyDefaultTunOpts(opts sysnet.DefaultTunOpts) error {
-	opts = opts.Copy()
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	_, err := s.normalizeDefaultTunOptsLocked(opts)
-	return err
-}
-
-// VerifyTunOpts validates opts for BuildTun. It returns sysnet.ErrNotSupported
-// when DisableTun is set, delegates to TunOptsVerifyer when provided, and
-// otherwise accepts opts.
-func (s *System) VerifyTunOpts(opts sysnet.TunOpts) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.DisableTun {
-		return sysnet.ErrNotSupported
-	}
-
-	if s.TunOptsVerifyer != nil {
-		return s.TunOptsVerifyer(opts)
-	}
-
-	return nil
 }
 
 // DefaultTunWarnings returns current warnings for an active default tun created
@@ -478,27 +469,25 @@ func (s *System) BuildDefaultTun(
 	if s.closed {
 		return nil, net.ErrClosed
 	}
+	if err := validationErrorForBuild(
+		s.checkDefaultTunOptsLocked(opts),
+	); err != nil {
+		return nil, err
+	}
 	var err error
 	opts, err = s.normalizeDefaultTunOptsLocked(opts)
 	if err != nil {
 		return nil, err
 	}
 
-	if s.defaultTun != "" {
-		entry := s.tuns[s.defaultTun]
-		if entry == nil {
-			s.defaultTun = ""
-		} else {
-			entry.config = defaultTunConfig(opts)
-			s.dns = nil
-			if dtun, ok := entry.tun.(*defaultTunWrapper); ok {
-				return dtun, nil
-			}
-			return nil, sysnet.ErrUnknownTun
-		}
+	if existing, handled, err := s.reconfigureDefaultTunLocked(opts); handled {
+		return existing, err
 	}
 
-	name := s.nextTunNameLocked(defaultTunName)
+	name := opts.Name
+	if name == "" {
+		name = s.nextTunNameLocked(defaultTunName)
+	}
 	base, peer, err := s.buildDefaultTunLocked(opts)
 	if err != nil {
 		return nil, err
@@ -508,6 +497,7 @@ func (s *System) BuildDefaultTun(
 		name:       name,
 		defaultTun: true,
 		config:     defaultTunConfig(opts),
+		revision:   1,
 	}
 	wrapper := &defaultTunWrapper{
 		tunWrapper: &tunWrapper{
@@ -532,6 +522,71 @@ func (s *System) BuildDefaultTun(
 	return wrapper, nil
 }
 
+func (s *System) reconfigureDefaultTunLocked(
+	opts sysnet.DefaultTunOpts,
+) (sysnet.DefaultTun, bool, error) {
+	if s.defaultTun == "" {
+		return nil, false, nil
+	}
+	entry := s.tuns[s.defaultTun]
+	if entry == nil {
+		s.defaultTun = ""
+		return nil, false, nil
+	}
+
+	family, _ := optionFamily(opts.TunAddrs, opts.TunRoutes)
+	if family == sysnet.FamilyNone {
+		family = sysnet.FamilyIPv4
+	}
+	key := sysnet.OperationKey{
+		Target:    sysnet.TargetDefaultTun,
+		Operation: sysnet.OpReconfigureInPlace,
+		Family:    family,
+	}
+	if err := s.operationErrorLocked(entry, key); err != nil {
+		return nil, true, err
+	}
+	if err := s.renameDefaultTunEntryLocked(entry, opts.Name); err != nil {
+		return nil, true, err
+	}
+
+	entry.config = defaultTunConfig(opts)
+	s.dns = nil
+	defaultTun, ok := entry.tun.(*defaultTunWrapper)
+	if !ok {
+		return nil, true, sysnet.ErrUnknownTun
+	}
+	return defaultTun, true, nil
+}
+
+func (s *System) renameDefaultTunEntryLocked(
+	entry *tunEntry,
+	name string,
+) error {
+	if name == "" || name == entry.name {
+		return nil
+	}
+	key := sysnet.OperationKey{
+		Target:    sysnet.TargetDefaultTun,
+		Operation: sysnet.OpRename,
+		Family:    sysnet.FamilyNone,
+	}
+	if err := s.operationErrorLocked(entry, key); err != nil {
+		return err
+	}
+	if valid, free := s.tunNameVerifyLocked(name); !valid || !free {
+		return fmt.Errorf(
+			"%w: invalid or occupied TUN name",
+			sysnet.ErrInvalidOptions,
+		)
+	}
+	delete(s.tuns, entry.name)
+	entry.name = name
+	s.tuns[entry.name] = entry
+	s.defaultTun = entry.name
+	return nil
+}
+
 // BuildTun creates a regular tun for this System.
 //
 // With the default configuration it creates an in-memory pipe-backed tun and
@@ -539,25 +594,30 @@ func (s *System) BuildDefaultTun(
 // TunBuilder is set, the custom builder supplies the tun and no peer is
 // recorded.
 func (s *System) BuildTun(opts sysnet.TunOpts) (tun.Tun, error) {
+	opts = opts.Copy()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.closed {
 		return nil, net.ErrClosed
 	}
-	if err := s.verifyTunOptsLocked(opts); err != nil {
+	if err := validationErrorForBuild(s.checkTunOptsLocked(opts)); err != nil {
 		return nil, err
 	}
 
-	name := s.nextTunNameLocked("tun")
+	name := opts.Name
+	if name == "" {
+		name = s.nextTunNameLocked("tun")
+	}
 	base, peer, err := s.buildTunLocked(opts)
 	if err != nil {
 		return nil, err
 	}
 
 	entry := &tunEntry{
-		name:   name,
-		config: tunConfig(opts),
+		name:     name,
+		config:   tunConfig(opts),
+		revision: 1,
 	}
 	entry.tun = &tunWrapper{
 		system: s,
@@ -586,6 +646,16 @@ func (s *System) SetTunMTU(t tun.Tun, mtu int) error {
 	if entry == nil {
 		return sysnet.ErrUnknownTun
 	}
+	if err := s.operationErrorLocked(
+		entry,
+		sysnet.OperationKey{
+			Target:    entry.target(),
+			Operation: sysnet.OpSetMTU,
+			Family:    sysnet.FamilyNone,
+		},
+	); err != nil {
+		return err
+	}
 	entry.config.MTU = normalizeMTU(mtu)
 	return nil
 }
@@ -598,6 +668,24 @@ func (s *System) SetTunAddrs(t tun.Tun, addrs []string) error {
 	entry := s.tunEntryLocked(t)
 	if entry == nil {
 		return sysnet.ErrUnknownTun
+	}
+	family := configFamily(entry.config)
+	if len(addrs) != 0 {
+		var issues []sysnet.ValidationIssue
+		family, issues = optionFamily(addrs, nil)
+		if len(issues) != 0 {
+			return sysnet.ValidationReport{Issues: issues}.Err()
+		}
+	}
+	if err := s.operationErrorLocked(
+		entry,
+		sysnet.OperationKey{
+			Target:    entry.target(),
+			Operation: sysnet.OpSetAddresses,
+			Family:    family,
+		},
+	); err != nil {
+		return err
 	}
 	entry.config.TunAddrs = copySlice(addrs)
 	return nil
@@ -613,6 +701,22 @@ func (s *System) AddTunAddr(t tun.Tun, addr string) error {
 	if entry == nil {
 		return sysnet.ErrUnknownTun
 	}
+	family, issues := optionFamily([]string{addr}, nil)
+	if len(issues) != 0 || family == sysnet.FamilyNone {
+		return sysnet.ValidationReport{
+			Issues: issuesOrInvalid(issues, "addr must be a valid prefix"),
+		}.Err()
+	}
+	if err := s.operationErrorLocked(
+		entry,
+		sysnet.OperationKey{
+			Target:    entry.target(),
+			Operation: sysnet.OpAddAddress,
+			Family:    family,
+		},
+	); err != nil {
+		return err
+	}
 	entry.config.TunAddrs = append(entry.config.TunAddrs, addr)
 	return nil
 }
@@ -626,6 +730,17 @@ func (s *System) GetTunAddrs(t tun.Tun) ([]string, error) {
 	if entry == nil {
 		return nil, sysnet.ErrUnknownTun
 	}
+	family := configFamily(entry.config)
+	if err := s.operationErrorLocked(
+		entry,
+		sysnet.OperationKey{
+			Target:    entry.target(),
+			Operation: sysnet.OpGetAddresses,
+			Family:    family,
+		},
+	); err != nil {
+		return nil, err
+	}
 	return copySlice(entry.config.TunAddrs), nil
 }
 
@@ -637,6 +752,24 @@ func (s *System) SetTunRoutes(t tun.Tun, routes []string) error {
 	entry := s.tunEntryLocked(t)
 	if entry == nil {
 		return sysnet.ErrUnknownTun
+	}
+	family := configFamily(entry.config)
+	if len(routes) != 0 {
+		var issues []sysnet.ValidationIssue
+		family, issues = optionFamily(nil, routes)
+		if len(issues) != 0 {
+			return sysnet.ValidationReport{Issues: issues}.Err()
+		}
+	}
+	if err := s.operationErrorLocked(
+		entry,
+		sysnet.OperationKey{
+			Target:    entry.target(),
+			Operation: sysnet.OpSetRoutes,
+			Family:    family,
+		},
+	); err != nil {
+		return err
 	}
 	entry.config.TunRoutes = copySlice(routes)
 	return nil
@@ -652,14 +785,28 @@ func (s *System) AddTunRoute(t tun.Tun, route string) error {
 	if entry == nil {
 		return sysnet.ErrUnknownTun
 	}
+	family, issues := optionFamily(nil, []string{route})
+	if len(issues) != 0 || family == sysnet.FamilyNone {
+		return sysnet.ValidationReport{
+			Issues: issuesOrInvalid(issues, "route must be a valid prefix"),
+		}.Err()
+	}
+	if err := s.operationErrorLocked(
+		entry,
+		sysnet.OperationKey{
+			Target:    entry.target(),
+			Operation: sysnet.OpAddRoute,
+			Family:    family,
+		},
+	); err != nil {
+		return err
+	}
 	entry.config.TunRoutes = append(entry.config.TunRoutes, route)
 	return nil
 }
 
-// GetTunRotue returns the recorded routes for a tun created by this System.
-//
-// The method name follows the sysnet.System interface spelling.
-func (s *System) GetTunRotue(t tun.Tun) ([]string, error) {
+// GetTunRoutes returns the recorded routes for a TUN created by this System.
+func (s *System) GetTunRoutes(t tun.Tun) ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -667,36 +814,58 @@ func (s *System) GetTunRotue(t tun.Tun) ([]string, error) {
 	if entry == nil {
 		return nil, sysnet.ErrUnknownTun
 	}
+	family := configFamily(entry.config)
+	if err := s.operationErrorLocked(
+		entry,
+		sysnet.OperationKey{
+			Target:    entry.target(),
+			Operation: sysnet.OpGetRoutes,
+			Family:    family,
+		},
+	); err != nil {
+		return nil, err
+	}
 	return copySlice(entry.config.TunRoutes), nil
 }
 
-// SetTunName renames a regular tun created by this System.
-//
-// Default tun handles and unknown tun handles return sysnet.ErrUnknownTun.
-// DisableTunNames makes this method return sysnet.ErrNotSupported.
-func (s *System) SetTunName(t tun.Tun, name string) ([]string, error) {
+// SetTunName renames a regular or default TUN created by this System.
+func (s *System) SetTunName(t tun.Tun, name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	entry := s.tunEntryLocked(t)
-	if entry == nil || entry.defaultTun {
-		return nil, sysnet.ErrUnknownTun
+	if entry == nil {
+		return sysnet.ErrUnknownTun
 	}
 	if name == entry.name {
-		return []string{name}, nil
+		return nil
 	}
-	if s.DisableTunNames {
-		return nil, sysnet.ErrNotSupported
+	if err := s.operationErrorLocked(
+		entry,
+		sysnet.OperationKey{
+			Target:    entry.target(),
+			Operation: sysnet.OpRename,
+			Family:    sysnet.FamilyNone,
+		},
+	); err != nil {
+		return err
 	}
 	if valid, free := s.tunNameVerifyLocked(name); !valid || !free {
-		return nil, sysnet.ErrUnknownTun
+		return fmt.Errorf(
+			"%w: invalid or occupied TUN name",
+			sysnet.ErrInvalidOptions,
+		)
 	}
 
 	oldName := entry.name
 	delete(s.tuns, oldName)
 	entry.name = name
+	entry.config.Name = name
 	s.tuns[name] = entry
-	return []string{name}, nil
+	if entry.defaultTun {
+		s.defaultTun = name
+	}
+	return nil
 }
 
 // GetTunPeer returns a snapshot of a regular tun entry by name.
@@ -736,7 +905,7 @@ func (s *System) GetDefaultTunPeer() (TunEntry, bool) {
 // implementation.
 //
 // Requests sent here are forwarded to the resolver most recently installed by
-// the current default tun's SetDns method. Requests are dropped while no default
+// the current default tun's SetDNS method. Requests are dropped while no default
 // tun DNS resolver is configured.
 func (s *System) Requests() chan<- dns.Request {
 	s.mu.Lock()
@@ -775,13 +944,6 @@ func (s *System) routeDNS(requests <-chan dns.Request, done <-chan struct{}) {
 func (s *System) normalizeDefaultTunOptsLocked(
 	opts sysnet.DefaultTunOpts,
 ) (sysnet.DefaultTunOpts, error) {
-	if s.DisableDefaultTun {
-		return sysnet.DefaultTunOpts{}, sysnet.ErrNotSupported
-	}
-	if len(opts.SourceRoutes) != 0 && s.DisableDefaultTunSourceRoutes {
-		return sysnet.DefaultTunOpts{}, sysnet.ErrNotSupported
-	}
-
 	var err error
 	opts.SourceRoutes, err = normalizeSourceRoutes(
 		opts.TunAddrs,
@@ -790,22 +952,7 @@ func (s *System) normalizeDefaultTunOptsLocked(
 	if err != nil {
 		return sysnet.DefaultTunOpts{}, err
 	}
-	if s.DefaultTunOptsVerifyer != nil {
-		if err := s.DefaultTunOptsVerifyer(opts.Copy()); err != nil {
-			return sysnet.DefaultTunOpts{}, err
-		}
-	}
 	return opts, nil
-}
-
-func (s *System) verifyTunOptsLocked(opts sysnet.TunOpts) error {
-	if s.DisableTun {
-		return sysnet.ErrNotSupported
-	}
-	if s.TunOptsVerifyer != nil {
-		return s.TunOptsVerifyer(opts)
-	}
-	return nil
 }
 
 func (s *System) buildDefaultTunLocked(
@@ -863,8 +1010,8 @@ func (s *System) tunNameFreeLocked(name string) bool {
 }
 
 func (s *System) tunNameVerifyLocked(name string) (bool, bool) {
-	if s.TunNameVerifyer != nil {
-		return s.TunNameVerifyer(name), s.tunNameFreeLocked(name)
+	if s.TunNameChecker != nil {
+		return s.TunNameChecker(name), s.tunNameFreeLocked(name)
 	}
 	return name != "", s.tunNameFreeLocked(name)
 }
@@ -921,6 +1068,7 @@ func closeBaseTun(t tun.Tun) error {
 
 func defaultTunConfig(opts sysnet.DefaultTunOpts) TunConfig {
 	return TunConfig{
+		Name:         opts.Name,
 		MTU:          normalizeMTU(opts.MTU),
 		TunAddrs:     copySlice(opts.TunAddrs),
 		TunRoutes:    copySlice(opts.TunRoutes),
@@ -934,6 +1082,7 @@ func defaultTunConfig(opts sysnet.DefaultTunOpts) TunConfig {
 
 func tunConfig(opts sysnet.TunOpts) TunConfig {
 	return TunConfig{
+		Name:      opts.Name,
 		MTU:       normalizeMTU(opts.MTU),
 		TunAddrs:  copySlice(opts.TunAddrs),
 		TunRoutes: copySlice(opts.TunRoutes),
@@ -959,6 +1108,7 @@ func (entry *tunEntry) snapshot() TunEntry {
 
 func (config TunConfig) copy() TunConfig {
 	return TunConfig{
+		Name:         config.Name,
 		MTU:          config.MTU,
 		TunAddrs:     copySlice(config.TunAddrs),
 		TunRoutes:    copySlice(config.TunRoutes),
@@ -1145,12 +1295,32 @@ type defaultTunWrapper struct {
 	*tunWrapper
 }
 
-func (t *defaultTunWrapper) SetDns(resolver dns.Interface) {
+func (t *defaultTunWrapper) SetDNS(resolver dns.Interface) error {
 	t.system.mu.Lock()
 	defer t.system.mu.Unlock()
 
 	if t.system.closed || t.system.tuns[t.entry.name] != t.entry {
-		return
+		return sysnet.ErrUnknownTun
+	}
+	family := configFamily(t.entry.config)
+	if family == sysnet.FamilyDual {
+		family = sysnet.FamilyIPv4
+	}
+	if err := t.system.operationErrorLocked(
+		t.entry,
+		sysnet.OperationKey{
+			Target:    sysnet.TargetDefaultTun,
+			Operation: sysnet.OpDNSProvider,
+			Family:    family,
+		},
+	); err != nil {
+		return err
+	}
+	if t.system.SetDNSHook != nil {
+		if err := t.system.SetDNSHook(resolver); err != nil {
+			return err
+		}
 	}
 	t.system.dns = resolver
+	return nil
 }

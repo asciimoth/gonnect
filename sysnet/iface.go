@@ -29,8 +29,8 @@ type TunSourceRoute struct {
 }
 
 var (
-	// ErrNotSupported should be used by System implementation when unsupported
-	// feature used.
+	// ErrNotSupported means that the backend does not implement the requested
+	// behavior.
 	ErrNotSupported = errors.New("feature is not supported")
 
 	ErrUnknownTun = errors.New("unknown tun")
@@ -50,33 +50,10 @@ const (
 // A Rule matches IP packets and connections to check if they are owned by a
 // specific process, user, application, or other entity.
 // For example: Type="app", Rule="org.mozilla.firefox".
-// Different System and System implementations may support different sets
-// of rule types, so callers should check System.ListRules first.
+// Different System implementations can support different rule types and use
+// contexts. Callers must inspect System.Capabilities and use CheckRule.
 type Rule struct {
 	Type, Rule string
-}
-
-// RuleTypeInfo describes a supported rule type and its human-readable description.
-type RuleTypeInfo struct {
-	Type, Description string
-}
-
-type RulesInfo struct {
-	// TunRules that can be used in Exclude or Include lists for DefaultTun.
-	TunRules []RuleTypeInfo
-
-	// Rules that can be used in Matchers.
-	MatcherRules []RuleTypeInfo
-}
-
-func (r *RulesInfo) Copy() RulesInfo {
-	rules := RulesInfo{
-		TunRules:     make([]RuleTypeInfo, len(r.TunRules)),
-		MatcherRules: make([]RuleTypeInfo, len(r.MatcherRules)),
-	}
-	copy(rules.TunRules, r.TunRules)
-	copy(rules.MatcherRules, r.MatcherRules)
-	return rules
 }
 
 // Matcher instance is constructed by a System from a Rule and matches
@@ -106,6 +83,10 @@ func MatchConn(c net.Conn, matcher Matcher) (bool, error) {
 
 // DefaultTunOpts specifies configuration options for building a DefaultTun
 type DefaultTunOpts struct {
+	// Name requests a specific device name. An empty name lets the backend
+	// select the name.
+	Name string
+
 	// TunAddrs specifies the addresses that should be owned by the TUN device,
 	// for example: "10.0.0.2/32".
 	// Loopback addrs passed here should be ignored.
@@ -156,6 +137,7 @@ type DefaultTunOpts struct {
 
 func (b *DefaultTunOpts) Copy() DefaultTunOpts {
 	c := DefaultTunOpts{
+		Name:   b.Name,
 		MTU:    b.MTU,
 		DnsIP:  b.DnsIP,
 		Strict: b.Strict,
@@ -191,6 +173,10 @@ func (b *DefaultTunOpts) Copy() DefaultTunOpts {
 
 // TunOpts specifies configuration options for building a regular Tun.
 type TunOpts struct {
+	// Name requests a specific device name. An empty name lets the backend
+	// select the name.
+	Name string
+
 	// TunAddrs specifies the addresses that should be owned by the TUN device,
 	// for example: "10.0.0.2/32".
 	// Loopback addrs passed here should be ignored.
@@ -207,12 +193,11 @@ type TunOpts struct {
 	MTU int
 }
 
-// Copy converts b into an independent DefaultTunOpts value. The copied value
-// contains the same addresses, routes, and MTU, but has empty Include and
-// Exclude rule lists.
-func (b *TunOpts) Copy() DefaultTunOpts {
-	c := DefaultTunOpts{
-		MTU: b.MTU,
+// Copy returns an independent copy of b.
+func (b *TunOpts) Copy() TunOpts {
+	c := TunOpts{
+		Name: b.Name,
+		MTU:  b.MTU,
 	}
 
 	if b.TunAddrs != nil {
@@ -237,62 +222,48 @@ func (b *TunOpts) Copy() DefaultTunOpts {
 type DefaultTun interface {
 	tun.Tun
 
-	// SetDns sets the current system DNS resolver owerwriting previous if there
-	// are one.
-	// When being called with nil arg, it should drop all incoming DNS requests.
+	// SetDNS sets the current system DNS resolver, replacing the previous
+	// resolver. A nil resolver stops managed DNS requests.
 	// After DefaultTun is closed, DNS configuration associated with it should be
-	// removed and system dns should be rolled back to configuration existed before
-	// DefaultTun creation.
-	SetDns(resolver dns.Interface)
+	// removed, and the previous system DNS configuration should be restored.
+	// Native resolver-change failures must be returned.
+	SetDNS(resolver dns.Interface) error
 }
 
-type Features struct {
-	// Can regular Tun (not DefaultTun) be built.
-	Tun bool
-	// Can DefaultTun be built.
-	DefaultTun bool
-	// Can Tun's options be updated without its re-built.
-	DynTun bool
-	// Can DefaultTun's options be updated without its re-built.
-	DynDefaultTun bool
-	// Are custom names supported for regular Tun (not DefaultTun).
-	TunNames bool
-	// Are custom names supported for DefaultTun.
-	DefaultTunNames bool
-	// Is Strict mode supported for DefaultTun.
-	StrictMode bool
-	// Can DefaultTun select a preferred local source address by destination.
-	DefaultTunSourceRoutes bool
-}
-
-// System constructs System instances for a specific platform.
+// System provides the networking operations for one platform integration.
 type System interface {
 	// System closing should lead to closing all Tun and Network instances
 	// created via it.
 	io.Closer
 
-	// Features report info about supported features
-	Features() Features
+	// Capabilities returns an independently owned snapshot of system
+	// capabilities. It does not change host state.
+	Capabilities() CapabilityReport
+
+	// CapabilitiesForTun returns an independently owned capability snapshot for
+	// a live TUN created by this System. It returns ErrUnknownTun for foreign,
+	// stale, or closed objects.
+	CapabilitiesForTun(tunDevice tun.Tun) (TunCapabilityReport, error)
+
+	// CheckTunOpts validates regular TUN options without changing host state.
+	CheckTunOpts(opts TunOpts) ValidationReport
+
+	// CheckDefaultTunOpts validates default-TUN options without changing host
+	// state.
+	CheckDefaultTunOpts(opts DefaultTunOpts) ValidationReport
+
+	// CheckRule validates a rule in one exact use context without changing host
+	// state.
+	CheckRule(rule Rule, context RuleContext) ValidationReport
+
+	// CompleteRule returns bounded completion suggestions for a rule in one
+	// exact use context.
+	CompleteRule(rule Rule, context RuleContext) ([]string, error)
 
 	// AllocIP returns an IP address allocator for the system.
 	AllocIP() subnet.IPAllocator
 	// AllocSubnet returns a subnet allocator for the system.
 	AllocSubnet() subnet.SubnetAllocator
-
-	// ListRules returns a list of supported rule types and their descriptions.
-	ListRules() RulesInfo
-
-	// RuleVerify checks whether a rule is valid for its specified type.
-	// This is intended for UI validation hints.
-	RuleVerify(rule Rule) bool
-
-	// RuleCompl returns autocompletion suggestions for a partial rule value,
-	// intended for UI use. For example: Type="app", Rule="org.mozilla.fir"
-	// might return []string{"org.mozilla.firefox"}.
-	RuleCompl(rule Rule) []string
-
-	// TunNameVerify checks whether provided name can be used as a Tun name.
-	TunNameVerify(name string) (valid bool, free bool)
 
 	// OutDNS is the interface for handling outgoing DNS requests.
 	// It should bypass any DefaultTun created via this System.
@@ -326,18 +297,15 @@ type System interface {
 	// a new one is created.
 	BuildDefaultTun(opts DefaultTunOpts) (DefaultTun, error)
 
-	VerifyDefaultTunOpts(opts DefaultTunOpts) error
-
 	// DefaultTunWarnings returns current warnings for a DefaultTun returned by
 	// this System. Unknown, stale, closed, or unsupported DefaultTun values
 	// should return nil.
 	DefaultTunWarnings(defaultTun DefaultTun) []Warning
 
 	// BuildTun constructs a tun.Tun instance with specified options.
-	// BuildTun may be not supported on some systems, check Features.
+	// BuildTun can be unsupported on some systems. Check the exact creation
+	// capability and validate the options before use.
 	BuildTun(opts TunOpts) (tun.Tun, error)
-
-	VerifyTunOpts(opts TunOpts) error
 
 	// TunWarnings returns current warnings for a regular Tun returned by this
 	// System. Unknown, stale, closed, or unsupported Tun values should return
@@ -381,18 +349,15 @@ type System interface {
 	// Dynamic Tun params update may not be available on some systems.
 	AddTunRoute(tun tun.Tun, route string) error
 
-	// GetTunRotue returns list off routes of provided Tun.
+	// GetTunRoutes returns the routes of the provided TUN.
 	// It should work only for Tuns built via this System instance. For others
 	// ErrUnknownTun should be returned.
 	// Dynamic Tun params fetching may not be available on some systems.
-	GetTunRotue(tun tun.Tun) ([]string, error)
+	GetTunRoutes(tun tun.Tun) ([]string, error)
 
 	// SetTunName updates name of provided Tun.
 	// It should work only for Tuns built via this System instance. For others
 	// ErrUnknownTun should be returned.
-	// SetTunName should not work with DefaultTun instances.
-	// Dynamic Tun params update may not be available on some systems.
-	// Also on some systems SetTunName may be available for regular Tuns but not
-	// for DefaultTun.
-	SetTunName(tun tun.Tun, name string) ([]string, error)
+	// Dynamic TUN parameter updates can differ between regular and default TUNs.
+	SetTunName(tun tun.Tun, name string) error
 }

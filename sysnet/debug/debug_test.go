@@ -38,12 +38,9 @@ func TestBuildTunPeerRenameAndClose(t *testing.T) {
 		)
 	}
 
-	names, err := system.SetTunName(tunDev, "renamed0")
+	err = system.SetTunName(tunDev, "renamed0")
 	if err != nil {
 		t.Fatalf("SetTunName error = %v", err)
-	}
-	if len(names) != 1 || names[0] != "renamed0" {
-		t.Fatalf("SetTunName names = %v, want [renamed0]", names)
 	}
 	name, err := tunDev.Name()
 	if err != nil {
@@ -89,7 +86,9 @@ func TestDefaultTunRebuildClearsDNSAndCloseRemovesEntry(t *testing.T) {
 	}
 
 	provider := newFakeDNS()
-	first.SetDns(provider)
+	if err := first.SetDNS(provider); err != nil {
+		t.Fatalf("SetDNS() error = %v", err)
+	}
 	second, err := system.BuildDefaultTun(sysnet.DefaultTunOpts{
 		MTU:       1200,
 		TunRoutes: []string{"0.0.0.0/0"},
@@ -120,7 +119,9 @@ func TestDefaultTunRebuildClearsDNSAndCloseRemovesEntry(t *testing.T) {
 		t.Fatalf("provider saw %d requests, want 0", provider.requestsSeen())
 	}
 
-	second.SetDns(provider)
+	if err := second.SetDNS(provider); err != nil {
+		t.Fatalf("SetDNS() error = %v", err)
+	}
 	reply = make(chan dns.Response, 1)
 	system.Requests() <- dns.Request{Context: context.Background(), Reply: reply}
 	select {
@@ -389,7 +390,7 @@ func TestWarningsHooksRequireCurrentMatchingTun(t *testing.T) {
 	}
 }
 
-func TestSystemFeatureHooksAndCopies(t *testing.T) {
+func TestSystemCapabilityHooksAndCopies(t *testing.T) {
 	rule := sysnet.Rule{Type: "uid", Rule: "1000"}
 	system := &System{
 		DisableTun:                    true,
@@ -400,51 +401,93 @@ func TestSystemFeatureHooksAndCopies(t *testing.T) {
 		DisableDefaultTunNames:        true,
 		DisableStrictMode:             true,
 		DisableDefaultTunSourceRoutes: true,
-		Rules: []sysnet.RuleTypeInfo{{
+		Rules: []sysnet.RuleCapability{{
 			Type:        "uid",
 			Description: "user id",
+			ValueKind:   sysnet.RuleValueOpaque,
+			SemanticsID: "test.uid.v1",
 		}},
-		RuleVerifyer: func(got sysnet.Rule) bool {
-			return got == rule
-		},
-		RuleCompletion: func(got sysnet.Rule) []string {
-			if got != rule {
-				t.Fatalf("RuleCompl rule = %+v, want %+v", got, rule)
+		CheckRuleHook: func(got sysnet.Rule, _ sysnet.RuleContext) sysnet.ValidationReport {
+			if got == rule {
+				return sysnet.ValidationReport{}
 			}
-			return []string{"1000"}
+			return sysnet.ValidationReport{
+				Issues: []sysnet.ValidationIssue{
+					{
+						Path:  "Rule",
+						State: sysnet.CapabilityUnknown,
+						Err:   sysnet.ErrInvalidOptions,
+					},
+				},
+			}
 		},
-		TunNameVerifyer: func(name string) bool {
+		CompleteRuleHook: func(got sysnet.Rule, _ sysnet.RuleContext) ([]string, error) {
+			if got != rule {
+				t.Fatalf("CompleteRule rule = %+v, want %+v", got, rule)
+			}
+			return []string{"1000"}, nil
+		},
+		TunNameChecker: func(name string) bool {
 			return name == "tun0"
 		},
 	}
 
-	features := system.Features()
-	if features.Tun || features.DefaultTun || features.DynTun ||
-		features.DynDefaultTun || features.TunNames ||
-		features.DefaultTunNames || features.StrictMode ||
-		features.DefaultTunSourceRoutes {
-		t.Fatalf("Features() = %+v, want all disabled", features)
+	report := system.Capabilities()
+	create := report.Operation(
+		sysnet.OperationKey{
+			Target:    sysnet.TargetTun,
+			Operation: sysnet.OpCreate,
+			Family:    sysnet.FamilyNone,
+		},
+	)
+	if create.State != sysnet.CapabilityUnsupported {
+		t.Fatalf("create capability = %+v, want unsupported", create)
 	}
-	if !system.RuleVerify(rule) || system.RuleVerify(sysnet.Rule{Type: "uid"}) {
-		t.Fatal("RuleVerify() did not use hook")
-	}
-	if got := system.RuleCompl(rule); len(got) != 1 || got[0] != "1000" {
-		t.Fatalf("RuleCompl() = %v, want [1000]", got)
-	}
-
-	rules := system.ListRules()
-	rules.TunRules[0].Type = "changed"
-	if got := system.ListRules(); got.TunRules[0].Type != "uid" {
-		t.Fatalf("ListRules() returned aliased rules: %+v", got)
+	report.Rules[0].Type = "changed"
+	if got := system.Capabilities().Rules[0].Type; got != "uid" {
+		t.Fatalf("Capabilities() returned aliased rules: %q", got)
 	}
 
-	valid, free := system.TunNameVerify("tun0")
-	if !valid || !free {
-		t.Fatalf("TunNameVerify(tun0) = %v, %v", valid, free)
+	enabled := &System{
+		Rules:            system.Rules,
+		CheckRuleHook:    system.CheckRuleHook,
+		CompleteRuleHook: system.CompleteRuleHook,
+		TunNameChecker: func(name string) bool {
+			return name == "tun0"
+		},
 	}
-	valid, free = system.TunNameVerify("")
-	if valid || free {
-		t.Fatalf("TunNameVerify(empty) = %v, %v", valid, free)
+	matcherKey := sysnet.MatcherProfileKey{
+		Family:    sysnet.FamilyIPv4,
+		Transport: sysnet.TransportTCP,
+	}
+	context := sysnet.RuleContext{Matcher: &matcherKey}
+	if err := enabled.CheckRule(rule, context).Err(); err != nil {
+		t.Fatalf("CheckRule() error = %v", err)
+	}
+	if err := enabled.CheckRule(sysnet.Rule{Type: "uid"}, context).
+		Err(); !errors.Is(
+		err,
+		sysnet.ErrInvalidOptions,
+	) {
+		t.Fatalf("CheckRule(invalid) error = %v", err)
+	}
+	if got, err := enabled.CompleteRule(
+		rule,
+		context,
+	); err != nil || len(got) != 1 ||
+		got[0] != "1000" {
+		t.Fatalf("CompleteRule() = %v, %v; want [1000], nil", got, err)
+	}
+	if err := enabled.CheckTunOpts(sysnet.TunOpts{Name: "tun0"}).
+		Err(); err != nil {
+		t.Fatalf("CheckTunOpts(named) error = %v", err)
+	}
+	if err := enabled.CheckTunOpts(sysnet.TunOpts{Name: "blocked"}).
+		Err(); !errors.Is(
+		err,
+		sysnet.ErrInvalidOptions,
+	) {
+		t.Fatalf("CheckTunOpts(invalid name) error = %v", err)
 	}
 }
 
@@ -467,25 +510,12 @@ func TestSystemAllocatorsAndDefaultNetworks(t *testing.T) {
 func TestSystemDefaultHooksNetworksAndCloseBranches(t *testing.T) {
 	system := &System{}
 
-	if !system.RuleVerify(sysnet.Rule{}) {
-		t.Fatal("RuleVerify() default = false, want true")
+	if err := system.CheckDefaultTunOpts(sysnet.DefaultTunOpts{}).
+		Err(); err != nil {
+		t.Fatalf("CheckDefaultTunOpts() default error = %v", err)
 	}
-	if got := system.RuleCompl(sysnet.Rule{}); got != nil {
-		t.Fatalf("RuleCompl() default = %v, want nil", got)
-	}
-	valid, free := system.TunNameVerify("tun0")
-	if !valid || !free {
-		t.Fatalf(
-			"TunNameVerify(tun0) default = %v, %v; want true, true",
-			valid,
-			free,
-		)
-	}
-	if err := system.VerifyDefaultTunOpts(sysnet.DefaultTunOpts{}); err != nil {
-		t.Fatalf("VerifyDefaultTunOpts() default error = %v", err)
-	}
-	if err := system.VerifyTunOpts(sysnet.TunOpts{}); err != nil {
-		t.Fatalf("VerifyTunOpts() default error = %v", err)
+	if err := system.CheckTunOpts(sysnet.TunOpts{}).Err(); err != nil {
+		t.Fatalf("CheckTunOpts() default error = %v", err)
 	}
 
 	subnetAlloc := (&System{}).AllocSubnet()
@@ -621,18 +651,18 @@ func TestSystemTunSettersAndConfigCopies(t *testing.T) {
 	if err := system.AddTunRoute(tunDev, "192.0.2.0/24"); err != nil {
 		t.Fatalf("AddTunRoute() error = %v", err)
 	}
-	gotRoutes, err := system.GetTunRotue(tunDev)
+	gotRoutes, err := system.GetTunRoutes(tunDev)
 	if err != nil {
-		t.Fatalf("GetTunRotue() error = %v", err)
+		t.Fatalf("GetTunRoutes() error = %v", err)
 	}
 	gotRoutes[0] = "mutated"
-	gotRoutesAgain, err := system.GetTunRotue(tunDev)
+	gotRoutesAgain, err := system.GetTunRoutes(tunDev)
 	if err != nil {
-		t.Fatalf("GetTunRotue() second error = %v", err)
+		t.Fatalf("GetTunRoutes() second error = %v", err)
 	}
 	if len(gotRoutesAgain) != 2 || gotRoutesAgain[0] != "0.0.0.0/0" ||
 		gotRoutesAgain[1] != "192.0.2.0/24" {
-		t.Fatalf("GetTunRotue() = %v", gotRoutesAgain)
+		t.Fatalf("GetTunRoutes() = %v", gotRoutesAgain)
 	}
 
 	entry, ok := system.GetTunPeer("tun")
@@ -666,21 +696,17 @@ func TestSystemTunSetterUnknownAndRenameBranches(t *testing.T) {
 		t.Fatalf("second tun Name() = %q, %v; want tun-0, nil", name, err)
 	}
 
-	names, err := system.SetTunName(tunDev, "tun")
-	if err != nil || len(names) != 1 || names[0] != "tun" {
-		t.Fatalf("SetTunName(existing) = %v, %v; want [tun], nil", names, err)
+	if err := system.SetTunName(tunDev, "tun"); err != nil {
+		t.Fatalf("SetTunName(existing) = %v, want nil", err)
 	}
-	if _, err := system.SetTunName(
+	if err := system.SetTunName(
 		defaultTun,
 		"default-as-regular",
-	); !errors.Is(
-		err,
-		sysnet.ErrUnknownTun,
-	) {
-		t.Fatalf("SetTunName(default tun) = %v, want ErrUnknownTun", err)
+	); err != nil {
+		t.Fatalf("SetTunName(default tun) = %v, want nil", err)
 	}
 	system.DisableTunNames = true
-	if _, err := system.SetTunName(
+	if err := system.SetTunName(
 		tunDev,
 		"renamed",
 	); !errors.Is(
@@ -690,24 +716,24 @@ func TestSystemTunSetterUnknownAndRenameBranches(t *testing.T) {
 		t.Fatalf("SetTunName(disabled) = %v, want ErrNotSupported", err)
 	}
 	system.DisableTunNames = false
-	if _, err := system.SetTunName(
+	if err := system.SetTunName(
 		tunDev,
 		"tun-0",
 	); !errors.Is(
 		err,
-		sysnet.ErrUnknownTun,
+		sysnet.ErrInvalidOptions,
 	) {
-		t.Fatalf("SetTunName(duplicate) = %v, want ErrUnknownTun", err)
+		t.Fatalf("SetTunName(duplicate) = %v, want ErrInvalidOptions", err)
 	}
-	system.TunNameVerifyer = func(string) bool { return false }
-	if _, err := system.SetTunName(
+	system.TunNameChecker = func(string) bool { return false }
+	if err := system.SetTunName(
 		tunDev,
 		"blocked",
 	); !errors.Is(
 		err,
-		sysnet.ErrUnknownTun,
+		sysnet.ErrInvalidOptions,
 	) {
-		t.Fatalf("SetTunName(invalid) = %v, want ErrUnknownTun", err)
+		t.Fatalf("SetTunName(invalid) = %v, want ErrInvalidOptions", err)
 	}
 
 	if err := secondTun.Close(); err != nil {
@@ -757,13 +783,13 @@ func TestSystemTunSetterUnknownAndRenameBranches(t *testing.T) {
 	) {
 		t.Fatalf("AddTunRoute(closed) = %v, want ErrUnknownTun", err)
 	}
-	if _, err := system.GetTunRotue(
+	if _, err := system.GetTunRoutes(
 		secondTun,
 	); !errors.Is(
 		err,
 		sysnet.ErrUnknownTun,
 	) {
-		t.Fatalf("GetTunRotue(closed) = %v, want ErrUnknownTun", err)
+		t.Fatalf("GetTunRoutes(closed) = %v, want ErrUnknownTun", err)
 	}
 	if got, err := secondTun.MTU(); got != 0 || !errors.Is(err, os.ErrClosed) {
 		t.Fatalf("closed tun MTU() = %d, %v; want 0, os.ErrClosed", got, err)
@@ -777,30 +803,53 @@ func TestSystemTunSetterUnknownAndRenameBranches(t *testing.T) {
 		)
 	}
 
-	defaultTun.SetDns(newFakeDNS())
+	if err := defaultTun.SetDNS(newFakeDNS()); err != nil {
+		t.Fatalf("SetDNS() error = %v", err)
+	}
 	if err := defaultTun.Close(); err != nil {
 		t.Fatalf("default tun Close() error = %v", err)
 	}
-	defaultTun.SetDns(newFakeDNS())
+	if err := defaultTun.SetDNS(
+		newFakeDNS(),
+	); !errors.Is(
+		err,
+		sysnet.ErrUnknownTun,
+	) {
+		t.Fatalf("SetDNS(closed) error = %v, want ErrUnknownTun", err)
+	}
 }
 
 func TestSystemVerifyAndBuildFailures(t *testing.T) {
 	errVerify := errors.New("verify failed")
 	system := &System{
-		DefaultTunOptsVerifyer: func(sysnet.DefaultTunOpts) error {
-			return errVerify
+		CheckDefaultTunOptsHook: func(sysnet.DefaultTunOpts) sysnet.ValidationReport {
+			return sysnet.ValidationReport{
+				Issues: []sysnet.ValidationIssue{
+					{
+						State: sysnet.CapabilityUnknown,
+						Err:   errors.Join(sysnet.ErrInvalidOptions, errVerify),
+					},
+				},
+			}
 		},
-		TunOptsVerifyer: func(sysnet.TunOpts) error {
-			return errVerify
+		CheckTunOptsHook: func(sysnet.TunOpts) sysnet.ValidationReport {
+			return sysnet.ValidationReport{
+				Issues: []sysnet.ValidationIssue{
+					{
+						State: sysnet.CapabilityUnknown,
+						Err:   errors.Join(sysnet.ErrInvalidOptions, errVerify),
+					},
+				},
+			}
 		},
 	}
-	if err := system.VerifyDefaultTunOpts(
+	if err := system.CheckDefaultTunOpts(
 		sysnet.DefaultTunOpts{},
-	); !errors.Is(
+	).Err(); !errors.Is(
 		err,
 		errVerify,
 	) {
-		t.Fatalf("VerifyDefaultTunOpts() error = %v, want %v", err, errVerify)
+		t.Fatalf("CheckDefaultTunOpts() error = %v, want %v", err, errVerify)
 	}
 	if _, err := system.BuildDefaultTun(
 		sysnet.DefaultTunOpts{},
@@ -810,26 +859,26 @@ func TestSystemVerifyAndBuildFailures(t *testing.T) {
 	) {
 		t.Fatalf("BuildDefaultTun() error = %v, want %v", err, errVerify)
 	}
-	if err := system.VerifyTunOpts(
+	if err := system.CheckTunOpts(
 		sysnet.TunOpts{},
-	); !errors.Is(
+	).Err(); !errors.Is(
 		err,
 		errVerify,
 	) {
-		t.Fatalf("VerifyTunOpts() error = %v, want %v", err, errVerify)
+		t.Fatalf("CheckTunOpts() error = %v, want %v", err, errVerify)
 	}
 	if _, err := system.BuildTun(sysnet.TunOpts{}); !errors.Is(err, errVerify) {
 		t.Fatalf("BuildTun() error = %v, want %v", err, errVerify)
 	}
 
 	system = &System{DisableDefaultTun: true, DisableTun: true}
-	if err := system.VerifyDefaultTunOpts(
+	if err := system.CheckDefaultTunOpts(
 		sysnet.DefaultTunOpts{},
-	); !errors.Is(
+	).Err(); !errors.Is(
 		err,
 		sysnet.ErrNotSupported,
 	) {
-		t.Fatalf("VerifyDefaultTunOpts(disabled) = %v", err)
+		t.Fatalf("CheckDefaultTunOpts(disabled) = %v", err)
 	}
 	if _, err := system.BuildDefaultTun(
 		sysnet.DefaultTunOpts{},
@@ -839,13 +888,13 @@ func TestSystemVerifyAndBuildFailures(t *testing.T) {
 	) {
 		t.Fatalf("BuildDefaultTun(disabled) = %v", err)
 	}
-	if err := system.VerifyTunOpts(
+	if err := system.CheckTunOpts(
 		sysnet.TunOpts{},
-	); !errors.Is(
+	).Err(); !errors.Is(
 		err,
 		sysnet.ErrNotSupported,
 	) {
-		t.Fatalf("VerifyTunOpts(disabled) = %v", err)
+		t.Fatalf("CheckTunOpts(disabled) = %v", err)
 	}
 	if _, err := system.BuildTun(
 		sysnet.TunOpts{},

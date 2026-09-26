@@ -120,8 +120,8 @@ func TestDefaultTunSourceRoutesAcceptIPv4IPv6AndDuplicates(t *testing.T) {
 		},
 	}
 
-	if err := system.VerifyDefaultTunOpts(opts); err != nil {
-		t.Fatalf("VerifyDefaultTunOpts() error = %v", err)
+	if err := system.CheckDefaultTunOpts(opts).Err(); err != nil {
+		t.Fatalf("CheckDefaultTunOpts() error = %v", err)
 	}
 	if _, err := system.BuildDefaultTun(opts); err != nil {
 		t.Fatalf("BuildDefaultTun() error = %v", err)
@@ -223,8 +223,8 @@ func TestDefaultTunSourceRoutesRejectInvalidValues(t *testing.T) {
 				TunAddrs:     test.addrs,
 				SourceRoutes: test.routes,
 			}
-			if err := system.VerifyDefaultTunOpts(opts); err == nil {
-				t.Fatal("VerifyDefaultTunOpts() error = nil")
+			if err := system.CheckDefaultTunOpts(opts).Err(); err == nil {
+				t.Fatal("CheckDefaultTunOpts() error = nil")
 			}
 			if _, err := system.BuildDefaultTun(opts); err == nil {
 				t.Fatal("BuildDefaultTun() error = nil")
@@ -240,8 +240,14 @@ func TestDefaultTunSourceRoutesCapability(t *testing.T) {
 			t.Errorf("System.Close() error = %v", err)
 		}
 	})
-	if system.Features().DefaultTunSourceRoutes {
-		t.Fatal("DefaultTunSourceRoutes feature = true, want false")
+	key := sysnet.OperationKey{
+		Target:    sysnet.TargetDefaultTun,
+		Operation: sysnet.OpSourceRoutes,
+		Family:    sysnet.FamilyIPv4,
+	}
+	capability := system.Capabilities().Operation(key)
+	if capability.State != sysnet.CapabilityUnsupported {
+		t.Fatalf("source-routes capability = %+v, want unsupported", capability)
 	}
 
 	opts := sysnet.DefaultTunOpts{
@@ -251,11 +257,11 @@ func TestDefaultTunSourceRoutesCapability(t *testing.T) {
 			Source:      netip.MustParseAddr("10.20.0.2"),
 		}},
 	}
-	if err := system.VerifyDefaultTunOpts(opts); !errors.Is(
+	if err := system.CheckDefaultTunOpts(opts).Err(); !errors.Is(
 		err,
 		sysnet.ErrNotSupported,
 	) {
-		t.Fatalf("VerifyDefaultTunOpts() error = %v, want ErrNotSupported", err)
+		t.Fatalf("CheckDefaultTunOpts() error = %v, want ErrNotSupported", err)
 	}
 	if _, err := system.BuildDefaultTun(opts); !errors.Is(
 		err,
@@ -264,8 +270,9 @@ func TestDefaultTunSourceRoutesCapability(t *testing.T) {
 		t.Fatalf("BuildDefaultTun() error = %v, want ErrNotSupported", err)
 	}
 
-	if err := system.VerifyDefaultTunOpts(sysnet.DefaultTunOpts{}); err != nil {
-		t.Fatalf("VerifyDefaultTunOpts(empty routes) error = %v", err)
+	if err := system.CheckDefaultTunOpts(sysnet.DefaultTunOpts{}).
+		Err(); err != nil {
+		t.Fatalf("CheckDefaultTunOpts(empty routes) error = %v", err)
 	}
 	if _, err := system.BuildDefaultTun(sysnet.DefaultTunOpts{}); err != nil {
 		t.Fatalf("BuildDefaultTun(empty routes) error = %v", err)

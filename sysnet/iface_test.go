@@ -11,26 +11,9 @@ import (
 	"github.com/asciimoth/gonnect/sockowner"
 )
 
-func TestRulesInfoCopyIsIndependent(t *testing.T) {
-	src := &RulesInfo{
-		TunRules:     []RuleTypeInfo{{Type: "uid", Description: "user id"}},
-		MatcherRules: []RuleTypeInfo{{Type: "gid", Description: "group id"}},
-	}
-
-	got := src.Copy()
-	got.TunRules[0].Type = "changed"
-	got.MatcherRules[0].Type = "changed"
-
-	if src.TunRules[0].Type != "uid" {
-		t.Fatalf("TunRules alias source: %+v", src.TunRules)
-	}
-	if src.MatcherRules[0].Type != "gid" {
-		t.Fatalf("MatcherRules alias source: %+v", src.MatcherRules)
-	}
-}
-
 func TestDefaultTunOptsCopyIsIndependent(t *testing.T) {
 	src := &DefaultTunOpts{
+		Name:      "default0",
 		TunAddrs:  []string{"10.0.0.2/32"},
 		TunRoutes: []string{"0.0.0.0/0"},
 		SourceRoutes: []TunSourceRoute{{
@@ -58,13 +41,15 @@ func TestDefaultTunOptsCopyIsIndependent(t *testing.T) {
 		src.Include[0].Rule != "100" {
 		t.Fatalf("Copy aliases source: %+v", src)
 	}
-	if got.MTU != 1400 || got.DnsIP != "10.0.0.2" || !got.Strict {
+	if got.Name != "default0" || got.MTU != 1400 || got.DnsIP != "10.0.0.2" ||
+		!got.Strict {
 		t.Fatalf("Copy lost scalar fields: %+v", got)
 	}
 }
 
-func TestTunOptsCopyConvertsToDefaultTunOpts(t *testing.T) {
+func TestTunOptsCopyIsIndependent(t *testing.T) {
 	src := &TunOpts{
+		Name:      "tun0",
 		TunAddrs:  []string{"10.0.0.4/32"},
 		TunRoutes: []string{"203.0.113.0/24"},
 		MTU:       1300,
@@ -78,9 +63,8 @@ func TestTunOptsCopyConvertsToDefaultTunOpts(t *testing.T) {
 		src.TunRoutes[0] != "203.0.113.0/24" {
 		t.Fatalf("Copy aliases source: %+v", src)
 	}
-	if got.MTU != 1300 || got.DnsIP != "" || got.Strict ||
-		got.Exclude != nil || got.Include != nil {
-		t.Fatalf("Copy returned unexpected DefaultTunOpts: %+v", got)
+	if got.Name != "tun0" || got.MTU != 1300 {
+		t.Fatalf("Copy returned unexpected TunOpts: %+v", got)
 	}
 }
 

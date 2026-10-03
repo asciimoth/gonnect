@@ -82,6 +82,12 @@ func ParseServerIdentity(value string) (ServerIdentity, error) {
 	if err != nil {
 		return ServerIdentity{}, err
 	}
+	if _, err := netip.ParseAddr(dns); err == nil {
+		return ServerIdentity{}, fmt.Errorf(
+			"tlspolicy: DNS identity %q is ambiguous with an IP address",
+			value,
+		)
+	}
 	return ServerIdentity{kind: IdentityDNS, dns: dns}, nil
 }
 

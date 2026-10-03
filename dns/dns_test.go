@@ -144,7 +144,10 @@ func TestWireRecordTypes(t *testing.T) {
 				Type:  TypeSOA,
 				Class: ClassIN,
 				TTL:   1,
-				Data:  []byte{1, 2, 3},
+				Data: testSOAData(
+					"ns.example.test.",
+					"hostmaster.example.test.",
+				),
 			},
 		},
 	}
@@ -162,6 +165,12 @@ func TestWireRecordTypes(t *testing.T) {
 	if !bytes.Equal(got.Answers[3].Data, txtRDATA("hello")) {
 		t.Fatalf("TXT data = %q", got.Answers[3].Data)
 	}
+}
+
+func testSOAData(ns, mbox string) []byte {
+	data := appendWireNameData(nil, ns)
+	data = appendWireNameData(data, mbox)
+	return append(data, make([]byte, 20)...)
 }
 
 func TestWireTXTPreservesRDATA(t *testing.T) {

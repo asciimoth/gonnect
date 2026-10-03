@@ -1,9 +1,12 @@
 package dns
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"net"
+	"strings"
 
 	"golang.org/x/net/dns/dnsmessage"
 )
@@ -149,6 +152,12 @@ func packResource(
 			Port:     binary.BigEndian.Uint16(data[4:6]),
 			Target:   target,
 		})
+	case TypeSOA:
+		soa, err := unpackSOAData(data)
+		if err != nil {
+			return err
+		}
+		return b.SOAResource(h, soa)
 	case TypeTXT:
 		if _, ok := txtSegments(data); ok {
 			return b.UnknownResource(h, dnsmessage.UnknownResource{
@@ -159,8 +168,17 @@ func packResource(
 		return b.TXTResource(h, dnsmessage.TXTResource{
 			TXT: rawTXTSegments(data),
 		})
+	case uint16(dnsmessage.TypeOPT):
+		options, err := unpackOPTData(data)
+		if err != nil {
+			return err
+		}
+		return b.OPTResource(h, dnsmessage.OPTResource{Options: options})
 	default:
-		return b.UnknownResource(h, dnsmessage.UnknownResource{Data: data})
+		return b.UnknownResource(h, dnsmessage.UnknownResource{
+			Type: h.Type,
+			Data: data,
+		})
 	}
 }
 
@@ -254,6 +272,14 @@ func resourceData(body dnsmessage.ResourceBody) []byte {
 		binary.BigEndian.PutUint16(out[4:6], b.Port)
 		out = append(out, b.Target.String()...)
 		return out
+	case *dnsmessage.SOAResource:
+		out := appendWireNameData(nil, b.NS.String())
+		out = appendWireNameData(out, b.MBox.String())
+		out = binary.BigEndian.AppendUint32(out, b.Serial)
+		out = binary.BigEndian.AppendUint32(out, b.Refresh)
+		out = binary.BigEndian.AppendUint32(out, b.Retry)
+		out = binary.BigEndian.AppendUint32(out, b.Expire)
+		return binary.BigEndian.AppendUint32(out, b.MinTTL)
 	case *dnsmessage.TXTResource:
 		var out []byte
 		for _, s := range b.TXT {
@@ -261,11 +287,114 @@ func resourceData(body dnsmessage.ResourceBody) []byte {
 			out = append(out, s...)
 		}
 		return out
+	case *dnsmessage.OPTResource:
+		var out []byte
+		for _, option := range b.Options {
+			// DNS option lengths are 16-bit wire values.
+			optionLength := uint16(len(option.Data)) //nolint:gosec
+			out = binary.BigEndian.AppendUint16(out, option.Code)
+			out = binary.BigEndian.AppendUint16(out, optionLength)
+			out = append(out, option.Data...)
+		}
+		return out
 	case *dnsmessage.UnknownResource:
 		return append([]byte(nil), b.Data...)
 	default:
 		return nil
 	}
+}
+
+func unpackSOAData(data []byte) (dnsmessage.SOAResource, error) {
+	nsText, offset, err := unpackWireNameData(data, 0)
+	if err != nil {
+		return dnsmessage.SOAResource{}, fmt.Errorf(
+			"dns: invalid SOA NS: %w",
+			err,
+		)
+	}
+	mboxText, offset, err := unpackWireNameData(data, offset)
+	if err != nil {
+		return dnsmessage.SOAResource{}, fmt.Errorf(
+			"dns: invalid SOA MBox: %w",
+			err,
+		)
+	}
+	if len(data)-offset != 20 {
+		return dnsmessage.SOAResource{}, errors.New("dns: invalid SOA data")
+	}
+	ns, err := wireName(nsText)
+	if err != nil {
+		return dnsmessage.SOAResource{}, err
+	}
+	mbox, err := wireName(mboxText)
+	if err != nil {
+		return dnsmessage.SOAResource{}, err
+	}
+	return dnsmessage.SOAResource{
+		NS:      ns,
+		MBox:    mbox,
+		Serial:  binary.BigEndian.Uint32(data[offset:]),
+		Refresh: binary.BigEndian.Uint32(data[offset+4:]),
+		Retry:   binary.BigEndian.Uint32(data[offset+8:]),
+		Expire:  binary.BigEndian.Uint32(data[offset+12:]),
+		MinTTL:  binary.BigEndian.Uint32(data[offset+16:]),
+	}, nil
+}
+
+func unpackOPTData(data []byte) ([]dnsmessage.Option, error) {
+	var options []dnsmessage.Option
+	for len(data) != 0 {
+		if len(data) < 4 {
+			return nil, errors.New("dns: invalid OPT data")
+		}
+		length := int(binary.BigEndian.Uint16(data[2:4]))
+		if length > len(data)-4 {
+			return nil, errors.New("dns: invalid OPT option length")
+		}
+		options = append(options, dnsmessage.Option{
+			Code: binary.BigEndian.Uint16(data[:2]),
+			Data: append([]byte(nil), data[4:4+length]...),
+		})
+		data = data[4+length:]
+	}
+	return options, nil
+}
+
+func unpackWireNameData(data []byte, offset int) (string, int, error) {
+	var name []byte
+	for {
+		if offset >= len(data) {
+			return "", 0, errors.New("truncated wire name")
+		}
+		length := int(data[offset])
+		offset++
+		if length == 0 {
+			if len(name) == 0 {
+				return ".", offset, nil
+			}
+			return string(name), offset, nil
+		}
+		if length > 63 || length > len(data)-offset {
+			return "", 0, errors.New("invalid wire name label")
+		}
+		if bytes.IndexByte(data[offset:offset+length], '.') >= 0 {
+			return "", 0, errors.New("wire name label contains a dot")
+		}
+		name = append(name, data[offset:offset+length]...)
+		name = append(name, '.')
+		offset += length
+	}
+}
+
+func appendWireNameData(dst []byte, name string) []byte {
+	if name == "." {
+		return append(dst, 0)
+	}
+	for label := range strings.SplitSeq(strings.TrimSuffix(name, "."), ".") {
+		dst = append(dst, byte(len(label)))
+		dst = append(dst, label...)
+	}
+	return append(dst, 0)
 }
 
 func txtSegments(data []byte) ([]string, bool) {

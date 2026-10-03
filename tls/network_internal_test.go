@@ -93,7 +93,7 @@ func TestNetworkEvictLeafCacheLockedRemovesOldestEntries(t *testing.T) {
 }
 
 func internalTestCA(
-	t *testing.T,
+	t testing.TB,
 	ttl time.Duration,
 ) (stdtls.Certificate, *x509.Certificate) {
 	t.Helper()

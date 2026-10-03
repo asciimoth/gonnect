@@ -402,7 +402,10 @@ func tlsClientHelloNeedBytes(
 	fragmentStart int,
 	fragmentEnd int,
 ) int {
-	neededHandshakeBytes := tlsHandshakeHeaderBytes
+	neededHandshakeBytes := 1
+	if len(handshake) >= 1 {
+		neededHandshakeBytes = tlsHandshakeHeaderBytes
+	}
 	if len(handshake) >= tlsHandshakeHeaderBytes {
 		neededHandshakeBytes = tlsHandshakeHeaderBytes +
 			tlsUint24(handshake[1:4])

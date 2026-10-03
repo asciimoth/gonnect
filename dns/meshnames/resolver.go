@@ -572,6 +572,9 @@ func decodeYggLabel(label string) (net.IP, error) {
 }
 
 func decodeYggStraight(label string) (net.IP, error) {
+	if len(label) != 32 {
+		return nil, noSuchHost(label)
+	}
 	if _, err := hex.DecodeString(label); err != nil {
 		return nil, noSuchHost(label)
 	}
@@ -583,6 +586,9 @@ func decodeYggStraight(label string) (net.IP, error) {
 }
 
 func decodeYggBase32(label string) (net.IP, error) {
+	if len(label) != 25 {
+		return nil, noSuchHost(label)
+	}
 	body, err := base32.StdEncoding.DecodeString(strings.ToUpper(label[1:]))
 	if err != nil {
 		return nil, noSuchHost(label)

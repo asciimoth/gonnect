@@ -60,6 +60,12 @@ func TestParseServerIdentityAndScopes(t *testing.T) {
 	}
 }
 
+func TestParseServerIdentityRejectsRootedIPAddress(t *testing.T) {
+	if _, err := ParseServerIdentity("192.0.2.1."); err == nil {
+		t.Fatal("ParseServerIdentity() accepted an ambiguous rooted IP address")
+	}
+}
+
 func TestScopeValidationRejectsAmbiguity(t *testing.T) {
 	t.Parallel()
 

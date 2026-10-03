@@ -37,7 +37,7 @@ type testLeafOptions struct {
 	crlURL   string
 }
 
-func newTestPKI(t *testing.T, options testLeafOptions) testPKI {
+func newTestPKI(t testing.TB, options testLeafOptions) testPKI {
 	t.Helper()
 
 	now := time.Now().UTC().Truncate(time.Second)

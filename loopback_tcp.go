@@ -145,15 +145,18 @@ func (r *loopbackTCPRegistry) Lookup(addr net.Addr) *loopbackTCPListener {
 }
 
 // loopbackTCPListener implements gonnect.TCPListener and provides Accept
-// via a buffered channel. It queues incoming connections in acceptQ and
-// signals closure via the closed channel.
+// via a buffered channel. The state mutex makes queue changes atomic with
+// listener closure.
 type loopbackTCPListener struct {
-	reg     *loopbackTCPRegistry
-	Laddr   net.Addr
-	Port    uint16
-	acceptQ chan *loopbackTCPConn
-	closed  chan struct{}
-	closeMu sync.Mutex
+	reg   *loopbackTCPRegistry
+	Laddr net.Addr
+	Port  uint16
+
+	stateMu      sync.Mutex
+	acceptQ      chan *loopbackTCPConn
+	queueChanged chan struct{}
+	closeDone    chan struct{}
+	isClosed     bool
 
 	deadlineMu sync.Mutex
 	deadline   time.Time
@@ -166,9 +169,10 @@ func newLoopbackTCPListener(
 	lport *uint16,
 ) (*loopbackTCPListener, error) {
 	listener := &loopbackTCPListener{
-		reg:     reg,
-		acceptQ: make(chan *loopbackTCPConn, runtime.NumCPU()),
-		closed:  make(chan struct{}),
+		reg:          reg,
+		acceptQ:      make(chan *loopbackTCPConn, runtime.NumCPU()),
+		queueChanged: make(chan struct{}),
+		closeDone:    make(chan struct{}),
 	}
 	err := reg.RegListener(lport, listener)
 	return listener, err
@@ -177,37 +181,55 @@ func newLoopbackTCPListener(
 // NewConn queues an incoming connection for acceptance.
 // Returns an error if the listener has been closed.
 func (l *loopbackTCPListener) NewConn(c *loopbackTCPConn) error {
-	select {
-	case l.acceptQ <- c:
-		return nil
-	case <-l.closed:
-		return ConnClosed("accept", l.Laddr.Network(), nil, l.Laddr)
+	for {
+		l.stateMu.Lock()
+		if l.isClosed {
+			l.stateMu.Unlock()
+			return ConnClosed("accept", l.Laddr.Network(), nil, l.Laddr)
+		}
+		if len(l.acceptQ) < cap(l.acceptQ) {
+			l.acceptQ <- c
+			l.notifyQueueChangedLocked()
+			l.stateMu.Unlock()
+			return nil
+		}
+		changed := l.queueChanged
+		l.stateMu.Unlock()
+		<-changed
 	}
 }
 
 // Close closes the listener, freeing the registered port and draining the accept queue.
 // Any pending connections in the queue are closed.
 func (l *loopbackTCPListener) Close() error {
-	l.closeMu.Lock()
-	defer l.closeMu.Unlock()
-	select {
-	case <-l.closed:
-	default:
-		l.reg.UnregListener(l)
-		close(l.closed)
-		// drain acceptQ to avoid leaks
-		go func() {
-			for {
-				select {
-				case c := <-l.acceptQ:
-					_ = c.Close()
-				default:
-					return
-				}
-			}
-		}()
+	l.stateMu.Lock()
+	if l.isClosed {
+		done := l.closeDone
+		l.stateMu.Unlock()
+		<-done
+		return nil
 	}
+	l.isClosed = true
+	l.notifyQueueChangedLocked()
+	queued := make([]*loopbackTCPConn, 0, len(l.acceptQ))
+	for len(l.acceptQ) > 0 {
+		queued = append(queued, <-l.acceptQ)
+	}
+	l.stateMu.Unlock()
+
+	l.reg.UnregListener(l)
+	for _, c := range queued {
+		_ = c.Close()
+	}
+	close(l.closeDone)
 	return nil
+}
+
+// notifyQueueChangedLocked wakes operations that wait for queue space or data.
+// The caller must hold stateMu.
+func (l *loopbackTCPListener) notifyQueueChangedLocked() {
+	close(l.queueChanged)
+	l.queueChanged = make(chan struct{})
 }
 
 // Addr returns the listener's network address.
@@ -229,24 +251,37 @@ func (l *loopbackTCPListener) AcceptTCP() (TCPConn, error) {
 		deadlineCh = timer.C
 	}
 
-	select {
-	case c := <-l.acceptQ:
-		if timer != nil {
-			timer.Stop()
+	for {
+		l.stateMu.Lock()
+		if l.isClosed {
+			l.stateMu.Unlock()
+			if timer != nil {
+				timer.Stop()
+			}
+			return nil, ConnClosed("accept", l.Laddr.Network(), nil, l.Laddr)
 		}
-		c.Laddr = l.Laddr
-		c.Port = l.Port
-		return c, nil
-	case <-l.closed:
-		if timer != nil {
-			timer.Stop()
+		if len(l.acceptQ) > 0 {
+			c := <-l.acceptQ
+			l.notifyQueueChangedLocked()
+			l.stateMu.Unlock()
+			if timer != nil {
+				timer.Stop()
+			}
+			c.Laddr = l.Laddr
+			c.Port = l.Port
+			return c, nil
 		}
-		return nil, ConnClosed("accept", l.Laddr.Network(), nil, l.Laddr)
-	case <-deadlineCh:
-		return nil, &net.OpError{
-			Op:  "accept",
-			Net: l.Laddr.Network(),
-			Err: errors.New("i/o timeout"),
+		changed := l.queueChanged
+		l.stateMu.Unlock()
+
+		select {
+		case <-changed:
+		case <-deadlineCh:
+			return nil, &net.OpError{
+				Op:  "accept",
+				Net: l.Laddr.Network(),
+				Err: errors.New("i/o timeout"),
+			}
 		}
 	}
 }

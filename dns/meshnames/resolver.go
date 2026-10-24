@@ -575,6 +575,9 @@ func setByte(data *[net.IPv6len]byte, index int, value byte) {
 }
 
 func splitLabels(name string) []string {
+	// DNS APIs accept both relative spelling (example.ygg) and absolute
+	// spelling (example.ygg.). Remove the root label so suffix checks and
+	// address decoding use the same labels for both forms.
 	name = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(name)), ".")
 	if name == "" {
 		return nil

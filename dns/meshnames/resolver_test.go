@@ -103,6 +103,104 @@ func TestResolverLookupIPIPv6LiteralNet(t *testing.T) {
 	}
 }
 
+func TestResolverSupportsNamesWithAndWithoutTrailingDot(t *testing.T) {
+	t.Parallel()
+
+	const (
+		meshAuthority = "200:6fc8:9220:f400:5cc2:305a:4ac6:967e"
+		yggAuthority  = "0202:12a9:00e5:4474:d473:82be:16ac:9381"
+		answerIP      = "2001:db8::53"
+	)
+
+	server := startDNSServer(t, func(w dns.ResponseWriter, req *dns.Msg) {
+		msg := new(dns.Msg)
+		msg.SetReply(req)
+		for _, q := range req.Question {
+			if q.Qtype != dns.TypeAAAA {
+				continue
+			}
+			msg.Answer = append(msg.Answer, &dns.AAAA{
+				Hdr: dns.RR_Header{
+					Name:   q.Name,
+					Rrtype: dns.TypeAAAA,
+					Class:  dns.ClassINET,
+					Ttl:    60,
+				},
+				AAAA: net.ParseIP(answerIP),
+			})
+		}
+		_ = w.WriteMsg(msg)
+	})
+
+	r := &meshnames.Resolver{
+		Network: &mapNetwork{
+			routes: map[string]string{
+				net.ParseIP(meshAuthority).String(): server.addr,
+				net.ParseIP(yggAuthority).String():  server.addr,
+			},
+		},
+	}
+
+	for _, test := range []struct {
+		name   string
+		host   string
+		wantIP string
+	}{
+		{
+			name:   "meshname",
+			host:   "svc.aiag7sesed2aaxgcgbnevruwpy.meshname",
+			wantIP: answerIP,
+		},
+		{
+			name:   "meship",
+			host:   "aiag7sesed2aaxgcgbnevruwpy.meship",
+			wantIP: meshAuthority,
+		},
+		{
+			name: "pk.ygg",
+			host: "svc.d40d4a7153cf288ea28f1865f6cfe951" +
+				"43a478b5c8c9e7cb002a0633d10a53eb.pk.ygg",
+			wantIP: "200:57e5:6b1d:5861:aee2:bae1:cf34:1260",
+		},
+		{
+			name:   "ygg",
+			host:   "svc.2aijksahfir2ni44cxylkze4b.ygg",
+			wantIP: answerIP,
+		},
+		{
+			name:   "ipv6-literal.net",
+			host:   "2001-db8--42.ipv6-literal.net",
+			wantIP: "2001:db8::42",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			for _, suffix := range []string{"", "."} {
+				label := "without trailing dot"
+				if suffix != "" {
+					label = "with trailing dot"
+				}
+				t.Run(label, func(t *testing.T) {
+					ips, err := r.LookupIP(
+						context.Background(),
+						"ip6",
+						test.host+suffix,
+					)
+					if err != nil {
+						t.Fatalf("LookupIP() error = %v", err)
+					}
+					if len(ips) != 1 || ips[0].String() != test.wantIP {
+						t.Fatalf(
+							"LookupIP() = %v, want [%s]",
+							ips,
+							test.wantIP,
+						)
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestResolverRejectsInvalidIPv6LiteralNetLabels(t *testing.T) {
 	t.Parallel()
 
@@ -439,6 +537,20 @@ func TestResolverLookupStructuredRecords(t *testing.T) {
 		srv[0].Target != "svc."+dns.Fqdn(name) ||
 		srv[0].Port != 5222 {
 		t.Fatalf("LookupSRV() = %q %v %v", cname, srv, err)
+	}
+
+	// A final dot marks name as absolute. It must not add an empty label when
+	// LookupSRV adds the service and protocol labels.
+	cname, srv, err = r.LookupSRV(
+		context.Background(),
+		"xmpp",
+		"tcp",
+		name+".",
+	)
+	if err != nil || cname != "" || len(srv) != 1 ||
+		srv[0].Target != "svc."+dns.Fqdn(name) ||
+		srv[0].Port != 5222 {
+		t.Fatalf("LookupSRV(trailing dot) = %q %v %v", cname, srv, err)
 	}
 
 	cname, srv, err = r.LookupSRV(context.Background(), "alias", "tcp", name)

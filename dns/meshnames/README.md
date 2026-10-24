@@ -39,6 +39,10 @@ Examples of names accepted by the resolver:
 - `svc.202-12a9-e5-4474-d473-82be-16ac-9381.ygg`
 - `2001-db8--42.ipv6-literal.net`
 
+Each supported name can include or omit the final root dot. For example,
+`svc.2aijksahfir2ni44cxylkze4b.ygg` and
+`svc.2aijksahfir2ni44cxylkze4b.ygg.` are equivalent.
+
 The left-hand side can contain regular host or service labels. `meshnames` derives
 the authoritative node from the suffix and then asks that node for records such
 as `A`, `AAAA`, `TXT`, `MX`, `NS`, `SRV`, `PTR`, and `CNAME`.

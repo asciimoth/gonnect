@@ -50,6 +50,9 @@ var yggNet = netip.MustParsePrefix("0200::/7")
 // returns canonical rejection errors compatible with gonnect.RejectNetwork.
 type Resolver struct {
 	// Network carries all DNS traffic used for authoritative mesh lookups.
+	// If Network is nil, lookups that need DNS return an error. Direct formats
+	// such as .meship, .pk.ygg, and .ipv6-literal.net continue to work because
+	// they are decoded locally.
 	Network gonnect.Network
 
 	// Fallback handles names outside the mesh-specific schemes understood by
@@ -68,6 +71,9 @@ type Resolver struct {
 
 // NewResolver constructs a Resolver that performs mesh-aware lookups through
 // the provided gonnect.Network.
+//
+// Network can be nil. In that case, the resolver only resolves formats that
+// can be decoded locally and does not use the host network as a substitute.
 //
 // The returned resolver uses port 53 and a default request timeout unless the
 // caller overrides those fields.
@@ -367,12 +373,15 @@ func (r *Resolver) exchangeToServer(
 	name string,
 	qtype uint16,
 ) (*dns.Msg, error) {
-	msg := new(dns.Msg)
-	msg.SetQuestion(dns.Fqdn(name), qtype)
-
+	// A nil Network means that network access is disabled. Do not replace it
+	// with net.Dial or another host-network function. This check also keeps the
+	// locally decoded name formats usable in an offline resolver.
 	if r.Network == nil {
 		return nil, noSuchHost(name)
 	}
+
+	msg := new(dns.Msg)
+	msg.SetQuestion(dns.Fqdn(name), qtype)
 
 	conn, err := r.Network.Dial(
 		ctx,

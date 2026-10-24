@@ -84,6 +84,12 @@ func main() {
 If `Fallback` is not set, unsupported names are rejected instead of being sent
 to the system resolver.
 
+`Network` can be `nil` when network access is not available. The resolver still
+resolves `.meship`, `.pk.ygg`, and `.ipv6-literal.net` names because these
+formats are decoded locally. Lookups that need DNS, such as `.meshname` and
+`.ygg`, return an error. A nil `Network` never causes `meshnames` to use the host
+network as a substitute.
+
 ## License
 Files in this repository are distributed under the CC0 license.  
 

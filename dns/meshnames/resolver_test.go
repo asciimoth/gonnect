@@ -257,6 +257,80 @@ func TestNewResolverDefaultsAndDirectLookupAdapters(t *testing.T) {
 	}
 }
 
+func TestResolverStaticLookupsWithoutNetwork(t *testing.T) {
+	t.Parallel()
+
+	// A nil Network is intentional. These formats contain all data needed to
+	// derive the result, so resolution must not start a network operation.
+	r := meshnames.NewResolver(nil)
+
+	for _, test := range []struct {
+		name string
+		host string
+		want string
+	}{
+		{
+			name: "meship",
+			host: "aiag7sesed2aaxgcgbnevruwpy.meship",
+			want: "200:6fc8:9220:f400:5cc2:305a:4ac6:967e",
+		},
+		{
+			name: "pk.ygg",
+			host: "svc.d40d4a7153cf288ea28f1865f6cfe951" +
+				"43a478b5c8c9e7cb002a0633d10a53eb.pk.ygg",
+			want: "200:57e5:6b1d:5861:aee2:bae1:cf34:1260",
+		},
+		{
+			name: "ipv6-literal.net",
+			host: "2001-db8--42.ipv6-literal.net",
+			want: "2001:db8::42",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ips, err := r.LookupIP(context.Background(), "ip6", test.host)
+			if err != nil || len(ips) != 1 || ips[0].String() != test.want {
+				t.Fatalf("LookupIP() = %v, %v; want [%s], nil", ips, err, test.want)
+			}
+
+			hosts, err := r.LookupHost(context.Background(), test.host+".")
+			if err != nil || len(hosts) != 1 || hosts[0] != test.want {
+				t.Fatalf(
+					"LookupHost() = %v, %v; want [%s], nil",
+					hosts,
+					err,
+					test.want,
+				)
+			}
+
+			ipAddrs, err := r.LookupIPAddr(context.Background(), test.host)
+			if err != nil || len(ipAddrs) != 1 ||
+				ipAddrs[0].IP.String() != test.want {
+				t.Fatalf(
+					"LookupIPAddr() = %v, %v; want [%s], nil",
+					ipAddrs,
+					err,
+					test.want,
+				)
+			}
+
+			netIPs, err := r.LookupNetIP(context.Background(), "ip6", test.host)
+			if err != nil || len(netIPs) != 1 || netIPs[0].String() != test.want {
+				t.Fatalf(
+					"LookupNetIP() = %v, %v; want [%s], nil",
+					netIPs,
+					err,
+					test.want,
+				)
+			}
+		})
+	}
+
+	port, err := r.LookupPort(context.Background(), "tcp", "https")
+	if err != nil || port != 443 {
+		t.Fatalf("LookupPort() = %d, %v; want 443, nil", port, err)
+	}
+}
+
 func TestResolverLookupIPMeshipNoIPv4Address(t *testing.T) {
 	t.Parallel()
 
@@ -800,7 +874,7 @@ func TestResolverWithoutFallbackRejectsNonSpecialNames(t *testing.T) {
 	}
 }
 
-func TestResolverSpecialNameWithoutNetworkReturnsError(t *testing.T) {
+func TestResolverNetworkLookupWithoutNetworkReturnsError(t *testing.T) {
 	t.Parallel()
 
 	const host = "svc.aiag7sesed2aaxgcgbnevruwpy.meshname"

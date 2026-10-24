@@ -79,6 +79,50 @@ func TestResolverLookupIPMeship(t *testing.T) {
 	}
 }
 
+func TestResolverLookupIPIPv6LiteralNet(t *testing.T) {
+	t.Parallel()
+
+	r := &meshnames.Resolver{Network: &mapNetwork{}}
+	for _, test := range []struct {
+		name string
+		want string
+	}{
+		{name: "2001-db8--42.ipv6-literal.net", want: "2001:db8::42"},
+		{name: "2001-DB8-0-0-0-0-0-42.ipv6-literal.net.", want: "2001:db8::42"},
+		{name: "fe80--1s1.ipv6-literal.net", want: "fe80::1"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ips, err := r.LookupIP(context.Background(), "ip6", test.name)
+			if err != nil {
+				t.Fatalf("LookupIP() error = %v", err)
+			}
+			if len(ips) != 1 || ips[0].String() != test.want {
+				t.Fatalf("LookupIP() = %v, want [%s]", ips, test.want)
+			}
+		})
+	}
+}
+
+func TestResolverRejectsInvalidIPv6LiteralNetLabels(t *testing.T) {
+	t.Parallel()
+
+	r := &meshnames.Resolver{Network: &mapNetwork{}}
+	for _, name := range []string{
+		"not-an-address.ipv6-literal.net",
+		"fe80--1s.ipv6-literal.net",
+		"fe80--1s1s2.ipv6-literal.net",
+		"192-0-2-1.ipv6-literal.net",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := r.LookupIP(context.Background(), "ip6", name)
+			var dnsErr *net.DNSError
+			if !errors.As(err, &dnsErr) || !dnsErr.IsNotFound {
+				t.Fatalf("LookupIP() error = %v, want not-found DNS error", err)
+			}
+		})
+	}
+}
+
 func TestNewResolverDefaultsAndDirectLookupAdapters(t *testing.T) {
 	t.Parallel()
 

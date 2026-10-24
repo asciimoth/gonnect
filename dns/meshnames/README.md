@@ -19,6 +19,7 @@ OS resolver, `meshnames` sends them through a caller-provided `gonnect.Network`.
 | `.meship` | Decodes the left label directly into an IPv6 address without doing DNS | [meshname](https://github.com/zhoreeq/meshname) |
 | `.pk.ygg` | Derives a Yggdrasil IPv6 address directly from an Ed25519 public key encoded in the label | [yggstack](https://github.com/yggdrasil-network/yggstack) |
 | `.ygg` | Uses a Yggdrasil/YggNS authority label and resolves the full name via DNS on that node | [YggNS](https://github.com/ru-crypto-anarchy/YggNS/blob/master/README.md), [yggstack](https://github.com/yggdrasil-network/yggstack) |
+| `.ipv6-literal.net` | Decodes the address label directly as an IPv6 address using the Windows literal-host spelling | [Microsoft MS-DTYP](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-dtyp/62e862f4-2a51-452e-8eeb-dc4ff5ee33cc) |
 
 For `.ygg`, these authority-label formats are supported:
 
@@ -36,6 +37,7 @@ Examples of names accepted by the resolver:
 - `svc.020212a900e54474d47382be16ac9381.ygg`
 - `svc.2aijksahfir2ni44cxylkze4b.ygg`
 - `svc.202-12a9-e5-4474-d473-82be-16ac-9381.ygg`
+- `2001-db8--42.ipv6-literal.net`
 
 The left-hand side can contain regular host or service labels. `meshnames` derives
 the authoritative node from the suffix and then asks that node for records such

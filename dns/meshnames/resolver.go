@@ -8,6 +8,7 @@
 //   - .meship direct label-to-IPv6 lookups
 //   - .pk.ygg direct host-to-address labels derived from Yggdrasil public keys
 //   - .ygg labels in the straight, base32, and dashed YggNS formats
+//   - .ipv6-literal.net direct IPv6 address labels
 //
 // Resolution is performed through a gonnect.Network, so DNS traffic follows
 // the caller-provided network abstraction instead of the host OS network stack.
@@ -41,7 +42,7 @@ var _ gonnect.Resolver = &Resolver{}
 var yggNet = netip.MustParsePrefix("0200::/7")
 
 // Resolver implements gonnect.Resolver for mesh-specific naming schemes such
-// as .meshname, .meship, .pk.ygg, and .ygg.
+// as .meshname, .meship, .pk.ygg, .ygg, and .ipv6-literal.net.
 //
 // For supported mesh names, Resolver derives the authoritative node address
 // from the queried name and sends DNS requests to that node through Network.
@@ -80,9 +81,10 @@ func NewResolver(network gonnect.Network) *Resolver {
 
 // LookupIP resolves address according to the requested IP family.
 //
-// For .meship and .pk.ygg names, the IPv6 address is decoded directly from the
-// label. For .meshname and .ygg names, the authoritative node is derived from
-// the name and queried over DNS through Network.
+// For .meship, .pk.ygg, and .ipv6-literal.net names, the IPv6 address is
+// decoded directly from the label. For .meshname and .ygg names, the
+// authoritative node is derived from the name and queried over DNS through
+// Network.
 func (r *Resolver) LookupIP(
 	ctx context.Context,
 	network, address string,
@@ -452,7 +454,42 @@ func (r *Resolver) lookupDirectIP(name string) (net.IP, bool, error) {
 		return ip, true, nil
 	}
 
+	// The suffix is two labels: "ipv6-literal" and "net". The address
+	// itself must be the label immediately before that suffix.
+	if len(labels) >= 3 && labels[len(labels)-2] == "ipv6-literal" &&
+		labels[len(labels)-1] == "net" {
+		ip, err := decodeIPv6LiteralLabel(labels[len(labels)-3])
+		if err != nil {
+			return nil, true, err
+		}
+		return ip, true, nil
+	}
+
 	return nil, false, nil
+}
+
+// decodeIPv6LiteralLabel decodes the Windows ipv6-literal.net spelling of an
+// IPv6 address. The spelling replaces each colon with a hyphen, so a run of
+// two hyphens represents the compressed "::" separator. The returned value
+// is an IPv6 address suitable for use with net.IP. If the label contains the
+// Windows "s" zone separator, the zone is validated syntactically and then
+// discarded because net.IP cannot carry a zone identifier.
+func decodeIPv6LiteralLabel(label string) (net.IP, error) {
+	if label == "" {
+		return nil, noSuchHost(label)
+	}
+	if zone := strings.IndexByte(label, 's'); zone >= 0 {
+		if zone == 0 || zone == len(label)-1 ||
+			strings.Contains(label[zone+1:], "s") {
+			return nil, noSuchHost(label)
+		}
+		label = label[:zone]
+	}
+	ip := net.ParseIP(strings.ReplaceAll(label, "-", ":"))
+	if ip == nil || ip.To4() != nil {
+		return nil, noSuchHost(label)
+	}
+	return ip, nil
 }
 
 func authorityIP(name string) (net.IP, error) {

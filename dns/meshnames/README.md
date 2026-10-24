@@ -84,6 +84,21 @@ func main() {
 If `Fallback` is not set, unsupported names are rejected instead of being sent
 to the system resolver.
 
+Each naming scheme is enabled by default, including when `Resolver` is created
+as a struct literal. Set the related field to disable only that scheme:
+
+```go
+resolver.DisableMeshname = true
+resolver.DisableMeship = true
+resolver.DisablePKYgg = true
+resolver.DisableYgg = true
+resolver.DisableIPv6LiteralNet = true
+```
+
+Set a field back to `false` to enable that scheme again. A disabled scheme is
+treated as unsupported and is passed to `Fallback` when a fallback resolver is
+configured. `DisableYgg` does not disable the separate `.pk.ygg` scheme.
+
 `Network` can be `nil` when network access is not available. The resolver still
 resolves `.meship`, `.pk.ygg`, and `.ipv6-literal.net` names because these
 formats are decoded locally. Lookups that need DNS, such as `.meshname` and

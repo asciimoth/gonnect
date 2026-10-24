@@ -201,6 +201,193 @@ func TestResolverSupportsNamesWithAndWithoutTrailingDot(t *testing.T) {
 	}
 }
 
+func TestResolverSchemeToggles(t *testing.T) {
+	t.Parallel()
+
+	const (
+		meshAuthority = "200:6fc8:9220:f400:5cc2:305a:4ac6:967e"
+		yggAuthority  = "0202:12a9:00e5:4474:d473:82be:16ac:9381"
+		answerIP      = "2001:db8::54"
+		fallbackIP    = "198.51.100.7"
+	)
+
+	server := startDNSServer(t, func(w dns.ResponseWriter, req *dns.Msg) {
+		msg := new(dns.Msg)
+		msg.SetReply(req)
+		for _, q := range req.Question {
+			if q.Qtype != dns.TypeAAAA {
+				continue
+			}
+			msg.Answer = append(msg.Answer, &dns.AAAA{
+				Hdr: dns.RR_Header{
+					Name:   q.Name,
+					Rrtype: dns.TypeAAAA,
+					Class:  dns.ClassINET,
+					Ttl:    60,
+				},
+				AAAA: net.ParseIP(answerIP),
+			})
+		}
+		_ = w.WriteMsg(msg)
+	})
+
+	for _, test := range []struct {
+		name        string
+		host        string
+		wantEnabled string
+		setDisabled func(*meshnames.Resolver, bool)
+	}{
+		{
+			name:        "meshname",
+			host:        "svc.aiag7sesed2aaxgcgbnevruwpy.meshname",
+			wantEnabled: answerIP,
+			setDisabled: func(r *meshnames.Resolver, value bool) {
+				r.DisableMeshname = value
+			},
+		},
+		{
+			name:        "meship",
+			host:        "aiag7sesed2aaxgcgbnevruwpy.meship",
+			wantEnabled: meshAuthority,
+			setDisabled: func(r *meshnames.Resolver, value bool) {
+				r.DisableMeship = value
+			},
+		},
+		{
+			name: "pk.ygg",
+			host: "svc.d40d4a7153cf288ea28f1865f6cfe951" +
+				"43a478b5c8c9e7cb002a0633d10a53eb.pk.ygg",
+			wantEnabled: "200:57e5:6b1d:5861:aee2:bae1:cf34:1260",
+			setDisabled: func(r *meshnames.Resolver, value bool) {
+				r.DisablePKYgg = value
+			},
+		},
+		{
+			name:        "ygg",
+			host:        "svc.2aijksahfir2ni44cxylkze4b.ygg",
+			wantEnabled: answerIP,
+			setDisabled: func(r *meshnames.Resolver, value bool) {
+				r.DisableYgg = value
+			},
+		},
+		{
+			name:        "ipv6-literal.net",
+			host:        "2001-db8--42.ipv6-literal.net",
+			wantEnabled: "2001:db8::42",
+			setDisabled: func(r *meshnames.Resolver, value bool) {
+				r.DisableIPv6LiteralNet = value
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fallback := &fakeResolver{}
+			r := &meshnames.Resolver{
+				Network: &mapNetwork{routes: map[string]string{
+					net.ParseIP(meshAuthority).String(): server.addr,
+					net.ParseIP(yggAuthority).String():  server.addr,
+				}},
+				Fallback: fallback,
+			}
+
+			assertLookupHost := func(want string) {
+				t.Helper()
+				got, err := r.LookupHost(context.Background(), test.host)
+				if err != nil || len(got) != 1 || got[0] != want {
+					t.Fatalf(
+						"LookupHost() = %v, %v; want [%s], nil",
+						got,
+						err,
+						want,
+					)
+				}
+			}
+
+			// The zero value keeps the scheme enabled for compatibility with
+			// Resolver struct literals used before the toggles were added.
+			assertLookupHost(test.wantEnabled)
+
+			test.setDisabled(r, true)
+			assertLookupHost(fallbackIP)
+			if fallback.lookupHostCalls != 1 {
+				t.Fatalf(
+					"fallback LookupHost calls = %d, want 1",
+					fallback.lookupHostCalls,
+				)
+			}
+
+			test.setDisabled(r, false)
+			assertLookupHost(test.wantEnabled)
+			if fallback.lookupHostCalls != 1 {
+				t.Fatalf(
+					"fallback LookupHost calls after re-enable = %d, want 1",
+					fallback.lookupHostCalls,
+				)
+			}
+		})
+	}
+}
+
+func TestResolverYggSchemeTogglesAreIndependent(t *testing.T) {
+	t.Parallel()
+
+	const (
+		authorityIP = "0202:12a9:00e5:4474:d473:82be:16ac:9381"
+		answerIP    = "2001:db8::55"
+		publicKey   = "d40d4a7153cf288ea28f1865f6cfe951" +
+			"43a478b5c8c9e7cb002a0633d10a53eb"
+		publicKeyIP = "200:57e5:6b1d:5861:aee2:bae1:cf34:1260"
+	)
+
+	server := startDNSServer(t, func(w dns.ResponseWriter, req *dns.Msg) {
+		msg := new(dns.Msg)
+		msg.SetReply(req)
+		for _, q := range req.Question {
+			if q.Qtype == dns.TypeAAAA {
+				msg.Answer = append(msg.Answer, &dns.AAAA{
+					Hdr: dns.RR_Header{
+						Name:   q.Name,
+						Rrtype: dns.TypeAAAA,
+						Class:  dns.ClassINET,
+					},
+					AAAA: net.ParseIP(answerIP),
+				})
+			}
+		}
+		_ = w.WriteMsg(msg)
+	})
+
+	r := &meshnames.Resolver{
+		Network: &mapNetwork{routes: map[string]string{
+			net.ParseIP(authorityIP).String(): server.addr,
+		}},
+		DisableYgg: true,
+	}
+	got, err := r.LookupHost(context.Background(), "svc."+publicKey+".pk.ygg")
+	if err != nil || len(got) != 1 || got[0] != publicKeyIP {
+		t.Fatalf(
+			"LookupHost(pk.ygg with ygg disabled) = %v, %v; want [%s], nil",
+			got,
+			err,
+			publicKeyIP,
+		)
+	}
+
+	r.DisableYgg = false
+	r.DisablePKYgg = true
+	got, err = r.LookupHost(
+		context.Background(),
+		"svc.2aijksahfir2ni44cxylkze4b.ygg",
+	)
+	if err != nil || len(got) != 1 || got[0] != answerIP {
+		t.Fatalf(
+			"LookupHost(ygg with pk.ygg disabled) = %v, %v; want [%s], nil",
+			got,
+			err,
+			answerIP,
+		)
+	}
+}
+
 func TestResolverRejectsInvalidIPv6LiteralNetLabels(t *testing.T) {
 	t.Parallel()
 

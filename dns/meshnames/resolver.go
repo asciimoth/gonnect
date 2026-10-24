@@ -67,6 +67,27 @@ type Resolver struct {
 	// Timeout bounds a single DNS exchange with an authoritative mesh node.
 	// Zero or a negative value means the default timeout.
 	Timeout time.Duration
+
+	// DisableMeshname disables DNS-based .meshname resolution. It is false by
+	// default, so the scheme remains enabled for zero-value Resolvers.
+	DisableMeshname bool
+
+	// DisableMeship disables direct .meship address decoding. It is false by
+	// default, so the scheme remains enabled for zero-value Resolvers.
+	DisableMeship bool
+
+	// DisablePKYgg disables direct .pk.ygg public-key address decoding. It is
+	// false by default, so the scheme remains enabled for zero-value Resolvers.
+	DisablePKYgg bool
+
+	// DisableYgg disables DNS-based .ygg resolution. It does not disable the
+	// separate .pk.ygg scheme. It is false by default.
+	DisableYgg bool
+
+	// DisableIPv6LiteralNet disables direct .ipv6-literal.net address decoding.
+	// It is false by default, so the scheme remains enabled for zero-value
+	// Resolvers.
+	DisableIPv6LiteralNet bool
 }
 
 // NewResolver constructs a Resolver that performs mesh-aware lookups through
@@ -75,8 +96,8 @@ type Resolver struct {
 // Network can be nil. In that case, the resolver only resolves formats that
 // can be decoded locally and does not use the host network as a substitute.
 //
-// The returned resolver uses port 53 and a default request timeout unless the
-// caller overrides those fields.
+// The returned resolver enables all supported naming schemes. It uses port 53
+// and a default request timeout unless the caller overrides those fields.
 func NewResolver(network gonnect.Network) *Resolver {
 	return &Resolver{
 		Network: network,
@@ -360,7 +381,7 @@ func (r *Resolver) exchangeName(
 	name string,
 	qtype uint16,
 ) (*dns.Msg, error) {
-	serverIP, err := authorityIP(name)
+	serverIP, err := r.authorityIP(name)
 	if err != nil {
 		return nil, err
 	}
@@ -440,13 +461,13 @@ func (r *Resolver) isSpecialName(name string) bool {
 	if ok {
 		return true
 	}
-	_, err := authorityIP(name)
+	_, err := r.authorityIP(name)
 	return err == nil
 }
 
 func (r *Resolver) lookupDirectIP(name string) (net.IP, bool, error) {
 	labels := splitLabels(name)
-	if len(labels) == 2 && labels[1] == "meship" {
+	if !r.DisableMeship && len(labels) == 2 && labels[1] == "meship" {
 		ip, err := decodeMeshnameLabel(labels[0])
 		if err != nil {
 			return nil, true, err
@@ -454,7 +475,7 @@ func (r *Resolver) lookupDirectIP(name string) (net.IP, bool, error) {
 		return ip, true, nil
 	}
 
-	if len(labels) >= 3 && labels[len(labels)-2] == "pk" &&
+	if !r.DisablePKYgg && len(labels) >= 3 && labels[len(labels)-2] == "pk" &&
 		labels[len(labels)-1] == "ygg" {
 		ip, err := decodeYggPublicKeyLabel(labels[len(labels)-3])
 		if err != nil {
@@ -465,7 +486,8 @@ func (r *Resolver) lookupDirectIP(name string) (net.IP, bool, error) {
 
 	// The suffix is two labels: "ipv6-literal" and "net". The address
 	// itself must be the label immediately before that suffix.
-	if len(labels) >= 3 && labels[len(labels)-2] == "ipv6-literal" &&
+	if !r.DisableIPv6LiteralNet && len(labels) >= 3 &&
+		labels[len(labels)-2] == "ipv6-literal" &&
 		labels[len(labels)-1] == "net" {
 		ip, err := decodeIPv6LiteralLabel(labels[len(labels)-3])
 		if err != nil {
@@ -475,6 +497,29 @@ func (r *Resolver) lookupDirectIP(name string) (net.IP, bool, error) {
 	}
 
 	return nil, false, nil
+}
+
+// authorityIP applies the Resolver scheme settings before it derives the DNS
+// authority address. A disabled scheme is handled as an unsupported name, so
+// the public lookup methods can pass it to Fallback when one is configured.
+func (r *Resolver) authorityIP(name string) (net.IP, error) {
+	labels := splitLabels(name)
+	if len(labels) < 2 {
+		return nil, noSuchHost(name)
+	}
+
+	switch labels[len(labels)-1] {
+	case "meshname":
+		if r.DisableMeshname {
+			return nil, noSuchHost(name)
+		}
+	case "ygg":
+		if r.DisableYgg {
+			return nil, noSuchHost(name)
+		}
+	}
+
+	return authorityIP(name)
 }
 
 // decodeIPv6LiteralLabel decodes the Windows ipv6-literal.net spelling of an

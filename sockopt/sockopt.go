@@ -17,6 +17,7 @@ package sockopt
 import (
 	"errors"
 	"net"
+	"net/netip"
 	"reflect"
 	"strings"
 	"syscall"
@@ -192,5 +193,11 @@ func addrIP(addr net.Addr) net.IP {
 	if err != nil {
 		host = addr.String()
 	}
-	return net.ParseIP(host)
+	// A string-backed net.Addr can include an IPv6 zone. It selects an
+	// interface, but does not change the IP family used for socket options.
+	ip, err := netip.ParseAddr(host)
+	if err != nil {
+		return nil
+	}
+	return net.IP(ip.AsSlice())
 }

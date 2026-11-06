@@ -331,6 +331,11 @@ func TestAddrIPParsesStringAddresses(t *testing.T) {
 			addr: stringAddr("203.0.113.3"),
 			want: net.IPv4(203, 0, 113, 3),
 		},
+		{
+			name: "scoped IPv6 string",
+			addr: stringAddr("[fe80::1%eth0]:443"),
+			want: net.ParseIP("fe80::1"),
+		},
 	}
 
 	for _, tt := range tests {

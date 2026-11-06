@@ -52,11 +52,8 @@ func LoopbackFilter(_, address string) bool {
 	if host == "localhost" {
 		return true
 	}
-	ip := net.ParseIP(host)
-	if ip == nil {
-		return false
-	}
-	return ip.IsLoopback()
+	ip, ok := parseIPLiteral(host)
+	return ok && ip.Unmap().IsLoopback()
 }
 
 // CustomFilter is a Filter that matches addresses based on a set of patterns.
@@ -96,6 +93,8 @@ type IpFilterEntry struct {
 //
 // The filter is case-insensitive and handles both bracketed IPv6 addresses
 // (e.g., [::1]:8080) and trailing dots in hostnames.
+// An IP rule without a zone matches all zones. A rule with a zone matches
+// that zone as a host pattern, as it did before scoped IP parsing was added.
 func FilterFromString(str string) CustomFilter {
 	var hosts []HostFilterEntry
 	var ips []IpFilterEntry
@@ -115,24 +114,35 @@ func FilterFromString(str string) CustomFilter {
 		}
 
 		// Try plain IP (v4 or v6) without port
-		if ip := net.ParseIP(e); ip != nil {
-			ips = append(ips, IpFilterEntry{IP: ip, WithPort: false})
+		if addr, ok := parseIPLiteral(e); ok && addr.Zone() == "" {
+			ips = append(
+				ips,
+				IpFilterEntry{IP: net.IP(addr.AsSlice()), WithPort: false},
+			)
 			continue
 		}
 
 		// Try split host:port (handles bracketed IPv6)
 		if host, port, err := net.SplitHostPort(e); err == nil {
 			// host part might be IP or pattern/hostname
-			host = trimDot(strings.ToLower(host))
-			if ip := net.ParseIP(host); ip != nil {
+			host = trimDot(host)
+			if addr, ok := parseIPLiteral(host); ok && addr.Zone() == "" {
 				ips = append(
 					ips,
-					IpFilterEntry{IP: ip, WithPort: true, Port: port},
+					IpFilterEntry{
+						IP:       net.IP(addr.AsSlice()),
+						WithPort: true,
+						Port:     port,
+					},
 				)
 			} else {
 				hosts = append(
 					hosts,
-					HostFilterEntry{Pattern: host, WithPort: true, Port: port},
+					HostFilterEntry{
+						Pattern:  strings.ToLower(host),
+						WithPort: true,
+						Port:     port,
+					},
 				)
 			}
 			continue
@@ -169,13 +179,12 @@ func (f CustomFilter) Filter(network, address string) bool {
 	normHost := trimDot(strings.ToLower(host))
 
 	// Try parse host as IP
-	if ip := net.ParseIP(strings.Trim(normHost, "[]")); ip != nil {
+	if addr, ok := parseIPLiteral(strings.Trim(host, "[]")); ok {
+		ip := net.IP(addr.AsSlice())
 		// match exact IP entries
 		for _, e := range f.IPs {
-			if e.IP.Equal(ip) {
-				if !e.WithPort || e.Port == port {
-					return true
-				}
+			if e.IP.Equal(ip) && (!e.WithPort || e.Port == port) {
+				return true
 			}
 		}
 		// match CIDR entries
@@ -184,14 +193,19 @@ func (f CustomFilter) Filter(network, address string) bool {
 				return true
 			}
 		}
-		// no host-pattern match for numeric IPs
-		return false
+		// Preserve zone-specific host patterns while unscoped IP rules
+		// match the address bytes on any interface.
+		return addr.Zone() != "" && matchHostFilter(f.Hosts, normHost, port)
 	}
 
 	// host is a hostname - match host patterns (with wildcard support)
-	for _, h := range f.Hosts {
+	return matchHostFilter(f.Hosts, normHost, port)
+}
+
+func matchHostFilter(hosts []HostFilterEntry, host, port string) bool {
+	for _, h := range hosts {
 		// path.Match uses shell-style globs: '*' '?' '[]'
-		if ok, _ := path.Match(h.Pattern, normHost); ok {
+		if ok, _ := path.Match(h.Pattern, host); ok {
 			if !h.WithPort || h.Port == port {
 				return true
 			}

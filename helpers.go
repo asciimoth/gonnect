@@ -7,6 +7,7 @@ import (
 	"math"
 	"math/rand"
 	"net"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -19,6 +20,13 @@ var (
 	ip4nets = []string{"ip4", "tcp4", "udp4"}
 	ip6nets = []string{"ip6", "tcp6", "udp6"}
 )
+
+// parseIPLiteral accepts IPv4 and IPv6 hosts, including an IPv6 zone. A zone
+// selects an interface; it is not part of a DNS name or of the IP bytes.
+func parseIPLiteral(host string) (netip.Addr, bool) {
+	addr, err := netip.ParseAddr(host)
+	return addr, err == nil
+}
 
 var (
 	ErrNoDefaultInterface = errors.New("failed to found default interface")
@@ -518,11 +526,8 @@ func IsLocal(addr string) bool {
 	if host == "localhost" {
 		return true
 	}
-	ip := net.ParseIP(host)
-	if ip == nil {
-		return false
-	}
-	return ip.IsLoopback()
+	ip, ok := parseIPLiteral(host)
+	return ok && ip.Unmap().IsLoopback()
 }
 
 func NetworkFromConn(c net.Conn) string {

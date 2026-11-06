@@ -36,7 +36,7 @@ func dialError(network, address string) error {
 	}
 
 	// Check if host is an IP address or a hostname
-	if net.ParseIP(host) != nil {
+	if _, literal := parseIPLiteral(host); literal {
 		// It's an IP address - return connection refused
 		return ConnRefused(network, address)
 	}

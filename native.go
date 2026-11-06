@@ -105,8 +105,12 @@ func nativeListenDeniedErr(network, address string) error {
 	}
 }
 
-func nativeJoinIPPort(ip net.IP, port int) string {
-	return net.JoinHostPort(ip.String(), strconv.Itoa(port))
+func nativeJoinIPPort(ip net.IP, zone string, port int) string {
+	host := ip.String()
+	if zone != "" {
+		host += "%" + zone
+	}
+	return net.JoinHostPort(host, strconv.Itoa(port))
 }
 
 func nativeFamilyFromNetwork(network string) string {
@@ -148,15 +152,19 @@ func nativeIPMatchesNetwork(ip netip.Addr, network string) bool {
 		(family == "ip6" && ip.Is6())
 }
 
-func nativeIPLiteral(host, network string) (net.IP, bool, error) {
+func nativeIPLiteral(host, network string) (net.IP, string, bool, error) {
 	addr, err := netip.ParseAddr(host)
 	if err != nil {
-		return nil, false, nil // nolint
+		return nil, "", false, nil // nolint
 	}
 	if !nativeIPMatchesNetwork(addr, network) {
-		return nil, true, nativeNoSuchHost(host, "local")
+		return nil, "", true, nativeNoSuchHost(host, "local")
 	}
-	return net.IP(append([]byte(nil), addr.AsSlice()...)), true, nil
+	// net.IP holds only address bytes. Keep the IPv6 zone until the socket
+	// address is built, so link-local traffic uses the selected interface.
+	return net.IP(
+		append([]byte(nil), addr.AsSlice()...),
+	), addr.Zone(), true, nil
 }
 
 func nativePortNetwork(network string) string {
@@ -504,11 +512,14 @@ func (n *NativeNetwork) LookupSRV(
 // into an IP address and port number.
 // The network parameter specifies the network type (e.g., "tcp4", "udp6", "tcp").
 // This method applies filtering before performing the resolution.
+// The returned net.IP cannot hold an IPv6 zone. Socket operations keep the
+// zone internally and use it when they build a TCP, UDP, or packet address.
 func (n *NativeNetwork) LookupNetAddr(
 	ctx context.Context,
 	network, addr string,
 ) (net.IP, int, error) {
-	return n.resolveAddr(ctx, network, addr, actionLookup)
+	ip, port, _, err := n.resolveAddr(ctx, network, addr, actionLookup)
+	return ip, port, err
 }
 
 // InterfaceAddrs returns the unicast interface addresses associated with the system.
@@ -651,11 +662,11 @@ func (n *NativeNetwork) Listen(
 	ctx context.Context,
 	network, address string,
 ) (net.Listener, error) {
-	ip, port, err := n.resolveAddr(ctx, network, address, actionListen)
+	ip, port, zone, err := n.resolveAddr(ctx, network, address, actionListen)
 	if err != nil {
 		return nil, err
 	}
-	address = nativeJoinIPPort(ip, port)
+	address = nativeJoinIPPort(ip, zone, port)
 	return n.getListenCfg().Listen(ctx, network, address)
 }
 
@@ -665,11 +676,11 @@ func (n *NativeNetwork) ListenPacket(
 	ctx context.Context,
 	network, address string,
 ) (PacketConn, error) {
-	ip, port, err := n.resolveAddr(ctx, network, address, actionListen)
+	ip, port, zone, err := n.resolveAddr(ctx, network, address, actionListen)
 	if err != nil {
 		return nil, err
 	}
-	address = nativeJoinIPPort(ip, port)
+	address = nativeJoinIPPort(ip, zone, port)
 
 	c, err := n.getListenCfg().ListenPacket(ctx, network, address)
 	if err != nil {
@@ -693,11 +704,11 @@ func (n *NativeNetwork) ListenPacketConfig(
 	lc *ListenConfig,
 	network, address string,
 ) (PacketConn, error) {
-	ip, port, err := n.resolveAddr(ctx, network, address, actionListen)
+	ip, port, zone, err := n.resolveAddr(ctx, network, address, actionListen)
 	if err != nil {
 		return nil, err
 	}
-	address = nativeJoinIPPort(ip, port)
+	address = nativeJoinIPPort(ip, zone, port)
 
 	c, err := n.getListenCfgWith(lc).ListenPacket(ctx, network, address)
 	if err != nil {
@@ -912,31 +923,31 @@ func (n *NativeNetwork) getListenCfgWith(lc *ListenConfig) *net.ListenConfig {
 	return &cfg
 }
 
-// resolveAddr resolves a network address string into an IP and port.
+// resolveAddr resolves a network address string into an IP, port, and zone.
 // It applies filtering before and after resolution (if port lookup is needed).
 func (n *NativeNetwork) resolveAddr(
 	ctx context.Context, network, addr string, action int,
-) (net.IP, int, error) {
+) (net.IP, int, string, error) {
 	err := n.doFilter(network, addr, action)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, "", err
 	}
 
 	host, serv, err := net.SplitHostPort(addr)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, "", err
 	}
 	resolver := n.getResolver()
 	ipNet := nativeFamilyFromNetwork(network) // "ip","ip4" or "ip6"
 
-	ip, ok, err := nativeIPLiteral(host, ipNet)
+	ip, zone, ok, err := nativeIPLiteral(host, ipNet)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, "", err
 	}
 	if !ok {
 		ips, err := resolver.LookupIP(ctx, ipNet, host)
 		if err != nil {
-			return nil, 0, err
+			return nil, 0, "", err
 		}
 		ip = nativePickIP(ips, n.preferIP)
 	}
@@ -946,21 +957,21 @@ func (n *NativeNetwork) resolveAddr(
 		// serv is not a port, lookup
 		port, err = resolver.LookupPort(ctx, network, serv)
 		if err != nil {
-			return nil, 0, err
+			return nil, 0, "", err
 		}
 
 		err = n.doFilter(
-			network, net.JoinHostPort(ip.String(), strconv.Itoa(port)), action,
+			network, nativeJoinIPPort(ip, zone, port), action,
 		)
 	} else {
 		// serv is a port already
-		err = n.doFilter(network, net.JoinHostPort(ip.String(), serv), action)
+		err = n.doFilter(network, nativeJoinIPPort(ip, zone, port), action)
 	}
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, "", err
 	}
 
-	return ip, port, nil
+	return ip, port, zone, nil
 }
 
 // resolveTCPAddr resolves a network address string into a TCPAddr.
@@ -970,13 +981,14 @@ func (n *NativeNetwork) resolveTCPAddr(
 	network, addr string,
 	action int,
 ) (*net.TCPAddr, error) {
-	ip, port, err := n.resolveAddr(ctx, network, addr, action)
+	ip, port, zone, err := n.resolveAddr(ctx, network, addr, action)
 	if err != nil {
 		return nil, err
 	}
 	addrTCP := &net.TCPAddr{
 		IP:   ip,
 		Port: port,
+		Zone: zone,
 	}
 	return addrTCP, nil
 }
@@ -988,13 +1000,14 @@ func (n *NativeNetwork) resolveUDPAddr(
 	network, addr string,
 	action int,
 ) (*net.UDPAddr, error) {
-	ip, port, err := n.resolveAddr(ctx, network, addr, action)
+	ip, port, zone, err := n.resolveAddr(ctx, network, addr, action)
 	if err != nil {
 		return nil, err
 	}
 	addrUDP := &net.UDPAddr{
 		IP:   ip,
 		Port: port,
+		Zone: zone,
 	}
 	return addrUDP, nil
 }

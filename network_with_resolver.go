@@ -400,7 +400,7 @@ func (n *NetworkWithResolver) resolveNetAddr(
 		service = strconv.Itoa(port)
 	}
 
-	if host == "" || net.ParseIP(host) != nil {
+	if _, literal := parseIPLiteral(host); host == "" || literal {
 		return net.JoinHostPort(host, service), nil
 	}
 

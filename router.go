@@ -1105,7 +1105,7 @@ func (r *Router) resolveNetAddr(
 		service = strconv.Itoa(port)
 	}
 
-	if host == "" || net.ParseIP(host) != nil {
+	if _, literal := parseIPLiteral(host); host == "" || literal {
 		return net.JoinHostPort(host, service), nil
 	}
 
@@ -1843,21 +1843,23 @@ func routerAddrUsesPortZero(addr string) bool {
 func routerPickResolvedHost(network string, hosts []string) string {
 	family := FamilyFromNetwork(network)
 	for _, host := range hosts {
-		ip := net.ParseIP(host)
-		if ip == nil {
+		ip, ok := parseIPLiteral(host)
+		if !ok {
 			continue
 		}
+		// Match net.IP.To4 behavior for IPv4-mapped IPv6 results.
+		unmapped := ip.Unmap()
 		switch family {
 		case "ip4":
-			if ip4 := ip.To4(); ip4 != nil {
-				return ip4.String()
+			if unmapped.Is4() {
+				return unmapped.String()
 			}
 		case "ip6":
-			if ip.To4() == nil && ip.To16() != nil {
+			if ip.Is6() && !ip.Is4In6() {
 				return ip.String()
 			}
 		default:
-			return ip.String()
+			return unmapped.String()
 		}
 	}
 	return ""
